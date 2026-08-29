@@ -2,7 +2,8 @@
 
 **Status:** In progress. The cloud runtime path, the dead documentation, and
 billing are removed, the six modules are one, and the platform is a single
-binary; SQLite, the in-process queue and GOMEMLIMIT remain.
+binary. SQLite, removing Supabase, the in-process queue, GOMEMLIMIT, the docs
+rewrite and the embedded panel remain.
 **Created:** 2026-08-29
 **Updated:** 2026-08-29
 
@@ -211,9 +212,42 @@ host before it becomes a plan.
      it restarts as a unit.
    - **A panic takes everything.** Recovery middleware covers the request
      path; the background loops do not have an equivalent yet.
-6. [ ] Port the store to SQLite and squash twelve migrations into one baseline.
+6. [ ] Port the store to SQLite and squash thirteen migrations into one baseline.
    There is no data to migrate — a fork starts empty — so the inherited
    migration history buys nothing and carries vibecoin columns forward.
+
+   The data model itself is not the work here and does not change: `projects`,
+   `deploys`, `deploy_sagas`, `custom_domains`, `api_keys` and `users` already
+   hold everything a project and its sites need. Only the engine underneath
+   them moves.
+
+6a. [ ] Remove Supabase, and issue identity ourselves.
+
+   `SUPABASE_URL` has exactly one use: fetching JWKS to verify the signature on
+   somebody else's JWT. That is a multi-tenant SaaS's identity provider, and
+   this platform has one operator. Keeping it means the panel cannot be logged
+   into without either an external SaaS or a ten-container self-hosted Supabase
+   sitting next to a 9 MiB binary.
+
+   Out: `JWKSCache`, `SupabaseClaims`, the signup webhook, and the dead
+   `auth/register` and `auth/login` entries in `PublicRoutes` — routes that
+   never existed here, because registration went straight from the browser to
+   Supabase.
+
+   In: an operator row with an argon2id password hash, a login and logout
+   endpoint, a session cookie (HttpOnly, SameSite, Secure), and a password
+   generated on first start and printed once to the log rather than shipped as
+   a default.
+
+   `user_id` stays on every table. The tempting move is to strip it as
+   multi-tenant residue, but a password needs a row to hang off anyway, and the
+   column is already the isolation a second operator or a service account would
+   need. It costs nothing to keep and it is a wide, risky diff to remove.
+
+   Ordered after item 6 on purpose: this adds a table, and item 6 is already
+   rewriting the migration history into one baseline. Doing it in this order
+   puts the operator table in that baseline instead of a migration on top of it.
+
 7. [ ] Replace Redis with the in-process queue, pub/sub, and credential store.
 8. [ ] Set `GOMEMLIMIT` and a container memory limit that agree with each other.
    Neither `GOMEMLIMIT` nor `GOGC` is set anywhere in the inherited tree, while
@@ -222,6 +256,37 @@ host before it becomes a plan.
    kernel intervenes.
 9. [ ] Rewrite `CLAUDE.md` and the architecture docs, which currently describe
    seven services and a cloud runtime that no longer exist.
+
+10. [ ] The panel, embedded in the binary.
+
+    There is no frontend in this repository. It stayed in `justaba/snaphost-ui`,
+    which was not forked: React 19 and Vite, 180 files, about 9,800 lines, 21
+    pages — including the whole operator console, projects, domains and API
+    keys. Rewriting that is more expensive than taking it and cutting, the same
+    argument the backend was forked on.
+
+    **Served by `go:embed`, not by a second container and not from disk.** A
+    static-file container would undo the point of items 4 and 5, and a
+    disk artifact brings its own deployment step and its own SHA — upstream's
+    docs say to "record backend and frontend release SHAs independently", which
+    is precisely the skew this avoids. One binary contains the API and the panel
+    it serves, and they cannot disagree about their own version.
+
+    The cost is a Node stage in the image build. It lands in the builder stage
+    only; the runtime image gains the built assets and nothing else.
+
+    Dropped: `signup`, `recover`, `reset-password`, `auth-callback` — Supabase
+    flows that item 6a removes the backend for; `legal-document` and
+    `legal-index`, which served a Russian consumer SaaS's offer and privacy
+    policy; `admin-transactions`, which reads a ledger that no longer exists.
+    `login` stays and is rewired to the operator session.
+
+    Kept: projects, project detail, domains, API keys, settings, and the six
+    admin pages. Supabase appears in four files, so the auth swap is small.
+
+    This is a first pass, not the last word on the panel. Tasks 2 and 3 add
+    environment variables, volumes and managed services, and each of those
+    brings its own screens.
 
 ## Measurement
 

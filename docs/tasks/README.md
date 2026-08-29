@@ -7,7 +7,12 @@ Updated: 2026-08-29
 
 | Task | Status | Document |
 | --- | --- | --- |
-| 1 — Collapse the control plane into one binary | In progress — cloud runtime path and dead docs removed; billing, module merge, SQLite, and the in-process queue remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
+| 1 — Collapse the control plane into one binary | In progress — the cloud runtime path, dead docs, billing and the module split are gone, and the platform is one process. SQLite, removing Supabase, the in-process queue, `GOMEMLIMIT`, the docs rewrite and the embedded panel remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
+
+Remaining order inside Task 1: **6** SQLite → **6a** remove Supabase and issue
+operator identity → **7** in-process queue → **8** `GOMEMLIMIT` → **9** docs →
+**10** the panel. 6a sits after 6 because it adds a table and 6 is already
+squashing the migration history; 10 sits last because it logs into 6a.
 
 ## Planned
 
@@ -21,6 +26,10 @@ acceptance criteria section yet, and none starts before Task 1 lands.
 | 4 — The edge | Caddy terminating TLS for every attached domain, driven by the control binary. The inherited on-demand issuance and TXT verification carry over. |
 | 5 — Git webhooks | Deploy on push. |
 | 6 — Operator actions | Restart, stop, and a shell into a container. Needs the audit trail the inherited console deliberately waited for. |
+
+Each of tasks 2, 3 and 6 carries its own screens. Task 1 item 10 is the panel's
+first pass — the inherited pages adapted to an operator login and a product
+with no billing — not the last word on it.
 
 ## Historical
 
