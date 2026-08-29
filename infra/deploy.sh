@@ -302,10 +302,11 @@ wait_health() {
 probe_internal() {
   local service=$1 url=$2 deadline=$((SECONDS + READINESS_TIMEOUT))
   [[ "$DRY_RUN" == true ]] && { log "DRY-RUN: probe $service"; return; }
-  # Retry until the readiness deadline: a container can report healthy
-  # before its HTTP listener is up (the gateway prefetches JWKS from
-  # Supabase at startup), and a single-shot probe turned that into a
-  # false deployment failure on 2026-07-12.
+  # Retry until the readiness deadline: a container can report healthy before
+  # its HTTP listener is up, and a single-shot probe turned that into a false
+  # deployment failure on 2026-07-12. The delay then was a JWKS prefetch from
+  # Supabase; that is gone, but migrations and the operator bootstrap still run
+  # before the listener binds.
   while (( SECONDS < deadline )); do
     # </dev/null for the same reason as backup_postgres: `compose run` attaches
     # our stdin to the container.

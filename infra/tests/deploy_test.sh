@@ -259,7 +259,7 @@ run_capture rollback
 
 setup_case; run_capture --dry-run deploy "$SHA"
 leaked=0
-for secret in internal-secret-value supabase-secret-value production-password openrouter-test-key token; do
+for secret in internal-secret-value production-password openrouter-test-key token; do
   if grep -R -Fq "$secret" "$CASE_DIR/state" "$OUTPUT"; then leaked=1; fi
 done
 if [[ $leaked -eq 0 ]]; then pass 'secrets absent from output/state'; else fail 'secrets absent from output/state'; fi
@@ -478,7 +478,7 @@ setup_case
 seed_deployed_state
 run_capture rollback
 leaked=0
-for secret in internal-secret-value supabase-secret-value production-password openrouter-test-key; do
+for secret in internal-secret-value production-password openrouter-test-key; do
   if grep -R -Fq "$secret" "$CASE_DIR/state" "$OUTPUT"; then leaked=1; fi
 done
 if [[ $leaked -eq 0 ]]; then pass 'rollback leaks no secret into output or state'; else fail 'rollback leaks no secret into output or state'; fi
