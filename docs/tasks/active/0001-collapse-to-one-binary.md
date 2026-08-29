@@ -12,10 +12,33 @@ Run the whole platform — panel, build pipeline, runtime control, and edge — 
 the cheapest VPS tier a provider sells, and leave most of that machine's memory
 to the sites it hosts.
 
-The target is **under ~170 MB resident with nothing deployed**, against roughly
-500–600 MB for the inherited stack. The number that matters is not the platform's
-own footprint but what is left over: on a 1 GB box, 150 MB of platform leaves
-800 MB for user containers, and 550 MB leaves almost nothing.
+**Measured 2026-08-29, and the estimate this task was written on was wrong.**
+The inherited stack was guessed at 500–600 MB. It is **131 MiB** across twelve
+containers. Go services idle at 3–13 MiB each, not the 20–40 MiB assumed.
+
+| | inherited | after the collapse |
+| --- | --- | --- |
+| containers | 12 | 6 |
+| application | 40.5 MiB across 7 | **8.9 MiB in 1** |
+| PostgreSQL | 25.7 | 25.7 |
+| Redis | 17.8 | 17.8 |
+| BuildKit | 22.1 | 15.6 |
+| Traefik | 20.0 | 21.4 |
+| registry | 5.2 | 5.2 |
+| **total idle** | **131.1 MiB** | **96.8 MiB** |
+
+So the ~170 MB target was already met before any of this work, and the headline
+justification was overstated by roughly four times. What the measurement does
+support is narrower and still real: the application side went from 40.5 MiB
+across seven processes to 8.9 MiB in one, and six containers stopped existing.
+
+Items 6 and 7 are where the rest is: PostgreSQL (25.7) and Redis (17.8) are
+together more than four times the whole application, and the registry (5.2)
+goes with them. That projects to roughly **50 MiB** — the binary, BuildKit and
+an edge — which is the number worth aiming at now.
+
+The figure that matters is still what is left over rather than what the
+platform uses: on a 1 GB box, 50 MiB of platform leaves 950 MiB for the sites.
 
 ## Why this is deletion, not optimisation
 
@@ -202,10 +225,10 @@ host before it becomes a plan.
 
 ## Measurement
 
-Before claiming any of this worked, take a baseline: bring the inherited stack
-up and record `docker stats` idle and during a build. Every later claim about
-memory is guesswork without it, and the whole task is justified by a number
-nobody has measured yet.
+Done 2026-08-29, and it changed the case for the task — see the table above.
+The baseline was taken by running both stacks and reading `docker stats` idle.
+What has still not been measured is either stack **during a build**, which is
+the case that decides whether a 1 GB box is viable at all.
 
 ## Acceptance criteria
 
