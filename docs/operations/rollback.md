@@ -52,7 +52,7 @@ never automatic.
 
 An interrupted rollback also leaves `in-progress.env` when one exists. Follow
 the stale-state diagnosis and explicit removal procedure in the
-[production deployment runbook](production-deployment.md); there is no force or
+the upstream production runbook (removed with the fork); there is no force or
 automatic continue path.
 
 ## What the tests cover
@@ -276,6 +276,6 @@ that its last line ran.
 **If the rollback itself fails**, the runtime is somewhere between the two
 releases. Do not retry blindly: read `in-progress.env`, check which services
 report which image, and follow the interrupted-deployment procedure in the
-[production deployment runbook](production-deployment.md). The database backup
+the upstream production runbook (removed with the fork). The database backup
 taken before the original deployment is the floor, and restoring it is a
 separate, explicitly reviewed decision.

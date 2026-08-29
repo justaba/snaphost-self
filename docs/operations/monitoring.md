@@ -103,7 +103,7 @@ group`, and folder-level `logging.writer`/`logging.reader`/`logging.viewer` on
 the runner service account do not satisfy it. Production runs with
 `YANDEX_RUNTIME_LOGS_DISABLED=true`, so user containers write to the folder's
 default log group — queryable, but mixed with everything else in the folder.
-See [Task 13a](../tasks/active/0013-observability-and-user-feedback.md) for what
+See [Task 13a](../inherited/active/0013-observability-and-user-feedback.md) for what
 was tried and what to try next.
 
 When it is working, every Serverless Container revision carries `log_options`

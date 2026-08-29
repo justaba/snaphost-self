@@ -100,7 +100,7 @@ only justification — which is why 16a was worth landing before the TLS questio
 
 ## Related
 
-- [Task 16](../tasks/active/0016-custom-domains.md) — scope and remaining work.
+- [Task 16](../inherited/active/0016-custom-domains.md) — scope and remaining work.
 - [Deploy lifecycle](../architecture/deploy-lifecycle.md) — the flow this
   changes, including what the watchdog may reap.
 - ADR 0003 — the central router that performs the host lookup this ADR splits

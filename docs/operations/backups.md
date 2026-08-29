@@ -205,4 +205,4 @@ Item 2 is the one to run first: it is the only step that proves the private key
 is where someone thinks it is.
 
 Related: [monitoring](monitoring.md), [rollback](rollback.md),
-[production deployment](production-deployment.md).
+the upstream production runbook (removed with the fork).

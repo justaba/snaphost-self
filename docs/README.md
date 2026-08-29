@@ -1,9 +1,9 @@
-# SnapHost documentation
+# Documentation
 
 Status: Current
-Updated: 2026-07-30
+Updated: 2026-08-29
 
-This is the single entry point for project documentation.
+Single entry point for project documentation.
 
 ## I want to understand the system
 
@@ -12,24 +12,27 @@ This is the single entry point for project documentation.
 - [Deployment lifecycle](architecture/deploy-lifecycle.md)
 - [Deployment model](architecture/deployment-model.md)
 - [Security model](architecture/security.md)
-- [Yandex runtime architecture](architecture/yandex-runtime.md)
 
-## I want to run or operate SnapHost
+**These describe the inherited multi-service architecture and are stale by
+design until [Task 1](tasks/active/0001-collapse-to-one-binary.md) lands.** They
+are accurate about how the code works today and wrong about where it is going;
+rewriting them is item 9 of that task, deliberately last, because rewriting a
+description of something mid-demolition wastes the work twice.
+
+## I want to run or operate it
 
 - [Local development](operations/local-development.md)
 - [CI/CD](operations/ci-cd.md)
-- [Yandex Cloud setup](operations/yandex-cloud-setup.md)
-- [Yandex runtime configuration](operations/yandex-runtime.md)
-- [Public address contract](operations/public-address.md) — the address customer DNS points at
-- [Production deployment](operations/production-deployment.md)
-- [Staging deployment contract](operations/staging-deployment.md)
-- [Staging infrastructure provisioning](operations/staging-provisioning.md)
+- [Custom domains](operations/custom-domains.md)
 - [Backup and restore](operations/backups.md)
-- [Credentials](operations/credentials.md) — which keys belong to which environment
-- [Custom domains](operations/custom-domains.md) — the customer-domain edge
 - [Monitoring](operations/monitoring.md)
 - [Rollback](operations/rollback.md)
+- [Credentials](operations/credentials.md)
 - [Troubleshooting](operations/troubleshooting.md)
+
+Several of these still describe deploying the upstream SaaS to its own VDS. A
+self-hosted product installs on the operator's machine instead, so the
+deployment and credential runbooks need rewriting rather than editing.
 
 ## I want to understand why a decision was made
 
@@ -38,17 +41,21 @@ This is the single entry point for project documentation.
 ## I want to see project work and status
 
 - [Task catalog](tasks/README.md)
-- [Active Task 11: reproducible production deployment](tasks/active/0011-production-deployment.md)
-- [Backlog](tasks/backlog.md)
-- [Historical archive](tasks/archive/README.md)
+- [Task 1: collapse the control plane into one binary](tasks/active/0001-collapse-to-one-binary.md)
+
+## History
+
+- [Inherited task catalog](inherited/README.md) — the SaaS this forked from.
+  Evidence for why the kept code is shaped the way it is; not a description of
+  this product.
 
 ## Document types
 
 - `architecture/` describes how the system works now.
 - `operations/` contains procedures and runtime configuration.
 - `decisions/` explains important choices and tradeoffs.
-- `tasks/` tracks active work, completed milestones, backlog, and history.
+- `tasks/` tracks active work.
+- `inherited/` is upstream history, retained for debugging and blame.
 
-Historical task logs are evidence, not current architecture. When history and
-an active architecture or operations document disagree, the active document is
-the source of truth and the inconsistency should be fixed.
+When a historical document and an active one disagree, the active one is the
+source of truth and the inconsistency should be fixed.

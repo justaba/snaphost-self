@@ -287,5 +287,5 @@ still land in a fresh project each time.
   release currently blocked on the GitHub Actions outage.
 
 Related: [ADR 0007](../decisions/0007-custom-domain-tls-edge.md),
-[public address](public-address.md),
-[Task 16](../tasks/active/0016-custom-domains.md).
+the operator's own public address,
+[Task 16](../inherited/active/0016-custom-domains.md).

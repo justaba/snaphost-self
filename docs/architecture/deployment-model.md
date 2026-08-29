@@ -58,7 +58,7 @@ Two gaps remain, and they are why the PSL entry is still the real fix:
   it is never a host users control.
 
 Both domains resolve to the same host today
-([public address](../operations/public-address.md)); the split is at the DNS and
+([public address](../inherited/active/0016-custom-domains.md)); the split is at the DNS and
 cookie layer, not the hardware layer, and either can be moved independently.
 
 `user-billing` refuses to attach any hostname under either domain:
@@ -140,4 +140,4 @@ healthchecks or packages solely for probing. A minimal follow-up should add a
 static probe or native healthcheck subcommand.
 
 Deployment scripts, rollback, staging, CD, backups, and live verification stay
-outside Phase 1 and are tracked by [Task 11](../tasks/active/0011-production-deployment.md).
+outside Phase 1 and are tracked by [Task 11](../inherited/active/0011-production-deployment.md).

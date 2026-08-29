@@ -8,7 +8,7 @@ Date: 2026-08-04
 A verified custom domain does not serve traffic today. The single Yandex
 Certificate Manager wildcard covers `*.snaphost.pw` and structurally cannot
 cover a hostname we do not own, so nothing terminates TLS for a customer's
-domain. [Task 16](../tasks/active/0016-custom-domains.md) scoped two candidate
+domain. [Task 16](../inherited/active/0016-custom-domains.md) scoped two candidate
 paths and required a spike (16c.0) before committing to either.
 
 The spike ran on 2026-08-04. What it found:

@@ -1,48 +1,38 @@
 # Task catalog
 
 Status: Current
-Updated: 2026-08-07
+Updated: 2026-08-29
 
 ## Active
 
 | Task | Status | Document |
 | --- | --- | --- |
-| 11 — Reproducible production deployment | In progress — production live and monitored; rollback rehearsal, off-host restore drill, and the approval-gate decision remain | [active/0011-production-deployment.md](active/0011-production-deployment.md) |
-| 12 — Separate staging/production SA keys | Implemented — preflight guard verified on production; Lockbox sourcing (item 4) deferred | [active/0012-credential-separation.md](active/0012-credential-separation.md) |
-| 13 — Observability split (admin logs vs user feedback) | 13a implemented but blocked: Yandex refuses the log group (PermissionDenied); collection off in production. 13b planned | [active/0013-observability-and-user-feedback.md](active/0013-observability-and-user-feedback.md) |
-| 14 — Vibecoder ingress (editor extension, API keys, multi-source) | In progress | [active/0014-vibecoder-ingress.md](active/0014-vibecoder-ingress.md) |
-| 15 — Runtime port contract (user-Dockerfile validation, liveness probe) | Implemented — staging proof and the Task 13b hand-off (item 6) remain | [active/0015-runtime-port-contract.md](active/0015-runtime-port-contract.md) |
-| 16 — Custom domains for user deploys | 16a/16b/16c/16d/16f/16g done and proven end to end on a real domain 2026-08-05; auto-promotion and the project-key server side landed 2026-08-06, awaiting release. The MCP client must send a project_key (Task 14e) | [active/0016-custom-domains.md](active/0016-custom-domains.md) |
-| 17 — Operator console | 17a (read surface) implemented 2026-08-07 and verified against a real PostgreSQL. Actions with an audit trail (17b) and metrics (17c) remain | [active/0017-admin-console.md](active/0017-admin-console.md) |
+| 1 — Collapse the control plane into one binary | In progress — cloud runtime path and dead docs removed; billing, module merge, SQLite, and the in-process queue remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
 
-## Partially completed
+## Planned
 
-| Task | Remaining work |
+These are scoped only as far as the ordering argument in Task 1. None has an
+acceptance criteria section yet, and none starts before Task 1 lands.
+
+| Task | Scope |
 | --- | --- |
-| 10.7 — Yandex registry integration | Run one automated UI-to-BuildKit-to-Yandex end-to-end proof. |
+| 2 — Deploys that live forever | Per-project environment variables, persistent volumes, TTL as an opt-in for previews rather than the default. Without this the platform hosts previews, not sites. |
+| 3 — Managed services | Databases **and** authentication as one subsystem: image + volume + env + health check + a connection string injected into the app. Postgres, Redis, PocketBase from templates, so a fourth is a file rather than code. |
+| 4 — The edge | Caddy terminating TLS for every attached domain, driven by the control binary. The inherited on-demand issuance and TXT verification carry over. |
+| 5 — Git webhooks | Deploy on push. |
+| 6 — Operator actions | Restart, stop, and a shell into a container. Needs the audit trail the inherited console deliberately waited for. |
 
-## Completed milestones
+## Historical
 
-- [Tasks 0–8: backend security and pipeline refactor](completed/0000-0008-backend-refactor.md)
-- [Tasks 9–9.4: project detection and Dockerfile policy](completed/0009-project-detection.md)
-- [Tasks 10.0–10.10: Yandex runtime adapter](completed/0010-yandex-runtime.md)
-- [CI modernization](completed/ci-modernization.md)
-
-## Backlog
-
-See [backlog.md](backlog.md). Backlog items are not active work until they are
-moved into `active/` with scope and acceptance criteria.
-
-## Historical evidence
-
-The [archive](archive/README.md) contains original prompts, implementation
-notes, smoke results, and superseded assumptions. It is retained for audits and
-debugging, but is not the current architecture specification.
+[../inherited/](../inherited/) holds the task catalog of the SaaS this was
+forked from. It explains why much of the kept code is shaped the way it is, and
+it is not a description of this product.
 
 ## Status rules
+
+Inherited from the upstream project, because they were doing real work there:
 
 - **Planned** — scope exists; implementation has not started.
 - **In progress** — implementation is underway.
 - **Partially completed** — useful behavior exists, but bounded work or proof remains.
 - **Completed** — implementation and proportionate verification are recorded.
-- **Archived** — historical context, not a current source of truth.
