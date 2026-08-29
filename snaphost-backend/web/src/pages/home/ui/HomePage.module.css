@@ -1,0 +1,95 @@
+.root {
+  box-sizing: border-box;
+}
+
+.root :global(.section-kicker) {
+  font-size: 13px;
+}
+
+.root :global(.intro-grid) h2,
+.root :global(.pricing-heading) h2 {
+  font-size: clamp(52px, 5.6vw, 82px);
+}
+
+.root :global(.stack-copy) h2 {
+  font-size: clamp(48px, 4.8vw, 70px);
+}
+
+.root :global(.intro-grid) p,
+.root :global(.stack-copy) p,
+.root :global(.pricing-heading) p {
+  font-size: 19px;
+}
+
+.root :global(.workflow-card) h3 {
+  font-size: 30px;
+}
+
+.root :global(.workflow-card) p {
+  font-size: 16px;
+  line-height: 1.62;
+}
+
+.root :global(.card-number) {
+  font-size: 12px;
+}
+
+.root :global(.stack-item) {
+  min-height: 98px;
+}
+
+.root :global(.stack-item) b {
+  font-size: 16px;
+}
+
+.root :global(.stack-item) small {
+  font-size: 10px;
+}
+
+.root :global(.plan-head) h3 {
+  font-size: 50px;
+}
+
+.root :global(.plan-label) {
+  font-size: 11px;
+}
+
+.root :global(.plan-head) p {
+  font-size: 15px;
+  line-height: 1.62;
+}
+
+.root :global(.plan-button) {
+  font-size: 14px;
+}
+
+.root :global(.price-card) li {
+  font-size: 14px;
+  line-height: 1.48;
+}
+
+@media (max-width: 760px) {
+  .root :global(.section-kicker) {
+    font-size: 12px;
+  }
+
+  .root :global(.intro-grid) h2,
+  .root :global(.stack-copy) h2,
+  .root :global(.pricing-heading) h2 {
+    font-size: 48px;
+  }
+
+  .root :global(.intro-grid) p,
+  .root :global(.stack-copy) p,
+  .root :global(.pricing-heading) p {
+    font-size: 17px;
+  }
+
+  .root :global(.workflow-card) h3 {
+    font-size: 28px;
+  }
+
+  .root :global(.workflow-card) p {
+    font-size: 15px;
+  }
+}

@@ -1,0 +1,127 @@
+.root :global(.auth-story) h1 {
+  font-size: clamp(64px, 6.4vw, 96px);
+}
+
+.root :global(.auth-story) > div > p {
+  max-width: 560px;
+  font-size: 18px;
+}
+
+.root :global(.auth-panel) {
+  width: min(550px, 100%);
+  min-height: 720px;
+}
+
+.root :global(.auth-panel-tall) {
+  min-height: 1040px;
+}
+
+.root :global(.auth-panel-recover) {
+  min-height: 650px;
+}
+
+.root :global(.auth-form-wrap) {
+  width: min(420px, calc(100% - 52px));
+}
+
+.root :global(.auth-step) {
+  font-size: 10px;
+}
+
+.root :global(.auth-form-wrap) h2 {
+  font-size: 46px;
+  line-height: 1;
+}
+
+.root :global(.auth-form-wrap) > p {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.root :global(.github-login) {
+  height: 56px;
+  font-size: 15px;
+}
+
+.root :global(.auth-divider) span {
+  font-size: 10px;
+}
+
+.root :global(.auth-form) > label,
+.root :global(.auth-label-row) label {
+  font-size: 13px;
+}
+
+.root :global(.auth-label-row) a {
+  font-size: 12px;
+}
+
+.root :global(.auth-input) {
+  height: 54px;
+  padding-inline: 15px;
+}
+
+.root :global(.auth-input) input {
+  font-size: 13px;
+}
+
+.root :global(.auth-input) span {
+  font-size: 11px;
+}
+
+.root :global(.auth-submit) {
+  height: 56px;
+  font-size: 14px;
+}
+
+.root :global(.auth-message) {
+  font-size: 11px;
+}
+
+.root :global(.auth-register) {
+  font-size: 12px !important;
+}
+
+@media (max-width: 1050px) {
+  .root :global(.auth-story) h1 {
+    font-size: 68px;
+  }
+
+  .root :global(.auth-story) > div > p {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 760px) {
+  .root :global(.auth-panel) {
+    width: 100%;
+    max-width: 550px;
+    min-width: 0;
+    min-height: 700px;
+  }
+
+  .root :global(.auth-panel-tall) {
+    min-height: 1040px;
+  }
+
+  .root :global(.auth-panel-recover) {
+    min-height: 620px;
+  }
+
+  .root :global(.auth-form-wrap) {
+    width: calc(100% - 38px);
+    max-width: 420px;
+  }
+
+  .root :global(.auth-form-wrap) h2 {
+    font-size: 39px;
+  }
+
+  .root :global(.auth-form-wrap) > p {
+    font-size: 14px;
+  }
+
+  .root :global(.auth-input) input {
+    font-size: 12px;
+  }
+}

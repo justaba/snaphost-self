@@ -1,0 +1,93 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem;
+}
+
+.success,
+.failure {
+  display: flex;
+  padding: 1rem;
+  border: 1px solid;
+  border-radius: 0.5rem;
+}
+
+.success {
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+}
+
+.successInfo,
+.failure {
+  flex-direction: column;
+}
+
+.successTitle {
+  color: #064e3b;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.url {
+  max-width: 20rem;
+  overflow: hidden;
+  color: #047857;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.url:hover {
+  text-decoration: underline;
+}
+
+.failure {
+  gap: 0.75rem;
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.failureTitle {
+  color: #7f1d1d;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.failureReason {
+  margin-top: 0.25rem;
+  color: #b91c1c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+}
+
+.failureActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem 0;
+  color: #71717a;
+  font-size: 0.875rem;
+}
+
+.loadingText {
+  margin-left: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  .success {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

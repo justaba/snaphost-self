@@ -1,0 +1,9 @@
+.root {
+  box-sizing: border-box;
+}
+
+.root :global(.auth-signup-form) > label > span {
+  color: #90958e;
+  font-size: 9px;
+  font-weight: 400;
+}

@@ -1,0 +1,38 @@
+.root {
+  box-sizing: border-box;
+}
+
+.root :global(.section-kicker) {
+  font-size: 13px;
+}
+
+.root :global(.document-card) h2 {
+  font-size: 34px;
+}
+
+.root :global(.document-card) p {
+  font-size: 15px;
+  line-height: 1.62;
+}
+
+.root :global(.documents-help) h2 {
+  font-size: 30px;
+}
+
+.root :global(.documents-help) p {
+  font-size: 15px;
+}
+
+@media (max-width: 760px) {
+  .root :global(.section-kicker) {
+    font-size: 12px;
+  }
+
+  .root :global(.document-card) h2 {
+    font-size: 31px;
+  }
+
+  .root :global(.document-card) p {
+    font-size: 14px;
+  }
+}

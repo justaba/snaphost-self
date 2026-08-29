@@ -1,1 +1,15 @@
+* text=auto
+
+# The shell entry points are read by bash on a Linux host, so CRLF would make
+# them unrunnable rather than merely untidy.
 *.sh text eol=lf
+
+# The panel's sources came from a repository that pinned these, and keeping the
+# pin avoids a whole-tree line-ending diff the first time anyone formats them.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf

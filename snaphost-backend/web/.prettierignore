@@ -1,0 +1,9 @@
+coverage
+dist
+node_modules
+*.tsbuildinfo
+pnpm-lock.yaml
+src/shared/config/legal/content/*.md
+docs/*.md
+README.md
+snaphost-api.md

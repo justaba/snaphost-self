@@ -1,0 +1,7 @@
+.root {
+  overflow: hidden;
+  padding-inline: 1rem;
+  border: 1px solid #e4e4e7;
+  border-radius: 0.5rem;
+  background: #fff;
+}
