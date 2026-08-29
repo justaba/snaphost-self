@@ -1,30 +1,24 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"strconv"
 )
 
-// Services holds URLs for the backend microservices
-type Services struct {
-	UserBilling    string
-	AIOrchestrator string
-}
-
-// Config holds all configuration for the API Gateway
+// Config holds the HTTP edge's configuration.
+//
+// It shrank when Supabase went. SUPABASE_URL and SUPABASE_WEBHOOK_SECRET
+// existed for an identity provider on the internet; WEBHOOK_SECRET, REDIS_URL
+// and the downstream service URLs were left without a reader when the gateway
+// stopped proxying and the signup webhook was deleted. WEBHOOK_SECRET is still
+// required — by the control plane's own config, which is what actually uses it.
 type Config struct {
-	Port                  string
-	RedisURL              string
-	SupabaseURL           string
-	SupabaseWebhookSecret string
-	WebhookSecret         string
-	Services              Services
-	RateLimitIP           int
-	RateLimitUser         int
-	RateLimitDeploy       int
-	// MaxUploadSizeMB bounds POST /api/v1/deploys/upload bodies at the
-	// gateway; keep in sync with user-billing's MAX_UPLOAD_SIZE_MB.
+	Port            string
+	RateLimitIP     int
+	RateLimitUser   int
+	RateLimitDeploy int
+	// MaxUploadSizeMB bounds POST /api/v1/deploys/upload bodies at the edge;
+	// keep in sync with the control plane's MAX_UPLOAD_SIZE_MB.
 	MaxUploadSizeMB int
 	// RBACModelPath and RBACPolicyPath locate the Casbin files. They used to be
 	// bare relative names resolved against the working directory, which worked
@@ -34,37 +28,17 @@ type Config struct {
 	RBACPolicyPath string
 }
 
-// Load reads configuration from environment variables and applies defaults
+// Load reads configuration from environment variables and applies defaults.
 func Load() (*Config, error) {
-	cfg := &Config{
-		Port:                  getEnv("PORT", "8080"),
-		RedisURL:              getEnv("REDIS_URL", "redis://redis:6379"),
-		SupabaseURL:           getEnv("SUPABASE_URL", ""),
-		SupabaseWebhookSecret: getEnv("SUPABASE_WEBHOOK_SECRET", ""),
-		WebhookSecret:         getEnv("WEBHOOK_SECRET", ""),
-		Services: Services{
-			UserBilling:    getEnv("USER_BILLING_URL", "http://user-billing:8081"),
-			AIOrchestrator: getEnv("AI_ORCHESTRATOR_URL", "http://ai-orchestrator:8087"),
-		},
+	return &Config{
+		Port:            getEnv("PORT", "8080"),
 		RateLimitIP:     getEnvAsInt("RATE_LIMIT_IP", 30),
 		RateLimitUser:   getEnvAsInt("RATE_LIMIT_USER", 120),
 		RateLimitDeploy: getEnvAsInt("RATE_LIMIT_DEPLOY", 5),
 		MaxUploadSizeMB: getEnvAsInt("MAX_UPLOAD_SIZE_MB", 50),
 		RBACModelPath:   getEnv("RBAC_MODEL_PATH", "rbac_model.conf"),
 		RBACPolicyPath:  getEnv("RBAC_POLICY_PATH", "rbac_policy.csv"),
-	}
-
-	if cfg.SupabaseURL == "" {
-		return nil, errors.New("SUPABASE_URL environment variable is required")
-	}
-	if cfg.SupabaseWebhookSecret == "" {
-		return nil, errors.New("SUPABASE_WEBHOOK_SECRET environment variable is required")
-	}
-	if cfg.WebhookSecret == "" {
-		return nil, errors.New("WEBHOOK_SECRET environment variable is required")
-	}
-
-	return cfg, nil
+	}, nil
 }
 
 func getEnv(key, fallback string) string {

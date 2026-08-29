@@ -36,11 +36,11 @@ import (
 	aiservice "snaphost/internal/ai/service"
 	builderai "snaphost/internal/builder/ai"
 	builderapi "snaphost/internal/builder/api"
-	"snaphost/internal/control/account"
 	"snaphost/internal/control/apikey"
+	"snaphost/internal/control/auth"
 	"snaphost/internal/control/deploy"
 	"snaphost/internal/control/saga"
-	"snaphost/internal/gateway/webhooks"
+	"snaphost/internal/gateway/middleware"
 	"snaphost/internal/runtime/billing"
 	"snaphost/internal/runtime/runner"
 )
@@ -304,27 +304,46 @@ func (c *BillingClient) ListExpiredDeploys(ctx context.Context, limit int) ([]bi
 }
 
 // ---------------------------------------------------------------------------
-// identity webhook → control
-// ---------------------------------------------------------------------------
-
-// AccountCreator satisfies webhooks.BillingClient by recording the account
-// directly. The gateway used to POST this to itself over the loopback with a
-// shared secret; the caller and the callee are now the same process.
-type AccountCreator struct {
-	Repo *account.Repository
-}
-
-func (a *AccountCreator) CreateUser(ctx context.Context, req webhooks.CreateUserRequest) error {
-	id, err := uuid.Parse(req.ID)
-	if err != nil {
-		return fmt.Errorf("invalid user id %q: %w", req.ID, err)
-	}
-	return a.Repo.Upsert(ctx, id, req.Email)
-}
-
-// ---------------------------------------------------------------------------
 // gateway → control
 // ---------------------------------------------------------------------------
+
+// SessionVerifier satisfies middleware.SessionVerifier by reading the session
+// table directly.
+//
+// This is the browser's whole authentication path. It replaced a JWKS fetched
+// over the internet from Supabase and cached for an hour, which meant a panel
+// nobody could log into whenever that host was unreachable — and a signature
+// check whose trust root was a service this platform exists not to need.
+type SessionVerifier struct {
+	Service *auth.Service
+}
+
+func (v *SessionVerifier) Verify(ctx context.Context, token string) (middleware.Identity, error) {
+	session, err := v.Service.Verify(ctx, token)
+	if err != nil {
+		return middleware.Identity{}, err
+	}
+	return middleware.Identity{
+		UserID: session.UserID.String(),
+		Email:  session.Email,
+		Role:   session.Role,
+	}, nil
+}
+
+// DeployOwnership satisfies wslogs.DeployOwner. The log stream authorises the
+// subscriber against the deploy's owner, which needs a lookup the gateway has
+// no repository of its own for.
+type DeployOwnership struct {
+	Repo *deploy.Repository
+}
+
+func (o *DeployOwnership) Owner(ctx context.Context, deployID uuid.UUID) (string, error) {
+	d, err := o.Repo.Get(ctx, deployID)
+	if err != nil {
+		return "", err
+	}
+	return d.UserID.String(), nil
+}
 
 // KeyVerifier satisfies middleware.KeyVerifier by hashing the presented key
 // and looking it up directly.

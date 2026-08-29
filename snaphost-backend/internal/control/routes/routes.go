@@ -4,22 +4,32 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 
-	"snaphost/internal/control/account"
 	"snaphost/internal/control/admin"
 	"snaphost/internal/control/apikey"
+	"snaphost/internal/control/auth"
 	"snaphost/internal/control/deploy"
 	"snaphost/internal/control/domain"
+	"snaphost/internal/shared"
 )
 
 // Register sets up the public API surface. Handlers read the identity from
-// the X-User-ID header the gateway middleware writes from a verified token.
+// the X-User-ID header the gateway middleware writes from a verified session
+// or API key.
 //
 // domainHandler may be nil when custom domains are not configured.
-func Register(r *gin.Engine, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, domainHandler *domain.Handler, adminHandler *admin.Handler) {
+func Register(r *gin.Engine, authHandler *auth.Handler, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, domainHandler *domain.Handler, adminHandler *admin.Handler) {
 	// The identity headers are written by Enrich, which runs last in the
 	// middleware chain and deletes them when the request is unauthenticated.
 	api := r.Group("/api/v1")
 	{
+		// The operator's session. Login is the one route in this file that runs
+		// unauthenticated — it is in middleware.PublicRoutes, and adding a
+		// route here without adding it there means Casbin refuses it for the
+		// "guest" role every time.
+		if authHandler != nil {
+			authHandler.Register(api)
+		}
+
 		// API key management for non-browser clients.
 		api.POST("/keys", apikeyHandler.CreateKey)
 		api.GET("/keys", apikeyHandler.ListKeys)
@@ -71,21 +81,21 @@ func Register(r *gin.Engine, deployHandler *deploy.Handler, apikeyHandler *apike
 // RegisterInternal sets up the routes authenticated by the shared webhook
 // secret rather than a user token.
 //
-// It is registered separately from the public surface, and before the JWT and
+// It is registered separately from the public surface, and before the Auth and
 // Casbin middleware, because these callers present a secret rather than a
-// token — running them through user authentication would reject every one.
+// session — running them through user authentication would reject every one.
 // The split used to be enforced by them living in a different process.
-func RegisterInternal(r *gin.Engine, accountHandler *account.Handler, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, tlsHandler *domain.TLSHandler, webhookSecret string) {
-	// Internal routes — protected by webhook secret, never exposed through api-gateway.
+func RegisterInternal(r *gin.Engine, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, tlsHandler *domain.TLSHandler, webhookSecret string) {
+	// Internal routes — protected by webhook secret, never exposed publicly.
+	//
+	// POST /users used to live here: it recorded the account behind a user_id
+	// and was called by Supabase's signup webhook. Both are gone, and with them
+	// the last caller of that endpoint — an account is created by the operator
+	// bootstrap now, with a password, which that endpoint could never set.
 	internal := r.Group("/internal")
-	internal.Use(account.WebhookSecretMiddleware(webhookSecret))
+	internal.Use(shared.WebhookAuth(webhookSecret))
 	{
-		// Records the account behind a user_id. Called by the identity
-		// provider's signup webhook; it is the only path an email takes into
-		// this database.
-		internal.POST("/users", accountHandler.Create)
-
-		// API-key verification called by api-gateway to resolve a key to a user.
+		// API-key verification, kept for a caller outside this process.
 		internal.POST("/keys/verify", apikeyHandler.VerifyKey)
 
 		// Deploy lifecycle endpoints called by runner-svc / builder-svc.

@@ -12,14 +12,16 @@ import (
 	"go.uber.org/zap"
 )
 
-// RoleHeader carries the caller's role from api-gateway. The gateway's Enrich
-// middleware sets it from the verified JWT (or API key) and deletes it when
-// the request is unauthenticated, so a client cannot supply its own — the same
-// trust model X-User-ID already relies on. user-billing publishes no host port,
-// so the gateway is the only reachable caller.
+// RoleHeader carries the caller's role. The gateway's Enrich middleware sets
+// it from the verified session (or API key) and deletes it when the request is
+// unauthenticated, so a client cannot supply its own — the same trust model
+// X-User-ID already relies on.
 const RoleHeader = "X-User-Role"
 
-// RoleAdmin is the role name the Supabase `snaphost_role` claim must carry.
+// RoleAdmin is the role name that opens this console. It comes from the users
+// table now: it used to be a `snaphost_role` JWT claim written by a Supabase
+// Postgres hook configured by hand, so an install where nobody had performed
+// that step silently had no administrator at all.
 const RoleAdmin = "admin"
 
 // Pagination bounds. The maximum exists so one request cannot ask for the

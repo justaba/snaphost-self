@@ -9,24 +9,39 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// CORS returns a gin middleware that configures Cross-Origin Resource Sharing.
+// AllowedOrigins reads CORS_ALLOW_ORIGINS (comma-separated). Empty means no
+// cross-origin caller is configured, which for a panel served by this same
+// binary is the normal case.
 //
-// Allowed origins are read from the CORS_ALLOW_ORIGINS environment variable
-// (comma-separated list). If the variable is empty, CORS headers are not added.
+// Exported because the WebSocket endpoint needs the same list: it authenticates
+// from a cookie, so an unchecked Origin would let any page the operator visits
+// open a socket as them. CORS does not cover WebSocket handshakes, so the check
+// has to be made there by hand against the same configuration.
+func AllowedOrigins() []string {
+	raw := os.Getenv("CORS_ALLOW_ORIGINS")
+	if raw == "" {
+		return nil
+	}
+
+	var origins []string
+	for _, origin := range strings.Split(raw, ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
+}
+
+// CORS returns a gin middleware that configures Cross-Origin Resource Sharing.
 //
 // Example for local dev in .env:
 //
 //	CORS_ALLOW_ORIGINS=http://localhost:5173,http://localhost:3000
 func CORS() gin.HandlerFunc {
-	raw := os.Getenv("CORS_ALLOW_ORIGINS")
-	if raw == "" {
+	origins := AllowedOrigins()
+	if len(origins) == 0 {
 		// No origins configured — return a no-op handler
 		return func(c *gin.Context) { c.Next() }
-	}
-
-	origins := strings.Split(raw, ",")
-	for i, o := range origins {
-		origins[i] = strings.TrimSpace(o)
 	}
 
 	cfg := cors.Config{

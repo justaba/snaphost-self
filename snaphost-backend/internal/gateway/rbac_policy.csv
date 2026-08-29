@@ -1,5 +1,6 @@
-p, guest, /api/v1/auth/register, POST
-p, guest, /api/v1/auth/login, POST
+p, user, /api/v1/auth/logout, POST
+p, user, /api/v1/auth/me, GET
+p, user, /api/v1/auth/password, POST
 
 p, user, /api/v1/deploys, POST
 p, user, /api/v1/deploys/upload, POST
@@ -7,8 +8,6 @@ p, user, /api/v1/deploys, GET
 p, user, /api/v1/deploys/:id, GET
 p, user, /api/v1/deploys/:id, DELETE
 p, user, /api/v1/deploys/:id/logs, GET
-p, user, /api/v1/profile, GET
-p, user, /api/v1/profile, PATCH
 p, user, /api/v1/keys, POST
 p, user, /api/v1/keys, GET
 p, user, /api/v1/keys/:id, DELETE

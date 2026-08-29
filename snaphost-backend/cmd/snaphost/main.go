@@ -9,13 +9,13 @@
 //
 //  1. configuration for every area, so a missing variable fails before any
 //     connection is opened;
-//  1. configuration for every area, so a missing variable fails before any
-//     connection is opened;
 //  2. the store, opened and migrated on one handle;
-//  3. one Redis client, shared by everything;
-//  4. components, then the adapters that join them;
-//  5. one HTTP engine;
-//  6. background loops last, so nothing starts working before the thing it
+//  3. the operator account, so the platform can be logged into before it can
+//     be asked to authenticate anyone;
+//  4. one Redis client, shared by everything;
+//  5. components, then the adapters that join them;
+//  6. one HTTP engine;
+//  7. background loops last, so nothing starts working before the thing it
 //     reports to exists.
 package main
 
@@ -55,9 +55,9 @@ import (
 	builderscan "snaphost/internal/builder/scan"
 	builderunpack "snaphost/internal/builder/unpack"
 	builderupload "snaphost/internal/builder/upload"
-	"snaphost/internal/control/account"
 	"snaphost/internal/control/admin"
 	"snaphost/internal/control/apikey"
+	"snaphost/internal/control/auth"
 	controlconfig "snaphost/internal/control/config"
 	controldb "snaphost/internal/control/db"
 	"snaphost/internal/control/deploy"
@@ -70,7 +70,6 @@ import (
 	"snaphost/internal/control/upload"
 	gatewayconfig "snaphost/internal/gateway/config"
 	"snaphost/internal/gateway/middleware"
-	"snaphost/internal/gateway/webhooks"
 	"snaphost/internal/gateway/wslogs"
 	runtimebackend "snaphost/internal/runtime/backend"
 	runtimedocker "snaphost/internal/runtime/backend/docker"
@@ -135,29 +134,37 @@ func main() {
 		}
 	}
 
+	// 3. The operator account, before anything can be asked to authenticate.
+	//    On first start this generates a password and prints it once; on every
+	//    start after that it does nothing. It is fatal because a platform
+	//    nobody can log into is not a platform that has started.
+	if err := auth.Bootstrap(ctx, auth.NewRepository(pool), ctlCfg.OperatorEmail, log); err != nil {
+		log.Fatal("operator bootstrap failed", zap.Error(err))
+	}
+
 	rdb, err := newRedis(ctx, ctlCfg.RedisURL)
 	if err != nil {
 		log.Fatal("redis connection failed", zap.Error(err))
 	}
 	defer rdb.Close()
 
-	// 4. Components, bottom up.
+	// 5. Components, bottom up.
 	ai := buildAI(pool, aiCfg, log)
 	rt := buildRuntime(pool, rtCfg, rdb, log)
 	bld := buildBuilder(pool, bldCfg, aiCfg, ai, rdb, log)
 	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, rdb, log)
 
-	// 5. One engine. The middleware order is the gateway's, unchanged and
+	// 6. One engine. The middleware order is the gateway's, unchanged and
 	//    load-bearing: rate limiting before authentication so an IP limit
 	//    applies to unauthenticated traffic too, and Enrich last so the
 	//    identity headers downstream handlers read are written from a verified
 	//    token and deleted when there is none.
-	engine, err := buildEngine(gwCfg, ctlCfg, ctl, ai.handler, rdb, log)
+	engine, err := buildEngine(gwCfg, ctlCfg, ctl, ai.handler, pool, rdb, log)
 	if err != nil {
 		log.Fatal("failed to build HTTP engine", zap.Error(err))
 	}
 
-	// 6. Background loops, after everything they touch exists.
+	// 7. Background loops, after everything they touch exists.
 	startBackground(ctx, ctlCfg, rtCfg, bldCfg, ctl, bld, rt, log)
 
 	srv := &http.Server{
@@ -335,13 +342,13 @@ type controlParts struct {
 	sagaPub    logs.Publisher
 	orch       *saga.Orchestrator
 	verifier   *domain.Verifier
-	account    *account.Handler
+	auth       *auth.Handler
+	authSvc    *auth.Service
 	deploy     *deploy.Handler
 	apikey     *apikey.Handler
 	domain     *domain.Handler
 	tls        *domain.TLSHandler
 	admin      *admin.Handler
-	accountRep *account.Repository
 	apikeyRepo *apikey.Repository
 }
 
@@ -353,7 +360,7 @@ func buildControl(
 	rdb *redis.Client,
 	log *zap.Logger,
 ) controlParts {
-	accountRepo := account.NewRepository(pool)
+	authSvc := auth.NewService(auth.NewRepository(pool), time.Duration(cfg.SessionTTLHours)*time.Hour)
 	dRepo := deployRepo(pool, cfg)
 	apikeyRepo := apikey.NewRepository(pool)
 	projectRepo := project.NewRepository(pool)
@@ -410,13 +417,13 @@ func buildControl(
 			time.Duration(cfg.DomainReverifyHours)*time.Hour,
 			time.Duration(cfg.DomainVerifyGraceHours)*time.Hour,
 			50),
-		account:    account.NewHandler(accountRepo, log),
+		auth:       auth.NewHandler(authSvc, auth.CookieOptions{Secure: cfg.SessionCookieSecure}, log),
+		authSvc:    authSvc,
 		deploy:     deployHandler,
 		apikey:     apikey.NewHandler(apikeyRepo, log),
 		domain:     domainHandler,
 		tls:        domain.NewTLSHandler(domainRepo, log),
 		admin:      admin.NewHandler(adminRepo, log),
-		accountRep: accountRepo,
 		apikeyRepo: apikeyRepo,
 	}
 }
@@ -462,6 +469,7 @@ func buildEngine(
 	ctlCfg *controlconfig.Config,
 	ctl controlParts,
 	aiHandler *aiapi.Handler,
+	pool *sql.DB,
 	rdb *redis.Client,
 	log *zap.Logger,
 ) (*gin.Engine, error) {
@@ -470,41 +478,37 @@ func buildEngine(
 		return nil, err
 	}
 
-	jwks := middleware.NewJWKSCache(gwCfg.SupabaseURL)
-	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := jwks.Prefetch(fetchCtx); err != nil {
-		return nil, err
-	}
+	sessions := &wiring.SessionVerifier{Service: ctl.authSvc}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 
 	// Registered before all middleware, exactly as before: /health must answer
-	// even when authentication is broken, and the WebSocket authenticates from
-	// a query parameter because browsers cannot set headers on one.
+	// even when authentication is broken, and the WebSocket authenticates
+	// itself because a browser cannot put a header on a handshake.
+	//
+	// The startup JWKS prefetch that used to sit here is gone. It fetched
+	// Supabase's public keys and was fatal on failure, so this process refused
+	// to start whenever an external SaaS was unreachable — for a self-hosted
+	// platform that is a dependency on somebody else's uptime to run at all.
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "snaphost"})
 	})
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
-	r.GET("/ws/logs/:id", wslogs.Handler(rdb, jwks, log))
-
-	// The identity provider's signup webhook. It keeps the shared secret it
-	// always had, because this caller genuinely is outside the process — and
-	// it now records the account directly instead of posting to itself.
-	webhooks.Register(r, webhooks.NewWebhookHandler(gwCfg, &wiring.AccountCreator{Repo: ctl.accountRep}, log))
+	r.GET("/ws/logs/:id", wslogs.Handler(rdb, sessions,
+		&wiring.DeployOwnership{Repo: deployRepo(pool, nil)}, middleware.AllowedOrigins(), log))
 
 	// Secret-authenticated routes, also before the user middleware: these
-	// callers present a shared secret rather than a token, so running them
-	// through JWT and Casbin would reject every one. Registering them after
+	// callers present a shared secret rather than a session, so running them
+	// through Auth and Casbin would reject every one. Registering them after
 	// the chain is the mistake this ordering exists to prevent.
-	controlroutes.RegisterInternal(r, ctl.account, ctl.deploy, ctl.apikey, ctl.tls, ctlCfg.WebhookSecret)
+	controlroutes.RegisterInternal(r, ctl.deploy, ctl.apikey, ctl.tls, ctlCfg.WebhookSecret)
 
 	r.Use(gin.Recovery())
 	r.Use(middleware.CORS())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger(log))
-	r.Use(middleware.JWT(gwCfg, jwks, &wiring.KeyVerifier{Repo: ctl.apikeyRepo, Log: log}))
+	r.Use(middleware.Auth(sessions, &wiring.KeyVerifier{Repo: ctl.apikeyRepo, Log: log}))
 	r.Use(middleware.RateLimit(rdb, gwCfg))
 	r.Use(middleware.Casbin(enforcer))
 	r.Use(middleware.Enrich())
@@ -517,7 +521,7 @@ func buildEngine(
 	// The application routes, registered directly rather than proxied. They
 	// read X-User-ID from the request headers Enrich just wrote, so the
 	// contract between the two halves is unchanged.
-	controlroutes.Register(r, ctl.deploy, ctl.apikey, ctl.domain, ctl.admin)
+	controlroutes.Register(r, ctl.auth, ctl.deploy, ctl.apikey, ctl.domain, ctl.admin)
 	aiHandler.Register(r.Group("/api/v1/ai"))
 
 	return r, nil

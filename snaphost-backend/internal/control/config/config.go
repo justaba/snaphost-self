@@ -27,6 +27,20 @@ type Config struct {
 	// RunMigrations controls whether database migrations run automatically at startup.
 	RunMigrations bool
 
+	// OperatorEmail is the address the first-start operator account is created
+	// under. It is only read when no account has a password yet, so changing it
+	// later renames nothing — the account already exists.
+	OperatorEmail string
+	// SessionTTLHours is how long a session lives. It slides forward while the
+	// session is in use, so this is an idle timeout rather than a hard cap.
+	SessionTTLHours int
+	// SessionCookieSecure forces the Secure attribute on the session cookie on
+	// or off. Nil — the variable unset — derives it from the request, which is
+	// what a fresh install needs: the operator reaches a new box over plain
+	// HTTP to log in and put a certificate on it, and a cookie the browser
+	// refuses to send makes that impossible.
+	SessionCookieSecure *bool
+
 	// BuilderSvcURL is the base URL of builder-svc's internal API. Used
 	// by the saga orchestrator to enqueue builds.
 	BuilderSvcURL string
@@ -135,6 +149,24 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.RunMigrations = runMigrations
+
+	// Optional: OPERATOR_EMAIL, SESSION_TTL_HOURS (default 168 = one week),
+	// SESSION_COOKIE_SECURE (unset = derive from the request).
+	cfg.OperatorEmail = envOrDefault("OPERATOR_EMAIL", "operator@localhost")
+	sessionTTL, err := parseIntEnv("SESSION_TTL_HOURS", 168)
+	if err != nil {
+		return nil, err
+	}
+	if sessionTTL <= 0 {
+		return nil, fmt.Errorf("config: SESSION_TTL_HOURS must be positive, got %d", sessionTTL)
+	}
+	cfg.SessionTTLHours = sessionTTL
+
+	cookieSecure, err := parseOptionalBoolEnv("SESSION_COOKIE_SECURE")
+	if err != nil {
+		return nil, err
+	}
+	cfg.SessionCookieSecure = cookieSecure
 
 	// Optional: SAGA_WORKER_ENABLED (default true)
 	sagaEnabled, err := parseBoolEnv("SAGA_WORKER_ENABLED", true)
@@ -250,6 +282,20 @@ func parseIntEnv(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("config: %s is not a valid integer: %w", key, err)
 	}
 	return v, nil
+}
+
+// parseOptionalBoolEnv distinguishes "unset" from "set to false", which
+// parseBoolEnv cannot: a nil result is a caller's cue to decide for itself.
+func parseOptionalBoolEnv(key string) (*bool, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return nil, fmt.Errorf("config: %s is not a valid boolean: %w", key, err)
+	}
+	return &v, nil
 }
 
 func parseBoolEnv(key string, fallback bool) (bool, error) {

@@ -1,7 +1,7 @@
 // Package apikey issues and verifies long-lived API keys that let non-browser
-// clients (MCP server, editor extension, CLI) authenticate as a user without the
-// Supabase browser JWT flow. Only the SHA-256 hash of a key is persisted; the
-// plaintext secret is returned to the caller once at creation.
+// clients (MCP server, editor extension, CLI) authenticate without a browser
+// session. Only the SHA-256 hash of a key is persisted; the plaintext secret is
+// returned to the caller once at creation.
 package apikey
 
 import (
@@ -14,7 +14,7 @@ import (
 
 // keyPrefix is the human-visible marker identifying a SnapHost API key. The
 // gateway uses it to decide whether an Authorization bearer value is an API key
-// or a Supabase JWT.
+// or a credential it does not accept.
 const keyPrefix = "sk_"
 
 // secretBytes is the number of random bytes in a key's secret portion.
