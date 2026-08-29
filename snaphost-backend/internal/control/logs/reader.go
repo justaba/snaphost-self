@@ -2,75 +2,111 @@ package logs
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
+	"strconv"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/google/uuid"
+
+	"snaphost/internal/logbus"
 )
 
-// Reader fetches buffered log history from Redis Streams. It is the
-// counterpart to RedisPublisher's XADD — every line that goes to
-// logs-history:{deploy_id} is recoverable here for catch-up reads.
-type Reader struct {
-	rdb *redis.Client
-}
-
-// NewReader constructs a Reader over the given Redis client.
-func NewReader(rdb *redis.Client) *Reader {
-	return &Reader{rdb: rdb}
-}
-
-// HistoryEntry is one stream entry annotated with its Redis Stream ID.
-// The ID can be passed back as the `since` cursor on the next request.
+// HistoryEntry is one history line with the cursor identifying it. The cursor
+// is an opaque string the client passes back as `since`; it was a Redis stream
+// id and is now a sequence number, and no caller is supposed to parse it.
 type HistoryEntry struct {
 	ID   string  `json:"id"`
 	Line LogLine `json:"line"`
 }
 
-// Read returns up to limit entries from logs-history:{deploy_id} starting
-// strictly after the given since cursor. Pass since="" (or "0") for the
-// full history.
-func (r *Reader) Read(ctx context.Context, deployID string, since string, limit int) ([]HistoryEntry, string, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 200
-	}
-	stream := "logs-history:" + deployID
-	start := exclusiveStart(since)
-
-	msgs, err := r.rdb.XRangeN(ctx, stream, start, "+", int64(limit)).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil, "", nil
-		}
-		return nil, "", fmt.Errorf("xrange %s: %w", stream, err)
-	}
-
-	out := make([]HistoryEntry, 0, len(msgs))
-	for _, m := range msgs {
-		raw, ok := m.Values["line"].(string)
-		if !ok {
-			continue
-		}
-		var ll LogLine
-		if err := json.Unmarshal([]byte(raw), &ll); err != nil {
-			continue
-		}
-		out = append(out, HistoryEntry{ID: m.ID, Line: ll})
-	}
-	next := ""
-	if n := len(out); n > 0 {
-		next = out[n-1].ID
-	}
-	return out, next, nil
+// Archive reads the log tail stored against a deploy that failed.
+// *deploy.Repository satisfies it.
+type Archive interface {
+	LogTail(ctx context.Context, deployID uuid.UUID) ([]byte, error)
 }
 
-// exclusiveStart turns a "last seen ID" cursor into the XRANGE start
-// argument for "strictly after". An empty cursor yields "-" (full history).
-func exclusiveStart(since string) string {
-	if since == "" || since == "-" || since == "0" || since == "0-0" {
-		return "-"
+// Reader serves log history from two places, and which one it uses is not a
+// fallback so much as a consequence of what each holds.
+//
+// While a deploy is live its lines are in memory, bounded, and that is the
+// only complete copy. Once it has failed the last of them are in the database,
+// which is what survives a restart. Reading the bus first is therefore reading
+// the more complete source; the archive answers when the bus has forgotten.
+type Reader struct {
+	bus     *logbus.Bus
+	archive Archive
+}
+
+// NewReader constructs a Reader. archive may be nil, in which case history
+// stops being available once the bus has dropped a deploy.
+func NewReader(bus *logbus.Bus, archive Archive) *Reader {
+	return &Reader{bus: bus, archive: archive}
+}
+
+// Read returns up to limit entries recorded strictly after since.
+func (r *Reader) Read(ctx context.Context, deployID string, since string, limit int) ([]HistoryEntry, string, error) {
+	if entries, next := r.bus.History(deployID, since, limit); len(entries) > 0 {
+		return convert(entries), next, nil
 	}
-	// Redis Stream supports "(" prefix to mean exclusive lower bound.
-	return "(" + since
+
+	// Nothing live. Either the deploy never logged anything, or it ended and
+	// its topic was released — in which case the archive is what is left.
+	if r.archive == nil {
+		return nil, "", nil
+	}
+	id, err := uuid.Parse(deployID)
+	if err != nil {
+		return nil, "", nil
+	}
+	blob, err := r.archive.LogTail(ctx, id)
+	if err != nil || len(blob) == 0 {
+		return nil, "", err
+	}
+
+	return page(logbus.DecodeLines(blob), since, limit)
+}
+
+// page applies the same cursor contract to an archived tail that the bus
+// applies to live history, so a client polling across the moment a deploy ends
+// does not have to know which source answered.
+func page(lines []logbus.Line, since string, limit int) ([]HistoryEntry, string, error) {
+	if limit <= 0 || limit > logbus.DefaultHistory {
+		limit = 200
+	}
+
+	start := 0
+	if since != "" {
+		if seq, err := strconv.Atoi(since); err == nil && seq >= 0 {
+			start = seq + 1
+		}
+	}
+	if start >= len(lines) {
+		return nil, since, nil
+	}
+	end := start + limit
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	out := make([]HistoryEntry, 0, end-start)
+	for i := start; i < end; i++ {
+		out = append(out, HistoryEntry{ID: strconv.Itoa(i), Line: fromBus(lines[i])})
+	}
+	return out, out[len(out)-1].ID, nil
+}
+
+func convert(entries []logbus.Entry) []HistoryEntry {
+	out := make([]HistoryEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, HistoryEntry{ID: e.ID, Line: fromBus(e.Line)})
+	}
+	return out
+}
+
+func fromBus(l logbus.Line) LogLine {
+	return LogLine{
+		DeployID:  l.DeployID,
+		Stage:     l.Stage,
+		Text:      l.Text,
+		Level:     l.Level,
+		Timestamp: l.Timestamp,
+	}
 }

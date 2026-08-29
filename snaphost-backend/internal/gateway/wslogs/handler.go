@@ -16,6 +16,7 @@ package wslogs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -25,10 +26,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"snaphost/internal/gateway/middleware"
+	"snaphost/internal/logbus"
 	"snaphost/internal/shared"
 )
 
@@ -50,10 +51,10 @@ type DeployOwner interface {
 }
 
 // Handler upgrades the connection, authenticates it from the session cookie,
-// checks that the deploy belongs to the caller, then bridges Redis pub/sub
-// messages on logs:{deploy_id} to the client until either side disconnects.
+// checks that the deploy belongs to the caller, then bridges the deploy's log
+// topic to the client until either side disconnects.
 func Handler(
-	rdb *redis.Client,
+	bus *logbus.Bus,
 	sessions middleware.SessionVerifier,
 	deploys DeployOwner,
 	allowedOrigins []string,
@@ -108,7 +109,7 @@ func Handler(
 		}
 		defer conn.Close()
 
-		stream(c.Request.Context(), conn, rdb, deployID.String(), logger)
+		stream(c.Request.Context(), conn, bus, deployID.String(), logger)
 	}
 }
 
@@ -140,20 +141,17 @@ func originAllowed(r *http.Request, allowed []string) bool {
 	return false
 }
 
-// stream subscribes to logs:{deployID} and pumps messages to the WS
-// client until the parent context is cancelled, the client disconnects,
-// or the subscription closes.
-func stream(ctx context.Context, conn *websocket.Conn, rdb *redis.Client, deployID string, logger *zap.Logger) {
-	channel := "logs:" + deployID
-	sub := rdb.Subscribe(ctx, channel)
-	defer sub.Close()
-
-	// Wait for the SUBSCRIBE confirmation so we don't miss messages
-	// between Subscribe returning and the goroutine being attached.
-	if _, err := sub.Receive(ctx); err != nil {
-		logger.Warn("ws subscribe failed", zap.String("channel", channel), zap.Error(err))
-		return
-	}
+// stream subscribes to the deploy's log topic and pumps lines to the WS client
+// until the parent context is cancelled, the client disconnects, or the
+// subscription ends.
+func stream(ctx context.Context, conn *websocket.Conn, bus *logbus.Bus, deployID string, logger *zap.Logger) {
+	// Subscribing before the handshake is not possible — the upgrade has to
+	// happen first — so the window between the ownership check and here can
+	// drop lines. It could before too: Redis pub/sub had the same gap between
+	// SUBSCRIBE returning and the reader attaching, and the history endpoint
+	// is what closes it either way.
+	lines, unsubscribe := bus.Subscribe(deployID)
+	defer unsubscribe()
 
 	_ = conn.SetReadDeadline(time.Now().Add(readWait))
 	conn.SetPongHandler(func(string) error {
@@ -174,7 +172,6 @@ func stream(ctx context.Context, conn *websocket.Conn, rdb *redis.Client, deploy
 	pingTicker := time.NewTicker(pingPeriod)
 	defer pingTicker.Stop()
 
-	msgCh := sub.Channel()
 	for {
 		select {
 		case <-ctx.Done():
@@ -186,12 +183,21 @@ func stream(ctx context.Context, conn *websocket.Conn, rdb *redis.Client, deploy
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
-		case msg, ok := <-msgCh:
+		case line, ok := <-lines:
 			if !ok {
 				return
 			}
+			// Encoding happens here rather than at the publisher. Redis
+			// carried bytes, so every publisher marshalled its own copy of the
+			// same line for every subscriber; the bus carries the struct, so
+			// this runs once per line per client — and not at all when nobody
+			// is watching, which is the common case during a build.
+			payload, err := json.Marshal(line)
+			if err != nil {
+				continue
+			}
 			_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload)); err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
 				if !errors.Is(err, websocket.ErrCloseSent) {
 					logger.Debug("ws write failed", zap.Error(err))
 				}

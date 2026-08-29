@@ -36,12 +36,16 @@ import (
 	aiservice "snaphost/internal/ai/service"
 	builderai "snaphost/internal/builder/ai"
 	builderapi "snaphost/internal/builder/api"
+	builderlogs "snaphost/internal/builder/logs"
 	"snaphost/internal/control/apikey"
 	"snaphost/internal/control/auth"
 	"snaphost/internal/control/deploy"
+	controllogs "snaphost/internal/control/logs"
 	"snaphost/internal/control/saga"
 	"snaphost/internal/gateway/middleware"
+	"snaphost/internal/logbus"
 	"snaphost/internal/runtime/billing"
+	runtimelogs "snaphost/internal/runtime/logs"
 	"snaphost/internal/runtime/runner"
 )
 
@@ -373,4 +377,75 @@ func (v *KeyVerifier) Verify(ctx context.Context, key string) (string, error) {
 		}
 	}(keyID)
 	return userID.String(), nil
+}
+
+// ---------------------------------------------------------------------------
+// everything → the log bus
+// ---------------------------------------------------------------------------
+
+// The control plane, the build pipeline and the runtime each declare their own
+// LogLine and Publisher, identically, because they were three processes that
+// met on a Redis channel. Rather than collapse the three into one type — a wide
+// diff through every call site that publishes a log line — each keeps its
+// interface and gets an adapter onto internal/logbus.
+//
+// None of them can fail any more. The error in the signature is what the Redis
+// implementations returned nil for anyway: publishing a log line sits on the
+// build pipeline's critical path, and a caller has nothing useful to do about
+// it going wrong.
+
+// ControlLogPublisher satisfies logs.Publisher for the saga's progress lines.
+type ControlLogPublisher struct{ Bus *logbus.Bus }
+
+func (p *ControlLogPublisher) Publish(deployID string, line controllogs.LogLine) error {
+	p.Bus.Publish(deployID, logbus.Line{
+		Stage: line.Stage, Text: line.Text, Level: line.Level, Timestamp: line.Timestamp,
+	})
+	return nil
+}
+
+func (p *ControlLogPublisher) Close() error { return nil }
+
+// BuilderLogPublisher satisfies the build pipeline's logs.Publisher.
+type BuilderLogPublisher struct{ Bus *logbus.Bus }
+
+func (p *BuilderLogPublisher) Publish(deployID string, line builderlogs.LogLine) error {
+	p.Bus.Publish(deployID, logbus.Line{
+		Stage: line.Stage, Text: line.Text, Level: line.Level, Timestamp: line.Timestamp,
+	})
+	return nil
+}
+
+func (p *BuilderLogPublisher) Close() error { return nil }
+
+// RuntimeLogPublisher satisfies the runtime's logs.Publisher.
+type RuntimeLogPublisher struct{ Bus *logbus.Bus }
+
+func (p *RuntimeLogPublisher) Publish(deployID string, line runtimelogs.LogLine) error {
+	p.Bus.Publish(deployID, logbus.Line{
+		Stage: line.Stage, Text: line.Text, Level: line.Level, Timestamp: line.Timestamp,
+	})
+	return nil
+}
+
+func (p *RuntimeLogPublisher) Close() error { return nil }
+
+// LogArchiver satisfies deploy.LogArchiver: it hands the repository the tail of
+// what is still in memory when a deploy fails, encoded as an opaque blob.
+//
+// ArchiveLines bounds what is stored. The bus retains 1000 lines per deploy and
+// this keeps the last 200 of them, because the useful part of a failed build's
+// output is its end — the error and what led to it — and the column sits in a
+// row the admin console lists.
+type LogArchiver struct {
+	Bus   *logbus.Bus
+	Lines int
+}
+
+func (a *LogArchiver) Archive(deployID string) []byte {
+	n := a.Lines
+	if n <= 0 {
+		n = 200
+	}
+	return logbus.EncodeLines(a.Bus.Tail(deployID, n))
 }

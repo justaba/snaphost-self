@@ -30,6 +30,7 @@
 package logbus
 
 import (
+	"encoding/json"
 	"strconv"
 	"sync"
 	"time"
@@ -40,10 +41,12 @@ const (
 	// DefaultHistory is how many lines are retained per deploy. The same
 	// value the `logs-history:` stream used as MAXLEN.
 	DefaultHistory = 1000
-	// DefaultTopics caps how many deploys hold history at once. Topics are
-	// dropped explicitly when a deploy reaches a terminal state; this is the
-	// backstop for the case where that call is missed, so a long-running
-	// process cannot accumulate them without limit.
+	// DefaultTopics caps how many deploys hold history at once, and is what
+	// bounds this package's memory rather than any explicit release: a deploy
+	// keeps its history after it ends, because reloading the page just after a
+	// build is exactly when someone wants to read it. Sixty-four full topics is
+	// under 10 MB, and a typical build is a few hundred lines rather than the
+	// thousand retained.
 	DefaultTopics = 64
 	// subscriberBuffer is how far behind a subscriber may fall before its
 	// lines start being dropped.
@@ -250,9 +253,12 @@ func (b *Bus) Tail(deployID string, n int) []Line {
 	return out
 }
 
-// Forget releases a deploy's retained history. Called when the deploy reaches
-// a terminal state, after its lines have been persisted if they were going to
-// be.
+// Forget releases a deploy's retained history.
+//
+// It is not called when a deploy merely ends — history outlives that on
+// purpose, and the topic cap is what reclaims it. This is for a deploy being
+// deleted, where keeping its output would be keeping a record of something the
+// operator asked to remove.
 //
 // It does not close subscriber channels, and that is not an oversight: a
 // channel is closed by exactly one owner, the function Subscribe handed back.
@@ -309,4 +315,39 @@ func (b *Bus) topicLocked(deployID string) *topic {
 	t := &topic{subs: make(map[uint64]chan Line), order: b.nextTopicN}
 	b.topics[deployID] = t
 	return t
+}
+
+// EncodeLines renders lines for storage as one JSON array.
+//
+// The codec lives here so that exactly two places know the encoding — the
+// adapter that archives a failed deploy's tail, and the reader that serves it
+// back — and the table in between stores an opaque blob. A nil or empty slice
+// encodes to nil rather than to "null", so "nothing was captured" and "the
+// column is unset" are the same thing to every reader.
+func EncodeLines(lines []Line) []byte {
+	if len(lines) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(lines)
+	if err != nil {
+		// Line has no field that can fail to marshal; a failure here would be
+		// a change to the struct, and losing an archived tail is not worth
+		// failing the status update that carries it.
+		return nil
+	}
+	return data
+}
+
+// DecodeLines parses what EncodeLines wrote. Malformed input yields no lines
+// rather than an error: the caller is serving a failed deploy's history, and a
+// corrupt archive should read as an empty one, not as a 500.
+func DecodeLines(data []byte) []Line {
+	if len(data) == 0 {
+		return nil
+	}
+	var lines []Line
+	if err := json.Unmarshal(data, &lines); err != nil {
+		return nil
+	}
+	return lines
 }

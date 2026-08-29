@@ -1,15 +1,12 @@
-// Package logs provides build pipeline log publishing to Redis pub/sub channels.
+// Package logs carries build pipeline output. The Publisher interface is
+// satisfied by an adapter over internal/logbus; it used to be a Redis pub/sub
+// client, because the builder was its own process and the browser reading its
+// output was on the far side of a broker.
 package logs
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
 	"time"
-
-	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
 )
 
 // LogLine represents a single line of build output published to the log channel.
@@ -32,68 +29,6 @@ type Publisher interface {
 	Publish(deployID string, line LogLine) error
 	// Close releases any resources held by the publisher.
 	Close() error
-}
-
-// RedisPublisher implements Publisher by publishing JSON-encoded log lines
-// to Redis pub/sub channels named logs:{deploy_id}.
-type RedisPublisher struct {
-	rdb *redis.Client
-	log *zap.Logger
-}
-
-// NewRedisPublisher creates a new RedisPublisher.
-func NewRedisPublisher(rdb *redis.Client, log *zap.Logger) *RedisPublisher {
-	return &RedisPublisher{rdb: rdb, log: log}
-}
-
-// Publish sends a log line to the Redis pub/sub channel for the given deploy.
-// Publish errors are logged but never returned — log publishing must not block
-// the build pipeline.
-func (p *RedisPublisher) Publish(deployID string, line LogLine) error {
-	line.DeployID = deployID
-	if line.Timestamp.IsZero() {
-		line.Timestamp = time.Now().UTC()
-	}
-
-	data, err := json.Marshal(line)
-	if err != nil {
-		p.log.Warn("failed to marshal log line",
-			zap.String("deploy_id", deployID),
-			zap.Error(err),
-		)
-		return nil
-	}
-
-	channel := fmt.Sprintf("logs:%s", deployID)
-	stream := fmt.Sprintf("logs-history:%s", deployID)
-	ctx := context.Background()
-	if err := p.rdb.Publish(ctx, channel, string(data)).Err(); err != nil {
-		p.log.Warn("failed to publish log line",
-			zap.String("deploy_id", deployID),
-			zap.String("channel", channel),
-			zap.Error(err),
-		)
-	}
-	if err := p.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: stream,
-		MaxLen: 1000,
-		Approx: true,
-		Values: map[string]any{"line": data},
-	}).Err(); err != nil {
-		// History persistence failure should not block the live channel.
-		p.log.Warn("failed to append log to history stream",
-			zap.String("deploy_id", deployID),
-			zap.String("stream", stream),
-			zap.Error(err),
-		)
-	}
-
-	return nil
-}
-
-// Close is a no-op for RedisPublisher — the Redis client lifecycle is managed externally.
-func (p *RedisPublisher) Close() error {
-	return nil
 }
 
 // StreamingWriter wraps a Publisher to implement io.Writer. It buffers incoming

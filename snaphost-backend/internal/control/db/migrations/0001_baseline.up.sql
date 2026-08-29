@@ -140,6 +140,15 @@ create table deploys (
     ttl_expires_at  text,
     last_request_at text,
     failure_reason  text,
+    -- The tail of the build output, captured when a deploy fails.
+    --
+    -- Log lines live in memory (internal/logbus) rather than in Redis, and
+    -- memory does not survive a restart. That is an acceptable loss for a
+    -- build someone watched succeed, and not for one that failed: its output
+    -- is the whole reason anyone opens the deploy again. So the last lines are
+    -- written here at the moment the status becomes 'failed', and nowhere
+    -- else — a successful build never touches this column.
+    log_tail        text,
     metadata        text not null default '{}',
     created_at      text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at      text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

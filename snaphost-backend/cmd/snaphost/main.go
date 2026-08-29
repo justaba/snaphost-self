@@ -48,7 +48,6 @@ import (
 	builderconfig "snaphost/internal/builder/config"
 	builderevents "snaphost/internal/builder/events"
 	buildergitcred "snaphost/internal/builder/gitcred"
-	builderlogs "snaphost/internal/builder/logs"
 	builderpipeline "snaphost/internal/builder/pipeline"
 	builderqueue "snaphost/internal/builder/queue"
 	builderregistry "snaphost/internal/builder/registry"
@@ -71,10 +70,10 @@ import (
 	gatewayconfig "snaphost/internal/gateway/config"
 	"snaphost/internal/gateway/middleware"
 	"snaphost/internal/gateway/wslogs"
+	"snaphost/internal/logbus"
 	runtimebackend "snaphost/internal/runtime/backend"
 	runtimedocker "snaphost/internal/runtime/backend/docker"
 	runtimeconfig "snaphost/internal/runtime/config"
-	runtimelogs "snaphost/internal/runtime/logs"
 	"snaphost/internal/runtime/runner"
 	"snaphost/internal/runtime/watchdog"
 	"snaphost/internal/wiring"
@@ -142,6 +141,10 @@ func main() {
 		log.Fatal("operator bootstrap failed", zap.Error(err))
 	}
 
+	// The in-process log bus. Deploy output used to meet on a Redis channel
+	// because four processes produced it; one process produces it now.
+	bus := logbus.New(0, 0)
+
 	rdb, err := newRedis(ctx, ctlCfg.RedisURL)
 	if err != nil {
 		log.Fatal("redis connection failed", zap.Error(err))
@@ -150,16 +153,16 @@ func main() {
 
 	// 5. Components, bottom up.
 	ai := buildAI(pool, aiCfg, log)
-	rt := buildRuntime(pool, rtCfg, rdb, log)
-	bld := buildBuilder(pool, bldCfg, aiCfg, ai, rdb, log)
-	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, rdb, log)
+	rt := buildRuntime(pool, rtCfg, bus, log)
+	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, rdb, log)
+	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, rdb, log)
 
 	// 6. One engine. The middleware order is the gateway's, unchanged and
 	//    load-bearing: rate limiting before authentication so an IP limit
 	//    applies to unauthenticated traffic too, and Enrich last so the
 	//    identity headers downstream handlers read are written from a verified
 	//    token and deleted when there is none.
-	engine, err := buildEngine(gwCfg, ctlCfg, ctl, ai.handler, pool, rdb, log)
+	engine, err := buildEngine(gwCfg, ctlCfg, ctl, ai.handler, pool, bus, rdb, log)
 	if err != nil {
 		log.Fatal("failed to build HTTP engine", zap.Error(err))
 	}
@@ -242,12 +245,12 @@ type runtimeParts struct {
 	billing *wiring.BillingClient
 }
 
-func buildRuntime(pool *sql.DB, cfg *runtimeconfig.Config, rdb *redis.Client, log *zap.Logger) runtimeParts {
-	publisher := runtimelogs.NewRedisPublisher(rdb, log)
+func buildRuntime(pool *sql.DB, cfg *runtimeconfig.Config, bus *logbus.Bus, log *zap.Logger) runtimeParts {
+	publisher := &wiring.RuntimeLogPublisher{Bus: bus}
 
 	// The runtime used to reach the control plane over HTTP to check
 	// ownership and record state. Same checks, no hop.
-	billingClient := &wiring.BillingClient{Repo: deployRepo(pool, nil)}
+	billingClient := &wiring.BillingClient{Repo: deployRepo(pool, bus, nil)}
 
 	var b runtimebackend.Backend
 	switch cfg.RunnerBackend {
@@ -278,7 +281,7 @@ type builderParts struct {
 	runner   *builderpipeline.Runner
 }
 
-func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, rdb *redis.Client, log *zap.Logger) builderParts {
+func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, rdb *redis.Client, log *zap.Logger) builderParts {
 	_ = aiCfg
 
 	q := builderqueue.NewQueue(rdb, log)
@@ -286,7 +289,7 @@ func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Confi
 		log.Fatal("failed to ensure build consumer group", zap.Error(err))
 	}
 
-	pub := builderlogs.NewRedisPublisher(rdb, log)
+	pub := &wiring.BuilderLogPublisher{Bus: bus}
 	eventsPub := builderevents.NewRedisEventPublisher(rdb, log)
 
 	dockerConfigDir := os.Getenv("DOCKER_CONFIG")
@@ -319,7 +322,7 @@ func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Confi
 			Scanner:   scanner,
 			// Was an HTTP POST to the control plane; now the same repository
 			// write, so a status update cannot be lost to a network blip.
-			Status:      &wiring.StatusReporter{Repo: deployRepo(pool, nil)},
+			Status:      &wiring.StatusReporter{Repo: deployRepo(pool, bus, nil)},
 			AIClient:    &wiring.AIClient{Service: ai.service},
 			Registry:    builderregistry.NewDockerV2Client(log),
 			Uploads:     builderupload.NewStore(rdb),
@@ -357,11 +360,12 @@ func buildControl(
 	cfg *controlconfig.Config,
 	enqueuer *builderapi.Enqueuer,
 	runtimeSvc *runner.Service,
+	bus *logbus.Bus,
 	rdb *redis.Client,
 	log *zap.Logger,
 ) controlParts {
 	authSvc := auth.NewService(auth.NewRepository(pool), time.Duration(cfg.SessionTTLHours)*time.Hour)
-	dRepo := deployRepo(pool, cfg)
+	dRepo := deployRepo(pool, bus, cfg)
 	apikeyRepo := apikey.NewRepository(pool)
 	projectRepo := project.NewRepository(pool)
 	domainRepo := domain.NewRepository(pool)
@@ -369,8 +373,8 @@ func buildControl(
 
 	sagaQueue := saga.NewQueue(rdb, log)
 	sagaRepo := saga.NewRepository(pool)
-	sagaPub := logs.NewRedisPublisher(rdb, log)
-	logReader := logs.NewReader(rdb)
+	sagaPub := &wiring.ControlLogPublisher{Bus: bus}
+	logReader := logs.NewReader(bus, dRepo)
 	uploadStore := upload.NewStore(rdb)
 	credStore := gitcred.NewStore(rdb)
 
@@ -431,17 +435,23 @@ func buildControl(
 // deployRepo builds the deploy repository. cfg may be nil for the runtime and
 // builder sides, which only read and write rows by id and never consult the
 // GC policy or the domain suffix.
-func deployRepo(pool *sql.DB, cfg *controlconfig.Config) *deploy.Repository {
+// The log archiver is passed to every repository, including the ones built
+// with a nil config: the build pipeline and the runtime are the two components
+// that mark a deploy failed most often, and they hold those repositories. A
+// repository without it would silently drop the output of exactly the deploys
+// worth keeping it for.
+func deployRepo(pool *sql.DB, bus *logbus.Bus, cfg *controlconfig.Config) *deploy.Repository {
+	opts := []deploy.Option{deploy.WithLogArchiver(&wiring.LogArchiver{Bus: bus})}
 	if cfg == nil {
-		return deploy.NewRepository(pool)
+		return deploy.NewRepository(pool, opts...)
 	}
-	return deploy.NewRepository(pool,
+	return deploy.NewRepository(pool, append(opts,
 		deploy.WithDomainSuffix(cfg.DomainSuffix),
 		deploy.WithGCPolicy(deploy.GCPolicy{
 			AliasIdleDays:  cfg.AliasIdleGCDays,
 			KeepPerProject: cfg.ProjectDeployRetention,
 		}),
-	)
+	)...)
 }
 
 func registryHost(registryURL string) string {
@@ -470,6 +480,7 @@ func buildEngine(
 	ctl controlParts,
 	aiHandler *aiapi.Handler,
 	pool *sql.DB,
+	bus *logbus.Bus,
 	rdb *redis.Client,
 	log *zap.Logger,
 ) (*gin.Engine, error) {
@@ -495,8 +506,8 @@ func buildEngine(
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "snaphost"})
 	})
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
-	r.GET("/ws/logs/:id", wslogs.Handler(rdb, sessions,
-		&wiring.DeployOwnership{Repo: deployRepo(pool, nil)}, middleware.AllowedOrigins(), log))
+	r.GET("/ws/logs/:id", wslogs.Handler(bus, sessions,
+		&wiring.DeployOwnership{Repo: deployRepo(pool, bus, nil)}, middleware.AllowedOrigins(), log))
 
 	// Secret-authenticated routes, also before the user middleware: these
 	// callers present a shared secret rather than a session, so running them

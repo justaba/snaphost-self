@@ -86,6 +86,8 @@ type Repository struct {
 	// and resolves through the alias table.
 	domainSuffix string
 	gc           GCPolicy
+	// logArchiver, when set, is asked for a deploy's log tail as it fails.
+	logArchiver LogArchiver
 }
 
 // Option configures a Repository at construction.
@@ -100,6 +102,31 @@ func WithDomainSuffix(suffix string) Option {
 // WithGCPolicy sets the reclaim limits applied on top of TTL expiry.
 func WithGCPolicy(p GCPolicy) Option {
 	return func(r *Repository) { r.gc = p }
+}
+
+// StatusFailed is the terminal status whose log output is worth keeping. It is
+// spelled as a literal in a dozen other places; this constant exists where the
+// value decides behaviour rather than merely describing it.
+const StatusFailed = "failed"
+
+// LogArchiver supplies the log output still held in memory for a deploy that
+// has just failed. It returns an opaque blob — this package stores it and does
+// not read it, so the encoding is settled between the adapter that produces it
+// and the reader that serves it back.
+type LogArchiver interface {
+	Archive(deployID string) []byte
+}
+
+// WithLogArchiver makes UpdateStatus capture the log tail on the transition to
+// 'failed'.
+//
+// It hangs off the repository rather than off the three callers because this is
+// where they converge: the saga marks a deploy failed, so does the build
+// pipeline through its status reporter, and so does the runtime when a
+// container will not come up. Three call sites would be three chances to add a
+// fourth and forget.
+func WithLogArchiver(a LogArchiver) Option {
+	return func(r *Repository) { r.logArchiver = a }
 }
 
 // NewRepository creates a new deploy repository.
@@ -229,7 +256,49 @@ func (r *Repository) UpdateStatus(ctx context.Context, deployID uuid.UUID, statu
 	if rowsAffected(result) == 0 {
 		return fmt.Errorf("deploy not found: %s", deployID)
 	}
+	r.archiveLogs(ctx, deployID, status)
 	return nil
+}
+
+// archiveLogs stores the log tail of a deploy that has just failed.
+//
+// Best-effort on purpose, and separate from the status write rather than part
+// of it: the status is what the platform acts on and the logs are what a person
+// reads afterwards, so a failure to save the second must not undo the first. A
+// deploy stuck in its old status because its logs could not be written would be
+// a worse outcome than a failed deploy with no logs.
+//
+// It is also idempotent by construction: the same status may be written twice
+// — the runtime marks a deploy failed and the saga does too — and the second
+// pass simply overwrites the column with the same tail.
+func (r *Repository) archiveLogs(ctx context.Context, deployID uuid.UUID, status string) {
+	if r.logArchiver == nil || status != StatusFailed {
+		return
+	}
+	tail := r.logArchiver.Archive(deployID.String())
+	if len(tail) == 0 {
+		return
+	}
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE deploys SET log_tail = ? WHERE id = ?`, tail, deployID.String())
+}
+
+// LogTail returns the archived log output of a failed deploy, or nil when
+// there is none — the deploy succeeded, is still running, or predates the
+// archive. A missing deploy is nil rather than an error: the caller is serving
+// log history and has already established the deploy exists.
+func (r *Repository) LogTail(ctx context.Context, deployID uuid.UUID) ([]byte, error) {
+	var tail []byte
+	err := r.db.QueryRowContext(ctx,
+		`SELECT log_tail FROM deploys WHERE id = ?`, deployID.String(),
+	).Scan(&tail)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read log tail: %w", err)
+	}
+	return tail, nil
 }
 
 // The status is bound twice and the timestamp twice: SQLite's placeholders are

@@ -1,16 +1,10 @@
-// Package logs provides runtime log publishing to Redis pub/sub channels.
+// Package logs carries runtime container output. The Publisher interface is
+// satisfied by an adapter over internal/logbus; it used to be a Redis pub/sub
+// client, because the runtime was its own process.
 // The channel shape and LogLine format match builder-svc for UI consistency.
 package logs
 
-import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"time"
-
-	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
-)
+import "time"
 
 // LogLine represents a single line of runtime output published to the log channel.
 type LogLine struct {
@@ -32,51 +26,4 @@ type Publisher interface {
 	Publish(deployID string, line LogLine) error
 	// Close releases any resources held by the publisher.
 	Close() error
-}
-
-// RedisPublisher implements Publisher by publishing JSON-encoded log lines
-// to Redis pub/sub channels named logs:{deploy_id}.
-type RedisPublisher struct {
-	rdb *redis.Client
-	log *zap.Logger
-}
-
-// NewRedisPublisher creates a new RedisPublisher.
-func NewRedisPublisher(rdb *redis.Client, log *zap.Logger) *RedisPublisher {
-	return &RedisPublisher{rdb: rdb, log: log}
-}
-
-// Publish sends a log line to the Redis pub/sub channel for the given deploy.
-// Publish errors are logged but never returned — log publishing must not block
-// runtime operations.
-func (p *RedisPublisher) Publish(deployID string, line LogLine) error {
-	line.DeployID = deployID
-	if line.Timestamp.IsZero() {
-		line.Timestamp = time.Now().UTC()
-	}
-
-	data, err := json.Marshal(line)
-	if err != nil {
-		p.log.Warn("failed to marshal log line",
-			zap.String("deploy_id", deployID),
-			zap.Error(err),
-		)
-		return nil
-	}
-
-	channel := fmt.Sprintf("logs:%s", deployID)
-	if err := p.rdb.Publish(context.Background(), channel, string(data)).Err(); err != nil {
-		p.log.Warn("failed to publish log line",
-			zap.String("deploy_id", deployID),
-			zap.String("channel", channel),
-			zap.Error(err),
-		)
-	}
-
-	return nil
-}
-
-// Close is a no-op for RedisPublisher — the Redis client lifecycle is managed externally.
-func (p *RedisPublisher) Close() error {
-	return nil
 }

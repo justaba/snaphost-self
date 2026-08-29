@@ -1,22 +1,19 @@
-// Package logs provides a Redis pub/sub log publisher for streaming saga
-// progress to the frontend on the same channel scheme builder-svc uses
-// (logs:{deploy_id}). Frontend log subscribers receive saga messages and
-// build messages on the same stream.
+// Package logs is the control plane's view of deploy log output: the interface
+// the saga publishes progress through, and the reader that serves history back
+// over HTTP.
+//
+// Both used to be Redis — a pub/sub channel logs:{deploy_id} and a capped
+// stream logs-history:{deploy_id} — because the saga, the build pipeline and
+// the runtime were separate processes that had to meet somewhere. They are one
+// process now and meet in internal/logbus.
 package logs
 
-import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"time"
+import "time"
 
-	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
-)
-
-// LogLine is a single structured log entry published to logs:{deploy_id}.
-// Mirrors the shape used by builder-svc so frontend subscribers do not
-// need a second deserializer.
+// LogLine is a single structured log entry for a deploy. The build pipeline
+// and the runtime have their own identical declarations, which is what four
+// services publishing to one channel produced; the adapters in internal/wiring
+// convert between them and the bus.
 type LogLine struct {
 	DeployID  string    `json:"deploy_id"`
 	Stage     string    `json:"stage"`
@@ -25,58 +22,13 @@ type LogLine struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// Publisher publishes structured log lines for a deploy to a transport
-// (Redis pub/sub in production).
+// Publisher publishes structured log lines for a deploy.
+//
+// Publish still returns an error, and no implementation returns a non-nil one
+// any more. The signature is kept because every caller already treats it as
+// best-effort — `_ = pub.Publish(...)` at most call sites — and narrowing it
+// would be a wide diff for no behaviour change.
 type Publisher interface {
-	// Publish sends one log line on the channel for the given deploy.
-	// Errors are returned but most callers treat publishing as best-effort.
 	Publish(deployID string, line LogLine) error
-	// Close releases any underlying resources held by the publisher.
 	Close() error
 }
-
-// RedisPublisher publishes log lines to Redis pub/sub channels named
-// logs:{deploy_id}.
-type RedisPublisher struct {
-	rdb *redis.Client
-	log *zap.Logger
-}
-
-// NewRedisPublisher constructs a publisher backed by the given Redis client.
-func NewRedisPublisher(rdb *redis.Client, log *zap.Logger) *RedisPublisher {
-	return &RedisPublisher{rdb: rdb, log: log}
-}
-
-// Publish encodes the line as JSON and writes it both to the live pub/sub
-// channel logs:{deploy_id} (for active subscribers) and to the bounded
-// Redis Stream logs-history:{deploy_id} (for HTTP-based history fetches).
-// The deploy_id field on the line is overwritten to match the channel.
-func (p *RedisPublisher) Publish(deployID string, line LogLine) error {
-	line.DeployID = deployID
-	if line.Timestamp.IsZero() {
-		line.Timestamp = time.Now().UTC()
-	}
-	data, err := json.Marshal(line)
-	if err != nil {
-		return fmt.Errorf("marshal log line: %w", err)
-	}
-	channel := "logs:" + deployID
-	stream := "logs-history:" + deployID
-	ctx := context.Background()
-	if err := p.rdb.Publish(ctx, channel, data).Err(); err != nil {
-		return fmt.Errorf("publish to %s: %w", channel, err)
-	}
-	if err := p.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: stream,
-		MaxLen: 1000,
-		Approx: true,
-		Values: map[string]any{"line": data},
-	}).Err(); err != nil {
-		// History persistence failure should not block the live channel.
-		p.log.Warn("xadd log history failed", zap.String("deploy_id", deployID), zap.Error(err))
-	}
-	return nil
-}
-
-// Close is a no-op — the underlying Redis client is owned by main.
-func (p *RedisPublisher) Close() error { return nil }
