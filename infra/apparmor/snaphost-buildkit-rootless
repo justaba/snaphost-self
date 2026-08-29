@@ -1,0 +1,11 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Ubuntu 24.04 restricts unprivileged user namespaces. BuildKit rootless needs
+# an explicit per-application exception; assigning this named profile through
+# Docker also works when the executable lives in an overlay filesystem.
+profile snaphost-buildkit-rootless flags=(unconfined) {
+  userns,
+
+  include if exists <local/snaphost-buildkit-rootless>
+}

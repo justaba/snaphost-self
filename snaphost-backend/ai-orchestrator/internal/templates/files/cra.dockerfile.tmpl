@@ -1,0 +1,24 @@
+FROM node:{{NODE_VERSION}}-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
+RUN \
+  if [ -f pnpm-lock.yaml ]; then npm install -g pnpm && pnpm install --frozen-lockfile; \
+  elif [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
+  else npm ci; \
+  fi
+COPY . .
+RUN {{BUILD_CMD}}
+
+FROM nginx:alpine
+COPY --from=builder /app/build /usr/share/nginx/html
+ENV PORT=8080
+RUN mkdir -p /etc/nginx/templates && printf '%s\n' \
+  'server {' \
+  '  listen ${PORT};' \
+  '  root /usr/share/nginx/html;' \
+  '  index index.html;' \
+  '  location / { try_files $uri $uri/ /index.html; }' \
+  '}' \
+  > /etc/nginx/templates/default.conf.template
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]

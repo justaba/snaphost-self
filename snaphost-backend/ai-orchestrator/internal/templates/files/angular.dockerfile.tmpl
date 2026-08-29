@@ -1,0 +1,33 @@
+FROM node:{{NODE_VERSION}}-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
+RUN \
+  if [ -f pnpm-lock.yaml ]; then npm install -g pnpm && pnpm install --frozen-lockfile; \
+  elif [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
+  elif [ -f package-lock.json ]; then npm ci; \
+  else npm install; \
+  fi
+COPY . .
+RUN {{BUILD_CMD}}
+# Angular CLI outputs to dist/<project>/ (v16-) or dist/<project>/browser/ (v17+).
+# Resolve dynamically so the runtime stage doesn't have to know.
+RUN set -e; \
+    INDEX_HTML=$(find dist -type f -name index.html -print -quit); \
+    if [ -z "$INDEX_HTML" ]; then echo "ERROR: index.html not found under dist/" >&2; exit 1; fi; \
+    OUTPUT_DIR=$(dirname "$INDEX_HTML"); \
+    mkdir -p /app/build-output; \
+    cp -a "$OUTPUT_DIR/." /app/build-output/
+
+FROM nginx:alpine
+COPY --from=builder /app/build-output /usr/share/nginx/html
+ENV PORT=8080
+RUN mkdir -p /etc/nginx/templates && printf '%s\n' \
+  'server {' \
+  '  listen ${PORT};' \
+  '  root /usr/share/nginx/html;' \
+  '  index index.html;' \
+  '  location / { try_files $uri $uri/ /index.html; }' \
+  '}' \
+  > /etc/nginx/templates/default.conf.template
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]

@@ -1,0 +1,566 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+SCRIPT="$ROOT/infra/deploy.sh"
+SHA=0123456789abcdef0123456789abcdef01234567
+OLD_SHA=89abcdef0123456789abcdef0123456789abcdef
+# Service accounts this environment's config expects its keys to belong to.
+BUILDER_SA=aje00000000000builder
+RUNNER_SA=aje000000000000runner
+OTHER_ENV_SA=aje00000000staging11
+TMP_ROOT=$(mktemp -d)
+trap 'rm -rf "$TMP_ROOT"' EXIT
+BIN="$TMP_ROOT/bin"
+mkdir -p "$BIN"
+
+cat >"$BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+set -u
+echo "docker $*" >>"${FAKE_LOG:?}"
+if [[ ${1:-} == login ]]; then [[ ${FAIL_LOGIN:-0} != 1 ]]; exit; fi
+if [[ ${1:-} == info ]]; then exit 0; fi
+if [[ ${1:-} == image && ${2:-} == inspect ]]; then
+  # check_images_present inspects without --format; login_and_pull inspects
+  # with one. Only the former simulates a missing rollback image.
+  if [[ "$*" != *--format* && ${MISSING_ROLLBACK_IMAGE:-0} == 1 ]]; then exit 1; fi
+  echo 'repo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; exit 0
+fi
+if [[ ${1:-} == inspect ]]; then
+  if [[ "$*" == *'.State.Running'* ]]; then echo true
+  elif [[ "$*" == *'.RestartCount'* ]]; then echo 0
+  elif [[ ${FAIL_READINESS:-0} == 1 ]]; then echo unhealthy
+  else echo healthy
+  fi
+  exit 0
+fi
+[[ ${1:-} == compose ]] || exit 0
+shift
+if [[ ${1:-} == version ]]; then echo 'Docker Compose version v5.1.1'; exit 0; fi
+if [[ "$*" == *'up --help'* ]]; then echo '--wait'; exit 0; fi
+if [[ "$*" == *'config --help'* ]]; then echo '--quiet'; exit 0; fi
+op=
+for arg in "$@"; do
+  case "$arg" in config|pull|ps|exec|up|run) op=$arg; break;; esac
+done
+case "$op" in
+  config)
+    [[ ${FAIL_CONFIG:-0} != 1 ]] || exit 1
+    if [[ "$*" == *'--services'* ]]; then
+      printf '%s\n' api-gateway user-billing builder-api builder-worker runner-api runner-watchdog router-svc ai-orchestrator postgres redis buildkitd
+    elif [[ "$*" == *'--images'* ]]; then
+      sha=${SNAPHOST_VERSION:?}
+      printf 'ghcr.io/acme/repo/%s:%s\n' api-gateway "$sha" user-billing "$sha" builder-svc "$sha" runner-svc "$sha" router-svc "$sha" ai-orchestrator "$sha"
+    elif [[ "$*" != *'--quiet'* ]]; then
+      printf 'services:\n  api-gateway:\n    ports:\n      - target: 8080\n  user-billing:\n    image: billing\n  postgres:\n    image: postgres\n  redis:\n    image: redis\n  buildkitd:\n    image: buildkit\n'
+    fi
+    ;;
+  pull) [[ ${FAIL_PULL:-0} != 1 ]] ;;
+  ps) echo cid ;;
+  exec)
+    # Real `compose exec -T` forwards stdin to the container. Draining it here
+    # is what makes the stdin-consumption regression test meaningful.
+    cat >/dev/null 2>&1 || true
+    [[ ${FAIL_BACKUP:-0} != 1 ]] || exit 1
+    printf 'fake-pg-dump'
+    ;;
+  run)
+    # Real `compose run` attaches stdin too.
+    cat >/dev/null 2>&1 || true
+    if [[ "$*" == *'migrate'* && ${FAIL_MIGRATION:-0} == 1 ]]; then exit 1; fi
+    exit 0
+    ;;
+  up) exit 0 ;;
+esac
+FAKE
+
+cat >"$BIN/curl" <<'FAKE'
+#!/usr/bin/env bash
+set -u
+echo "curl called" >>"${FAKE_LOG:?}"
+[[ ${FAIL_SMOKE:-0} != 1 ]] || exit 22
+if [[ "$*" == *'--config'* ]]; then
+  if [[ ${SLOW_AUTH_SMOKE:-0} == 1 ]]; then touch "${AUTH_SMOKE_STARTED:?}"; sleep 30; fi
+  [[ ${FAIL_AUTH_SMOKE:-0} != 1 ]] || exit 22
+fi
+if [[ "$*" == *'%{http_code}'* ]]; then
+  if [[ "$*" == *'intentionally-wrong'* ]]; then printf 401; else printf 404; fi
+fi
+FAKE
+chmod +x "$BIN/docker" "$BIN/curl"
+
+cat >"$BIN/ln" <<'FAKE'
+#!/usr/bin/env bash
+set -u
+destination=${!#}
+if [[ ${FAIL_CHECKSUM_PUBLISH:-0} == 1 && "$destination" == *.sha256 ]]; then
+  exit 1
+fi
+exec /bin/ln "$@"
+FAKE
+chmod +x "$BIN/ln"
+
+PASS=0
+FAIL=0
+
+setup_case() {
+  CASE_DIR=$(mktemp -d "$TMP_ROOT/case.XXXXXX")
+  mkdir -p "$CASE_DIR/state" "$CASE_DIR/backups"
+  COMPOSE="$CASE_DIR/compose.yml"
+  ENV_FILE="$CASE_DIR/production.env"
+  BUILDER_KEY="$CASE_DIR/builder.json"
+  RUNNER_KEY="$CASE_DIR/runner.json"
+  TOKEN_FILE="$CASE_DIR/token"
+  FAKE_LOG="$CASE_DIR/commands.log"
+  : >"$FAKE_LOG"
+  : >"$COMPOSE"
+  printf '{"service_account_id": "%s"}\n' "$BUILDER_SA" >"$BUILDER_KEY"
+  printf '{"service_account_id": "%s"}\n' "$RUNNER_SA" >"$RUNNER_KEY"
+  printf 'token\n' >"$TOKEN_FILE"
+  chmod 600 "$BUILDER_KEY" "$RUNNER_KEY" "$TOKEN_FILE"
+  cat >"$ENV_FILE" <<EOF
+SNAPHOST_VERSION=$OLD_SHA
+GHCR_IMAGE_PREFIX=ghcr.io/acme/repo
+API_GATEWAY_BIND_ADDRESS=0.0.0.0
+API_GATEWAY_PORT=8080
+DOMAIN_SUFFIX=apps.prod.invalid
+POSTGRES_DB=snaphost
+POSTGRES_USER=snaphost
+POSTGRES_PASSWORD=production-password
+WEBHOOK_SECRET=internal-secret-value
+SUPABASE_URL=https://project.supabase.co
+SUPABASE_WEBHOOK_SECRET=supabase-secret-value
+CORS_ALLOW_ORIGINS=https://app.prod.invalid
+INITIAL_VIBECOIN_BALANCE=100
+SAGA_WORKER_ENABLED=true
+SAGA_BUILD_TIMEOUT_MIN=15
+SAGA_RESUME_INTERVAL_SEC=60
+DEPLOY_COST_COINS=10
+DEPLOY_DEFAULT_PORT=3000
+RATE_LIMIT_IP=30
+RATE_LIMIT_USER=120
+RATE_LIMIT_DEPLOY=5
+LOG_LEVEL=info
+YANDEX_REGISTRY_PREFIX=cr.yandex/registry-id/snaphost
+BUILDER_KEY_PATH=$BUILDER_KEY
+RUNNER_KEY_PATH=$RUNNER_KEY
+MAX_REPO_SIZE_MB=500
+MAX_BUILD_TIME_MIN=15
+MAX_CONCURRENT_PER_USER=3
+ALLOWED_GIT_HOSTS=github.com
+ALLOWED_BASE_IMAGES=alpine:
+ALLOWED_BASE_IMAGES_PERMISSIVE=alpine:
+REGISTRY_INSECURE=false
+SCAN_FAIL_ON_CRITICAL=true
+YANDEX_FOLDER_ID=folder-id
+YANDEX_RUNNER_SA_ID=$RUNNER_SA
+YANDEX_BUILDER_SA_ID=$BUILDER_SA
+YANDEX_API_GATEWAY_ID=gateway-id
+CONTAINER_CPU_LIMIT=0.5
+CONTAINER_MEMORY_MB=512
+CONTAINER_DEFAULT_TTL_MIN=1440
+WATCHDOG_INTERVAL_SEC=30
+STRICT_IMAGE_VALIDATION=true
+RUNTIME_PROBE_ENABLED=true
+RUNTIME_PROBE_TIMEOUT_SEC=45
+RESERVED_DOMAINS=control.prod.invalid
+DEPLOY_TTL_MIN=1440
+DEPLOY_TTL_MAX_MIN=1440
+DOMAIN_CNAME_TARGET=
+DOMAIN_A_RECORD_TARGET=
+MAX_DOMAINS_PER_USER=1
+DOMAIN_ATTACH_REQUIRE_IDENTITY=false
+DOMAIN_ATTACH_PER_HOUR=5
+DOMAIN_VERIFY_INTERVAL_SEC=60
+DOMAIN_REVERIFY_HOURS=24
+DOMAIN_VERIFY_GRACE_HOURS=24
+ALIAS_IDLE_GC_DAYS=30
+PROJECT_DEPLOY_RETENTION=3
+ROUTER_BIND_PORT=8085
+ROUTER_PROXY_TIMEOUT_SEC=60
+OPENROUTER_API_KEY=openrouter-test-key
+OPENROUTER_MODEL=openai/test
+OPENROUTER_REFERER=https://control.prod.invalid
+OPENROUTER_APP_NAME=SnapHost
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_JSON_MODE=true
+LLM_TIMEOUT=30s
+LLM_MAX_RETRIES=1
+CACHE_TTL_DAYS=7
+MAX_FILE_SIZE_KB=50
+MAX_FILES_PER_REQUEST=20
+CONTROL_PLANE_CPU_LIMIT=1
+CONTROL_PLANE_MEMORY_LIMIT=512M
+POSTGRES_CPU_LIMIT=2
+POSTGRES_MEMORY_LIMIT=2G
+REDIS_CPU_LIMIT=1
+REDIS_MEMORY_LIMIT=1G
+BUILDKIT_CPU_LIMIT=4
+BUILDKIT_MEMORY_LIMIT=4G
+EOF
+  chmod 600 "$ENV_FILE"
+  export PATH="$BIN:$PATH" FAKE_LOG
+  export SNAPHOST_COMPOSE_FILE="$COMPOSE" SNAPHOST_ENV_FILE="$ENV_FILE"
+  export SNAPHOST_COMPOSE_PROJECT=snaphost-test
+  export SNAPHOST_STATE_DIR="$CASE_DIR/state" SNAPHOST_BACKUP_DIR="$CASE_DIR/backups"
+  export SNAPHOST_BUILDER_KEY_FILE="$BUILDER_KEY" SNAPHOST_RUNNER_KEY_FILE="$RUNNER_KEY"
+  export SNAPHOST_GHCR_TOKEN_FILE="$TOKEN_FILE" SNAPHOST_PUBLIC_SMOKE_URL=https://control.invalid
+  export SNAPHOST_MIN_FREE_KB=0 SNAPHOST_READINESS_TIMEOUT=1 SNAPHOST_STABILITY_DELAY=0
+  unset FAIL_CONFIG FAIL_LOGIN FAIL_PULL FAIL_BACKUP FAIL_MIGRATION FAIL_READINESS FAIL_SMOKE FAIL_AUTH_SMOKE SLOW_AUTH_SMOKE AUTH_SMOKE_STARTED FAIL_CHECKSUM_PUBLISH GHCR_USERNAME MIGRATIONS_BACKWARD_COMPATIBLE MISSING_ROLLBACK_IMAGE TMPDIR
+}
+
+# Deployment state as it looks after a successful release, which is the only
+# state a rollback is ever launched from.
+seed_deployed_state() {
+  local migration=${1:-not-started}
+  cat >"$CASE_DIR/state/current.env" <<EOF
+sha=$SHA
+migration_status=$migration
+status=success
+EOF
+  echo "sha=$OLD_SHA" >"$CASE_DIR/state/previous.env"
+}
+
+run_capture() {
+  OUTPUT="$CASE_DIR/output"
+  set +e
+  "$SCRIPT" "$@" >"$OUTPUT" 2>&1
+  RC=$?
+  set -e
+}
+
+snapshot_case() {
+  (cd "$CASE_DIR" && find . -type f ! -name output ! -name commands.log -print | sort | xargs sha256sum) | sha256sum
+}
+
+pass() { PASS=$((PASS + 1)); printf 'ok - %s\n' "$1"; }
+fail() { FAIL=$((FAIL + 1)); printf 'not ok - %s\n' "$1"; cat "$OUTPUT" 2>/dev/null || true; }
+expect_failure() { local name=$1; shift; setup_case; "$@"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass "$name" || fail "$name"; }
+
+setup_case; run_capture preflight bad; [[ $RC -ne 0 ]] && pass 'invalid SHA' || fail 'invalid SHA'
+setup_case; rm "$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'missing env' || fail 'missing env'
+setup_case; echo 'PUBLIC_HOST=example.com' >>"$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'placeholder env' || fail 'placeholder env'
+setup_case; rm "$BUILDER_KEY"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'missing key' || fail 'missing key'
+setup_case; chmod 640 "$RUNNER_KEY"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0640 key permissions rejected' || fail '0640 key permissions rejected'
+setup_case; chmod 644 "$BUILDER_KEY"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0644 key permissions rejected' || fail '0644 key permissions rejected'
+setup_case; chmod 640 "$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0640 production env rejected' || fail '0640 production env rejected'
+setup_case; chmod 644 "$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0644 production env rejected' || fail '0644 production env rejected'
+setup_case; export FAIL_CONFIG=1; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'Compose validation failure' || fail 'Compose validation failure'
+
+setup_case
+run_capture preflight "$SHA"
+run_capture preflight "$OLD_SHA"
+projects=$(grep -o -- '--project-name [^ ]*' "$FAKE_LOG" | sort -u)
+if [[ "$projects" == '--project-name snaphost-test' ]]; then pass 'Compose project is stable across release SHAs'; else fail 'Compose project is stable across release SHAs'; fi
+
+setup_case; export GHCR_USERNAME=operator FAIL_LOGIN=1; run_capture deploy "$SHA"; [[ $RC -ne 0 ]] && pass 'GHCR login failure' || fail 'GHCR login failure'
+setup_case; export FAIL_PULL=1; run_capture deploy "$SHA"; if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG"; then pass 'pull failure leaves runtime'; else fail 'pull failure leaves runtime'; fi
+setup_case; export FAIL_BACKUP=1; run_capture deploy "$SHA"; if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG"; then pass 'backup failure stops rollout'; else fail 'backup failure stops rollout'; fi
+setup_case; export FAIL_MIGRATION=1; run_capture deploy "$SHA"; [[ $RC -ne 0 && -f "$CASE_DIR/state/in-progress.env" ]] && pass 'migration failure recorded' || fail 'migration failure recorded'
+setup_case; export FAIL_READINESS=1; run_capture deploy "$SHA"; [[ $RC -ne 0 ]] && pass 'readiness timeout' || fail 'readiness timeout'
+setup_case; export FAIL_SMOKE=1; run_capture deploy "$SHA"; [[ $RC -ne 0 ]] && pass 'smoke failure' || fail 'smoke failure'
+
+setup_case
+cat >"$CASE_DIR/state/current.env" <<EOF
+sha=$SHA
+migration_status=not-started
+EOF
+echo "sha=$OLD_SHA" >"$CASE_DIR/state/previous.env"
+run_capture rollback
+[[ $RC -eq 0 ]] && pass 'rollback before migrations' || fail 'rollback before migrations'
+
+setup_case
+cat >"$CASE_DIR/state/current.env" <<EOF
+sha=$SHA
+migration_status=applied
+EOF
+echo "sha=$OLD_SHA" >"$CASE_DIR/state/previous.env"
+run_capture rollback
+[[ $RC -ne 0 ]] && pass 'rollback blocked after migrations' || fail 'rollback blocked after migrations'
+
+setup_case; run_capture --dry-run deploy "$SHA"
+leaked=0
+for secret in internal-secret-value supabase-secret-value production-password openrouter-test-key token; do
+  if grep -R -Fq "$secret" "$CASE_DIR/state" "$OUTPUT"; then leaked=1; fi
+done
+if [[ $leaked -eq 0 ]]; then pass 'secrets absent from output/state'; else fail 'secrets absent from output/state'; fi
+
+setup_case
+rm -rf "$CASE_DIR/backups"
+cat >"$CASE_DIR/state/current.env" <<EOF
+sha=$SHA
+migration_status=not-started
+EOF
+echo "sha=$OLD_SHA" >"$CASE_DIR/state/previous.env"
+before=$(snapshot_case)
+run_capture --dry-run rollback
+after=$(snapshot_case)
+if [[ $RC -eq 0 && "$before" == "$after" && ! -e "$CASE_DIR/backups" && ! -e "$CASE_DIR/state/deploy.lock" ]]; then pass 'dry-run rollback is filesystem read-only'; else fail 'dry-run rollback is filesystem read-only'; fi
+
+setup_case
+export FAIL_AUTH_SMOKE=1 TMPDIR="$CASE_DIR/tmp"
+mkdir -p "$TMPDIR"
+run_capture deploy "$SHA"
+if [[ $RC -ne 0 && -z $(find "$TMPDIR" -type f -print -quit) ]]; then pass 'curl config removed on error'; else fail 'curl config removed on error'; fi
+
+for signal in INT TERM; do
+  setup_case
+  export SLOW_AUTH_SMOKE=1 TMPDIR="$CASE_DIR/tmp" AUTH_SMOKE_STARTED="$CASE_DIR/auth-smoke-started"
+  mkdir -p "$TMPDIR"
+  "$SCRIPT" deploy "$SHA" >"$CASE_DIR/output" 2>&1 &
+  deploy_pid=$!
+  for _ in $(seq 1 100); do [[ -e "$AUTH_SMOKE_STARTED" ]] && break; sleep 0.05; done
+  kill -s "$signal" "$deploy_pid" 2>/dev/null || true
+  wait "$deploy_pid" 2>/dev/null || true
+  if [[ -z $(find "$TMPDIR" -type f -print -quit) ]]; then pass "curl config removed on $signal"; else fail "curl config removed on $signal"; fi
+done
+
+setup_case
+export FAIL_MIGRATION=1
+run_capture deploy "$SHA"
+rm -f "$CASE_DIR/state/in-progress.env"
+run_capture deploy "$OLD_SHA"
+dumps=$(find "$CASE_DIR/backups" -maxdepth 1 -name '*.dump' | wc -l)
+checksums=$(find "$CASE_DIR/backups" -maxdepth 1 -name '*.dump.sha256' | wc -l)
+if [[ $dumps -eq 2 && $checksums -eq 2 ]]; then
+  pass 'backup and checksum are not overwritten'
+else
+  printf 'backup counts: dumps=%s checksums=%s\n' "$dumps" "$checksums"
+  find "$CASE_DIR/backups" -maxdepth 1 -type f -print
+  find "$CASE_DIR/state" -maxdepth 1 -type f -print -exec sed -n '1,8p' {} \;
+  cat "$FAKE_LOG"
+  fail 'backup and checksum are not overwritten'
+fi
+
+setup_case
+run_capture deploy "$SHA"
+if [[ $RC -eq 0 && ! -e "$CASE_DIR/state/previous.env" ]]; then pass 'first deployment does not create empty previous state'; else fail 'first deployment does not create empty previous state'; fi
+
+setup_case
+export FAIL_CHECKSUM_PUBLISH=1
+run_capture deploy "$SHA"
+dumps=$(find "$CASE_DIR/backups" -maxdepth 1 -name '*.dump' | wc -l)
+checksums=$(find "$CASE_DIR/backups" -maxdepth 1 -name '*.dump.sha256' | wc -l)
+if [[ $RC -ne 0 && $dumps -eq 0 && $checksums -eq 0 ]]; then pass 'checksum publish failure removes current dump'; else fail 'checksum publish failure removes current dump'; fi
+
+setup_case
+(
+  exec 8>"$CASE_DIR/state/deploy.lock"
+  flock 8
+  sleep 3
+) &
+lock_pid=$!
+sleep 1
+run_capture deploy "$SHA"
+kill "$lock_pid" 2>/dev/null || true
+wait "$lock_pid" 2>/dev/null || true
+[[ $RC -ne 0 ]] && pass 'concurrent deployment lock' || fail 'concurrent deployment lock'
+
+# A non-recoverable unfinished state (migrations touched) must still block.
+setup_case
+cat >"$CASE_DIR/state/current.env" <<EOF
+sha=$SHA
+migration_status=applied
+EOF
+cat >"$CASE_DIR/state/in-progress.env" <<EOF
+sha=$SHA
+status=manual-intervention-required
+migration_status=applied
+EOF
+run_capture deploy "$OLD_SHA"
+if [[ $RC -ne 0 ]] && grep -q 'unfinished deployment state exists' "$OUTPUT"; then pass 'manual-intervention state still blocks deploy'; else fail 'manual-intervention state still blocks deploy'; fi
+
+# A failed-before-migrations state touched no database and is cleared automatically.
+setup_case
+cat >"$CASE_DIR/state/in-progress.env" <<EOF
+sha=$SHA
+status=failed-before-migrations
+migration_status=not-started
+EOF
+run_capture deploy "$OLD_SHA"
+if grep -q 'Clearing safe failed-before-migrations' "$OUTPUT" && ! grep -q 'unfinished deployment state exists' "$OUTPUT"; then pass 'failed-before-migrations state auto-cleared'; else fail 'failed-before-migrations state auto-cleared'; fi
+
+# --- service-account identity (Task 12) ----------------------------------
+# Staging and production keys are interchangeable-looking JSON files against
+# different registries. Crossing them fails as a 403 on the first user build,
+# after the deployment reported success — the 2026-07-08 staging incident.
+
+setup_case
+printf '{"service_account_id": "%s"}\n' "$OTHER_ENV_SA" >"$BUILDER_KEY"
+chmod 600 "$BUILDER_KEY"
+run_capture preflight "$SHA"
+if [[ $RC -ne 0 ]] && grep -q "refusing to deploy another environment's credentials" "$OUTPUT"; then
+  pass 'a builder key from another environment is refused'
+else fail 'a builder key from another environment is refused'; fi
+
+setup_case
+printf '{"service_account_id": "%s"}\n' "$OTHER_ENV_SA" >"$RUNNER_KEY"
+chmod 600 "$RUNNER_KEY"
+run_capture preflight "$SHA"
+if [[ $RC -ne 0 ]] && grep -q "refusing to deploy another environment's credentials" "$OUTPUT"; then
+  pass 'a runner key from another environment is refused'
+else fail 'a runner key from another environment is refused'; fi
+
+setup_case
+printf '{"service_account_id": "%s"}\n' "$OTHER_ENV_SA" >"$BUILDER_KEY"
+chmod 600 "$BUILDER_KEY"
+run_capture deploy "$SHA"
+if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG" && ! grep -q 'docker login' "$FAKE_LOG"; then
+  pass 'a wrong-environment key stops before any Docker or Yandex call'
+else fail 'a wrong-environment key stops before any Docker or Yandex call'; fi
+
+setup_case
+printf '{"id": "no-service-account-here"}\n' >"$BUILDER_KEY"
+chmod 600 "$BUILDER_KEY"
+run_capture preflight "$SHA"
+if [[ $RC -ne 0 ]] && grep -q 'cannot read service_account_id' "$OUTPUT"; then
+  pass 'a key with no service_account_id is refused'
+else fail 'a key with no service_account_id is refused'; fi
+
+# A missing expectation must not silently disable the check.
+setup_case
+sed -i '/^YANDEX_BUILDER_SA_ID=/d' "$ENV_FILE"
+run_capture preflight "$SHA"
+if [[ $RC -ne 0 ]]; then
+  pass 'a missing YANDEX_BUILDER_SA_ID fails preflight rather than skipping the check'
+else fail 'a missing YANDEX_BUILDER_SA_ID fails preflight rather than skipping the check'; fi
+
+setup_case
+run_capture preflight "$SHA"
+if [[ $RC -eq 0 ]]; then pass 'matching keys pass preflight'; else fail 'matching keys pass preflight'; fi
+
+# Whitespace variations in the key JSON must not defeat the comparison.
+setup_case
+printf '{\n  "id": "abc",\n  "service_account_id"   :   "%s",\n  "key_algorithm": "RSA_2048"\n}\n' "$BUILDER_SA" >"$BUILDER_KEY"
+chmod 600 "$BUILDER_KEY"
+run_capture preflight "$SHA"
+if [[ $RC -eq 0 ]]; then
+  pass 'the identity is read from realistically formatted key JSON'
+else fail 'the identity is read from realistically formatted key JSON'; fi
+
+# --- stdin consumption ---------------------------------------------------
+# CD runs this script as `ssh host bash -s <<EOF`, so the deployment commands
+# and the script text share one stdin. `docker compose exec/run` forward stdin
+# to the container; when they drained it, every line after the deploy call was
+# silently discarded and the run still exited 0. That is how the
+# /opt/snaphost/current symlink went missing on 2026-08-03 with a green CD run.
+
+setup_case
+marker="$CASE_DIR/after-deploy-marker"
+printf '%s\n' \
+  "\"$SCRIPT\" deploy \"$SHA\" >/dev/null 2>&1" \
+  "touch \"$marker\"" | bash -s
+if [[ -f "$marker" ]]; then
+  pass 'commands after a piped deploy still run (stdin is not consumed)'
+else fail 'commands after a piped deploy still run (stdin is not consumed)'; fi
+
+setup_case
+marker="$CASE_DIR/after-rollback-marker"
+seed_deployed_state
+printf '%s\n' \
+  "\"$SCRIPT\" rollback >/dev/null 2>&1" \
+  "touch \"$marker\"" | bash -s
+if [[ -f "$marker" ]]; then
+  pass 'commands after a piped rollback still run'
+else fail 'commands after a piped rollback still run'; fi
+
+# --- rollback ------------------------------------------------------------
+# The rollback path is the one an operator uses under pressure and the one
+# least exercised in normal operation, so it carries its own scenarios rather
+# than only the two guard checks above.
+
+setup_case
+seed_deployed_state applied
+export MIGRATIONS_BACKWARD_COMPATIBLE=true
+run_capture rollback
+if [[ $RC -eq 0 ]] && grep -q "Rollback completed: $OLD_SHA" "$OUTPUT"; then
+  pass 'rollback after migrations proceeds once compatibility is confirmed'
+else fail 'rollback after migrations proceeds once compatibility is confirmed'; fi
+
+setup_case
+seed_deployed_state
+run_capture rollback
+if [[ $RC -eq 0 ]] \
+  && [[ $(awk -F= '$1=="sha"{print $2}' "$CASE_DIR/state/current.env") == "$OLD_SHA" ]] \
+  && [[ $(awk -F= '$1=="status"{print $2}' "$CASE_DIR/state/current.env") == rollback-success ]]; then
+  pass 'rollback records the restored SHA and a rollback status'
+else fail 'rollback records the restored SHA and a rollback status'; fi
+
+# Rolling back twice must return to where it started, otherwise an operator who
+# rolls back one release too far has no way back.
+setup_case
+seed_deployed_state
+run_capture rollback
+run_capture rollback
+if [[ $RC -eq 0 && $(awk -F= '$1=="sha"{print $2}' "$CASE_DIR/state/current.env") == "$SHA" ]]; then
+  pass 'a second rollback returns to the original SHA'
+else fail 'a second rollback returns to the original SHA'; fi
+
+setup_case
+seed_deployed_state applied
+export MIGRATIONS_BACKWARD_COMPATIBLE=true
+run_capture rollback
+if [[ $(awk -F= '$1=="migration_status"{print $2}' "$CASE_DIR/state/current.env") == applied ]]; then
+  pass 'rollback preserves the recorded migration status'
+else fail 'rollback preserves the recorded migration status'; fi
+
+setup_case
+seed_deployed_state
+rm -f "$CASE_DIR/state/previous.env"
+run_capture rollback
+if [[ $RC -ne 0 ]] && grep -q 'current/previous deployment state is unavailable' "$OUTPUT"; then
+  pass 'rollback without previous state refuses'
+else fail 'rollback without previous state refuses'; fi
+
+# The recorded SHA is what gets deployed, so a corrupted state file must stop
+# the rollback rather than resolve to some arbitrary image tag.
+setup_case
+seed_deployed_state
+echo 'sha=not-a-sha' >"$CASE_DIR/state/previous.env"
+run_capture rollback
+if [[ $RC -ne 0 ]]; then pass 'rollback refuses a malformed previous SHA'; else fail 'rollback refuses a malformed previous SHA'; fi
+
+setup_case
+seed_deployed_state
+export MISSING_ROLLBACK_IMAGE=1
+run_capture rollback
+if [[ $RC -ne 0 ]] && grep -q 'saved rollback image is unavailable locally' "$OUTPUT" \
+  && ! grep -q ' compose .* up ' "$FAKE_LOG"; then
+  pass 'rollback stops before touching the runtime when the image is gone'
+else fail 'rollback stops before touching the runtime when the image is gone'; fi
+
+# A rollback whose smoke fails has left the runtime on the previous images, so
+# claiming success in the state file would misdirect the next operator.
+setup_case
+seed_deployed_state
+export FAIL_SMOKE=1
+run_capture rollback
+if [[ $RC -ne 0 && $(awk -F= '$1=="sha"{print $2}' "$CASE_DIR/state/current.env") == "$SHA" ]]; then
+  pass 'a failed rollback smoke does not record success'
+else fail 'a failed rollback smoke does not record success'; fi
+
+setup_case
+seed_deployed_state
+(
+  exec 8>"$CASE_DIR/state/deploy.lock"
+  flock 8
+  sleep 3
+) &
+lock_pid=$!
+sleep 1
+run_capture rollback
+kill "$lock_pid" 2>/dev/null || true
+wait "$lock_pid" 2>/dev/null || true
+if [[ $RC -ne 0 ]]; then pass 'rollback refuses while another operation holds the lock'; else fail 'rollback refuses while another operation holds the lock'; fi
+
+setup_case
+seed_deployed_state
+run_capture rollback
+leaked=0
+for secret in internal-secret-value supabase-secret-value production-password openrouter-test-key; do
+  if grep -R -Fq "$secret" "$CASE_DIR/state" "$OUTPUT"; then leaked=1; fi
+done
+if [[ $leaked -eq 0 ]]; then pass 'rollback leaks no secret into output or state'; else fail 'rollback leaks no secret into output or state'; fi
+
+printf '%d passed, %d failed\n' "$PASS" "$FAIL"
+[[ $FAIL -eq 0 ]]

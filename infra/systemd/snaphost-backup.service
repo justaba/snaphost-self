@@ -1,0 +1,62 @@
+[Unit]
+Description=SnapHost scheduled PostgreSQL backup
+Documentation=https://github.com/justaba/snaphost/blob/main/docs/operations/backups.md
+# The backup talks to the postgres container through the Docker socket, so
+# there is nothing to back up before Docker is up.
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Same non-root deployment identity the release tree is owned by; it needs
+# Docker group membership and write access to /opt/snaphost/{state,backups}.
+User=deployer
+Group=deployer
+WorkingDirectory=/opt/snaphost
+
+# Everything the script needs that is not a secret. Credentials for the
+# off-host copy live in the referenced environment file, mode 0600, owned by
+# the same user — it is read by systemd, not by the shell, so it never lands
+# in a process argument list.
+EnvironmentFile=-/opt/snaphost/env/backup.env
+
+# ProtectHome=true hides $HOME, and the Docker CLI refuses to execute its
+# plugins when it cannot reach its config directory — `docker info` still lists
+# compose, but `docker compose` answers "unknown command", which surfaces as
+# "PostgreSQL is not running". Point the config somewhere the sandbox can write
+# instead of opening up the home directory.
+Environment=DOCKER_CONFIG=/opt/snaphost/state/.docker
+
+# Operator-managed stable path, not a release directory: the backup has no
+# per-release coupling, and a unit pointing into releases/<sha> would break
+# the moment that release is pruned. Refresh this file when backup.sh changes.
+# WorkingDirectory above is load-bearing — `docker compose` stats its working
+# directory, and a directory the deployer cannot read fails the whole run.
+ExecStart=/opt/snaphost/infra/backup.sh run
+
+# A backup that takes longer than this is stuck rather than slow; the dump of
+# a control-plane database is minutes, not hours.
+TimeoutStartSec=3600
+
+# The lock is shared with deploy.sh and a scheduled run yields to a deployment,
+# so a retry is only useful for transient Docker/network failures.
+Restart=on-failure
+RestartSec=300
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# The Docker socket must be writable: ProtectSystem=strict mounts the whole
+# hierarchy read-only, and connecting to a unix socket needs write permission.
+# Without this the dump fails with "PostgreSQL is not running", which points at
+# the wrong thing entirely — `compose ps` cannot reach the daemon, so it looks
+# like there is no container.
+ReadWritePaths=/opt/snaphost/backups /opt/snaphost/state /run/docker.sock
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

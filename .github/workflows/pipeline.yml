@@ -1,0 +1,206 @@
+name: CI and image publishing
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  go:
+    name: Go / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: api-gateway, module: snaphost-backend/api-gateway }
+          - { name: user-billing, module: snaphost-backend/user-billing }
+          - { name: builder-svc, module: snaphost-backend/builder-svc }
+          - { name: runner-svc, module: snaphost-backend/runner-svc }
+          - { name: runner-svc-yandex, module: snaphost-backend/runner-svc, tags: yandex }
+          - { name: ai-orchestrator, module: snaphost-backend/ai-orchestrator }
+          - { name: router-svc, module: snaphost-backend/router-svc }
+          - { name: shared, module: snaphost-backend/shared }
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: Test
+        run: go test ${{ matrix.tags && format('-tags {0}', matrix.tags) || '' }} ./...
+      - name: Vet
+        run: go vet ${{ matrix.tags && format('-tags {0}', matrix.tags) || '' }} ./...
+      # Nothing here ran a linter until 2026-08-07, so formatting and the
+      # default checks drifted unnoticed: `make lint` covered three of the
+      # seven modules and its default set excludes gofmt. Config lives in
+      # snaphost-backend/.golangci.yml, which golangci-lint finds by walking
+      # up from the module directory. The version is pinned because the v2
+      # config schema is incompatible with the file it reads.
+      #
+      # Built from source rather than downloaded. golangci-lint refuses to load
+      # a config for a module whose Go version is newer than the toolchain the
+      # linter itself was built with, and the published v1.64.8 binary is built
+      # with go1.24 — so six of the eight modules, which target 1.25, failed
+      # before linting anything. `go install` uses this job's own toolchain,
+      # taken from the module's go.mod, so the two can never disagree again.
+      #
+      # GOTOOLCHAIN=auto is required for the two modules still on go 1.22:
+      # golangci-lint's own go.mod needs 1.23, and setup-go pins GOTOOLCHAIN to
+      # `local`, which forbids fetching one. Scoped to this step so the build
+      # and test steps keep using exactly the toolchain the module declares.
+      - name: Install golangci-lint
+        env:
+          GOTOOLCHAIN: auto
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+      - name: Lint
+        run: golangci-lint run ${{ matrix.tags && format('--build-tags {0}', matrix.tags) || '' }} ./...
+
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/yandex
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.7"
+      - run: terraform fmt -check
+      - run: terraform init -backend=false
+      - run: terraform validate
+
+  shell:
+    name: Deployment scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Syntax
+        run: |
+          bash -n infra/deploy.sh
+          bash -n infra/backup.sh
+          bash -n .github/scripts/uptime-check.sh
+          bash -n infra/tests/deploy_test.sh
+          bash -n infra/tests/backup_test.sh
+      - name: Lint
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning infra/deploy.sh infra/backup.sh .github/scripts/uptime-check.sh
+      # Both suites fake every external command, so they touch no Docker
+      # daemon, database, credential, or network.
+      - name: Deployment suite
+        run: bash infra/tests/deploy_test.sh
+      - name: Backup suite
+        run: bash infra/tests/backup_test.sh
+      - name: systemd units are parseable
+        run: |
+          systemd-analyze verify infra/systemd/snaphost-backup.service 2>&1 | tee /tmp/verify.log
+          # The unit references paths that exist only on the VDS, so only
+          # syntax errors are fatal here.
+          ! grep -qiE 'invalid|unknown (lvalue|section)' /tmp/verify.log
+
+  images:
+    name: Image / ${{ matrix.image }}
+    needs: [go, terraform, shell]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: api-gateway, context: snaphost-backend/api-gateway, dockerfile: snaphost-backend/api-gateway/Dockerfile }
+          - { image: user-billing, context: snaphost-backend/user-billing, dockerfile: snaphost-backend/user-billing/Dockerfile }
+          - { image: builder-svc, context: snaphost-backend, dockerfile: snaphost-backend/builder-svc/Dockerfile }
+          - { image: runner-svc, context: snaphost-backend, dockerfile: snaphost-backend/runner-svc/Dockerfile, build_args: GO_BUILD_TAGS=yandex }
+          - { image: ai-orchestrator, context: snaphost-backend, dockerfile: snaphost-backend/ai-orchestrator/Dockerfile }
+          - { image: router-svc, context: snaphost-backend, dockerfile: snaphost-backend/router-svc/Dockerfile }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and optionally publish
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build_args }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ghcr.io/${{ github.repository }}/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # Staging has no host at the moment: the temporary VDS was released and
+  # production now runs on its own machine. The job is kept rather than deleted
+  # because staging is the place where a bad migration is supposed to be found,
+  # and that need returns as soon as there are users to protect.
+  #
+  # To bring it back: point the `staging` environment's DEPLOY_SSH_HOST,
+  # DEPLOY_SSH_KNOWN_HOSTS and DEPLOY_SSH_PRIVATE_KEY at the new host, check
+  # the remaining staging variables, then set repository variable
+  # STAGING_DEPLOY_ENABLED=true. Nothing else has to change.
+  deploy-staging:
+    name: Deploy staging
+    needs: [images]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && vars.STAGING_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Configure verified SSH identity
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/deploy-key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/deploy-known-hosts"
+      - name: Verify images and deploy exact SHA
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_SSH_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+          DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT }}
+          DEPLOY_SMOKE_URL: ${{ vars.DEPLOY_SMOKE_URL }}
+          DEPLOY_GHCR_USERNAME: ${{ vars.DEPLOY_GHCR_USERNAME }}
+          DEPLOY_COMPOSE_PROJECT: ${{ vars.DEPLOY_COMPOSE_PROJECT }}
+          SSH_KEY_FILE: ${{ runner.temp }}/deploy-key
+          SSH_KNOWN_HOSTS_FILE: ${{ runner.temp }}/deploy-known-hosts
+          GHCR_IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+        run: .github/scripts/deploy-remote.sh "${{ github.sha }}"

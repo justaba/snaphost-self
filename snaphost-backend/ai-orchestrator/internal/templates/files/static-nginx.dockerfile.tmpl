@@ -1,0 +1,13 @@
+FROM nginx:alpine
+COPY . /usr/share/nginx/html
+ENV PORT=8080
+RUN mkdir -p /etc/nginx/templates && printf '%s\n' \
+  'server {' \
+  '  listen ${PORT};' \
+  '  root /usr/share/nginx/html;' \
+  '  index index.html;' \
+  '  location / { try_files $uri $uri/ /index.html; }' \
+  '}' \
+  > /etc/nginx/templates/default.conf.template
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]

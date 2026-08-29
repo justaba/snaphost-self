@@ -1,0 +1,16 @@
+FROM python:{{PYTHON_VERSION}}-slim AS builder
+WORKDIR /app
+RUN pip install --no-cache-dir --upgrade pip
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+FROM python:{{PYTHON_VERSION}}-slim
+WORKDIR /app
+RUN useradd --create-home --shell /bin/bash app
+COPY --from=builder /root/.local /home/app/.local
+COPY --chown=app:app . .
+ENV PATH=/home/app/.local/bin:$PATH
+ENV PYTHONUNBUFFERED=1
+USER app
+EXPOSE 8000
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "{{APP_MODULE}}:app"]

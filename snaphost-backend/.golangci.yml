@@ -1,0 +1,57 @@
+# Shared linter configuration for every Go module under snaphost-backend/.
+#
+# The services are separate modules, so golangci-lint is run once per module
+# from that module's directory. It discovers this file by walking up from the
+# working directory, which is why it lives here rather than being copied into
+# each service.
+#
+# Written for golangci-lint v1.64.x. The v2 config schema is incompatible;
+# migrating means changing this file and the pinned version in
+# .github/workflows/pipeline.yml together, or local and CI stop agreeing.
+
+run:
+  timeout: 5m
+  # Lint the test files too — a test that ignores an error still lies about
+  # what it verified.
+  tests: true
+
+linters:
+  # The default set (errcheck, gosimple, govet, ineffassign, staticcheck,
+  # unused) stays on; these are added.
+  enable:
+    # The one this file exists for. Formatting drift went unnoticed because
+    # gofmt is not in the default set and nothing in CI ran the linter at all.
+    - gofmt
+    # Imports grouped and ordered the same way everywhere, so a diff shows the
+    # change rather than the editor that made it.
+    - goimports
+    # Unhandled type assertions panic at runtime; the middleware layer is full
+    # of them (c.Get(...).(string)).
+    - forcetypeassert
+    # %s on an error, a format verb that does not match its argument.
+    - govet
+
+# Deliberately not enabled: unparam. It flags a helper whose parameter happens
+# to take one value at every current call site, which is a comment on the
+# signature rather than a defect, and it fires on intentionally general
+# helpers. The linters above all report something that can actually go wrong.
+
+linters-settings:
+  goimports:
+    # Our own module paths sort into their own block, after third-party ones.
+    local-prefixes: snaphost
+
+issues:
+  # Report everything, including repeated instances of the same problem.
+  # The defaults hide all but the first three of a kind, which turns a
+  # systematic issue into a one-line footnote.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  exclude-rules:
+    # Test helpers assert on types they just constructed, and a failed
+    # assertion there is a failed test, not a production panic.
+    - path: _test\.go
+      linters:
+        - forcetypeassert
+        - unparam

@@ -1,0 +1,30 @@
+openapi: 3.0.0
+info:
+  title: SnapHost router
+  description: Wildcard runtime router for SnapHost deploy traffic.
+  version: "1.0"
+paths:
+  /{proxy+}:
+    x-yc-apigateway-any-method:
+      x-yc-apigateway-integration:
+%{ if router_enabled ~}
+        type: serverless_containers
+        container_id: ${router_container_id}
+        service_account_id: ${router_invoker_sa_id}
+%{ else ~}
+        type: dummy
+        http_code: 404
+        http_headers:
+          Content-Type: text/plain
+        content:
+          '*': "Deployment not found"
+%{ endif ~}
+      parameters:
+        - name: proxy
+          in: path
+          required: false
+          schema:
+            default: '-'
+            type: string
+          style: simple
+          explode: false

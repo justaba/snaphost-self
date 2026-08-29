@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the SnapHost TLS certificate store backup daily
+Documentation=https://github.com/justaba/snaphost/blob/main/docs/operations/custom-domains.md
+
+[Timer]
+# 02:40 UTC — after the database backup at 02:20, not alongside it. They write
+# to the same directory and there is no reason to have them contend.
+OnCalendar=*-*-* 02:40:00 UTC
+RandomizedDelaySec=600
+
+# The store changes whenever a certificate is issued or renewed, which is
+# exactly when a missed backup would matter, so catch up after downtime.
+Persistent=true
+
+Unit=snaphost-tls-backup.service
+
+[Install]
+WantedBy=timers.target

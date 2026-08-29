@@ -1,0 +1,15 @@
+FROM node:{{NODE_VERSION}}-alpine
+WORKDIR /app
+COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
+RUN \
+  if [ -f pnpm-lock.yaml ]; then npm install -g pnpm && pnpm install --frozen-lockfile --prod; \
+  elif [ -f yarn.lock ]; then yarn install --frozen-lockfile --production; \
+  else npm ci --omit=dev; \
+  fi
+COPY . .
+ENV NODE_ENV=production
+ENV PORT={{EXPOSE_PORT}}
+RUN addgroup -g 1001 -S nodejs && adduser -S app -u 1001 && chown -R app:nodejs /app
+USER app
+EXPOSE {{EXPOSE_PORT}}
+CMD ["npm", "start"]

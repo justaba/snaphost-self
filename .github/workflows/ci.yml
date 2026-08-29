@@ -1,0 +1,15 @@
+name: Legacy CI/CD (disabled; see pipeline.yml)
+
+# Manual-only trigger. An empty `on: []` is treated by GitHub as an invalid
+# workflow and produces a failed run on every push; workflow_dispatch keeps the
+# tombstone inert without those spurious failures.
+on: workflow_dispatch
+
+# This file is retained as an explicit tombstone. It contains no deployment
+# credentials, development Compose invocation, or remotely executable steps.
+jobs:
+  disabled:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Legacy workflow is disabled; use pipeline.yml"

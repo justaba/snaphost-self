@@ -1,0 +1,380 @@
+name: snaphost
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks:
+    - control
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-runtime-limits: &runtime-limits
+  deploy:
+    resources:
+      limits:
+        cpus: "${CONTROL_PLANE_CPU_LIMIT}"
+        memory: "${CONTROL_PLANE_MEMORY_LIMIT}"
+
+services:
+  api-gateway:
+    <<: [*service-defaults, *runtime-limits]
+    image: "${GHCR_IMAGE_PREFIX}/api-gateway:${SNAPHOST_VERSION}"
+    networks:
+      - control
+      - data
+    ports:
+      - "${API_GATEWAY_BIND_ADDRESS}:${API_GATEWAY_PORT}:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      user-billing:
+        condition: service_started
+    environment:
+      PORT: "8080"
+      REDIS_URL: "redis://redis:6379"
+      SUPABASE_URL: "${SUPABASE_URL}"
+      SUPABASE_WEBHOOK_SECRET: "${SUPABASE_WEBHOOK_SECRET}"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
+      CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS}"
+      USER_BILLING_URL: "http://user-billing:8081"
+      AI_ORCHESTRATOR_URL: "http://ai-orchestrator:8083"
+      INITIAL_VIBECOIN_BALANCE: "${INITIAL_VIBECOIN_BALANCE}"
+      RATE_LIMIT_IP: "${RATE_LIMIT_IP}"
+      RATE_LIMIT_USER: "${RATE_LIMIT_USER}"
+      RATE_LIMIT_DEPLOY: "${RATE_LIMIT_DEPLOY}"
+
+  user-billing:
+    <<: [*service-defaults, *runtime-limits]
+    image: "${GHCR_IMAGE_PREFIX}/user-billing:${SNAPHOST_VERSION}"
+    networks:
+      - control
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "8081"
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
+      BUILDER_SVC_URL: "http://builder-api:8082"
+      RUNNER_SVC_URL: "http://runner-api:8084"
+      INITIAL_VIBECOIN_BALANCE: "${INITIAL_VIBECOIN_BALANCE}"
+      RUN_MIGRATIONS: "false"
+      SAGA_WORKER_ENABLED: "${SAGA_WORKER_ENABLED}"
+      SAGA_BUILD_TIMEOUT_MIN: "${SAGA_BUILD_TIMEOUT_MIN}"
+      SAGA_RESUME_INTERVAL_SEC: "${SAGA_RESUME_INTERVAL_SEC}"
+      DEPLOY_COST_COINS: "${DEPLOY_COST_COINS}"
+      DEPLOY_DEFAULT_PORT: "${DEPLOY_DEFAULT_PORT}"
+      DOMAIN_SUFFIX: "${DOMAIN_SUFFIX}"
+      RESERVED_DOMAINS: "${RESERVED_DOMAINS}"
+      DEPLOY_TTL_MIN: "${DEPLOY_TTL_MIN}"
+      DEPLOY_TTL_MAX_MIN: "${DEPLOY_TTL_MAX_MIN}"
+      DOMAIN_CNAME_TARGET: "${DOMAIN_CNAME_TARGET}"
+      DOMAIN_A_RECORD_TARGET: "${DOMAIN_A_RECORD_TARGET}"
+      MAX_DOMAINS_PER_USER: "${MAX_DOMAINS_PER_USER}"
+      DOMAIN_ATTACH_REQUIRE_IDENTITY: "${DOMAIN_ATTACH_REQUIRE_IDENTITY}"
+      DOMAIN_ATTACH_PER_HOUR: "${DOMAIN_ATTACH_PER_HOUR}"
+      DOMAIN_VERIFY_INTERVAL_SEC: "${DOMAIN_VERIFY_INTERVAL_SEC}"
+      DOMAIN_REVERIFY_HOURS: "${DOMAIN_REVERIFY_HOURS}"
+      DOMAIN_VERIFY_GRACE_HOURS: "${DOMAIN_VERIFY_GRACE_HOURS}"
+      ALIAS_IDLE_GC_DAYS: "${ALIAS_IDLE_GC_DAYS}"
+      PROJECT_DEPLOY_RETENTION: "${PROJECT_DEPLOY_RETENTION}"
+      LOG_LEVEL: "${LOG_LEVEL}"
+
+  user-billing-migrate:
+    image: "${GHCR_IMAGE_PREFIX}/user-billing:${SNAPHOST_VERSION}"
+    profiles: ["migration"]
+    entrypoint: ["/migrate"]
+    restart: "no"
+    networks:
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+
+  builder-api:
+    <<: [*service-defaults, *runtime-limits]
+    image: "${GHCR_IMAGE_PREFIX}/builder-svc:${SNAPHOST_VERSION}"
+    command: ["/api"]
+    networks:
+      - control
+      - data
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "8082"
+      REDIS_URL: "redis://redis:6379"
+      REGISTRY_URL: "${YANDEX_REGISTRY_PREFIX}"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
+      ALLOWED_GIT_HOSTS: "${ALLOWED_GIT_HOSTS}"
+      MAX_CONCURRENT_PER_USER: "${MAX_CONCURRENT_PER_USER}"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8082/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  builder-worker:
+    <<: [*service-defaults, *runtime-limits]
+    image: "${GHCR_IMAGE_PREFIX}/builder-svc:${SNAPHOST_VERSION}"
+    command: ["/worker"]
+    networks:
+      - control
+      - data
+    depends_on:
+      buildkitd:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: "redis://redis:6379"
+      BUILDKIT_HOST: "tcp://buildkitd:1234"
+      REGISTRY_URL: "${YANDEX_REGISTRY_PREFIX}"
+      REGISTRY_AUTH_MODE: "yandex_iam"
+      REGISTRY_INSECURE: "false"
+      YANDEX_SA_KEY_PATH: "/secrets/builder-key.json"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
+      WORKDIR_ROOT: "/var/snaphost/builds"
+      MAX_REPO_SIZE_MB: "${MAX_REPO_SIZE_MB}"
+      MAX_BUILD_TIME_MIN: "${MAX_BUILD_TIME_MIN}"
+      MAX_CONCURRENT_PER_USER: "${MAX_CONCURRENT_PER_USER}"
+      ALLOWED_GIT_HOSTS: "${ALLOWED_GIT_HOSTS}"
+      ALLOWED_BASE_IMAGES: "${ALLOWED_BASE_IMAGES}"
+      ALLOWED_BASE_IMAGES_PERMISSIVE: "${ALLOWED_BASE_IMAGES_PERMISSIVE}"
+      SCAN_FAIL_ON_CRITICAL: "true"
+      USER_BILLING_URL: "http://user-billing:8081"
+      AI_ORCHESTRATOR_URL: "http://ai-orchestrator:8083"
+    volumes:
+      - type: bind
+        source: "${BUILDER_KEY_PATH}"
+        target: /secrets/builder-key.json
+        read_only: true
+
+  runner-api:
+    <<: [*service-defaults, *runtime-limits]
+    image: "${GHCR_IMAGE_PREFIX}/runner-svc:${SNAPHOST_VERSION}"
+    command: ["/api"]
+    networks:
+      - control
+      - data
+    depends_on:
+      redis:
+        condition: service_healthy
+      user-billing:
+        condition: service_started
+    environment: &runner-environment
+      PORT: "8084"
+      RUNNER_BACKEND: "yandex"
+      YANDEX_ROUTING_MODE: "router"
+      REDIS_URL: "redis://redis:6379"
+      USER_BILLING_URL: "http://user-billing:8081"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
+      DOMAIN_SUFFIX: "${DOMAIN_SUFFIX}"
+      CONTAINER_CPU_LIMIT: "${CONTAINER_CPU_LIMIT}"
+      CONTAINER_MEMORY_MB: "${CONTAINER_MEMORY_MB}"
+      CONTAINER_DEFAULT_TTL_MIN: "${CONTAINER_DEFAULT_TTL_MIN}"
+      RUNTIME_PROBE_ENABLED: "${RUNTIME_PROBE_ENABLED}"
+      RUNTIME_PROBE_TIMEOUT_SEC: "${RUNTIME_PROBE_TIMEOUT_SEC}"
+      WATCHDOG_INTERVAL_SEC: "${WATCHDOG_INTERVAL_SEC}"
+      STRICT_IMAGE_VALIDATION: "true"
+      REGISTRY_ALLOWED_PREFIXES: "${YANDEX_REGISTRY_PREFIX}"
+      YANDEX_SA_KEY_PATH: "/secrets/runner-key.json"
+      YANDEX_FOLDER_ID: "${YANDEX_FOLDER_ID}"
+      YANDEX_RUNNER_SA_ID: "${YANDEX_RUNNER_SA_ID}"
+      YANDEX_API_GATEWAY_ID: "${YANDEX_API_GATEWAY_ID}"
+      YANDEX_REGISTRY_URL: "${YANDEX_REGISTRY_PREFIX}"
+      # Where a user container's stdout/stderr is collected (Task 13a).
+      # Operator-only; never reaches the deploy owner's log stream.
+      YANDEX_LOG_GROUP_ID: "${YANDEX_LOG_GROUP_ID}"
+      YANDEX_RUNTIME_LOGS_DISABLED: "${YANDEX_RUNTIME_LOGS_DISABLED}"
+      YANDEX_RUNTIME_LOG_MIN_LEVEL: "${YANDEX_RUNTIME_LOG_MIN_LEVEL}"
+      LOG_LEVEL: "${LOG_LEVEL}"
+    volumes: &runner-volumes
+      - type: bind
+        source: "${RUNNER_KEY_PATH}"
+        target: /secrets/runner-key.json
+        read_only: true
+
+  runner-watchdog:
+    <<: [*service-defaults, *runtime-limits]
+    image: "${GHCR_IMAGE_PREFIX}/runner-svc:${SNAPHOST_VERSION}"
+    command: ["/watchdog"]
+    networks:
+      - control
+      - data
+    depends_on:
+      redis:
+        condition: service_healthy
+      user-billing:
+        condition: service_started
+    environment: *runner-environment
+    volumes: *runner-volumes
+
+  # Ingress for custom domains only (ADR 0007). The same router image already
+  # runs as a Yandex Serverless Container behind the API Gateway for generated
+  # `*.${DOMAIN_SUFFIX}` hostnames; this instance serves customer domains,
+  # which no Yandex certificate can cover.
+  #
+  # It is deliberately a separate path from the generated-hostname one: a
+  # failure here must not reach deploys served on their own subdomains, and it
+  # must never be able to fail a deploy.
+  router-svc:
+    <<: [*service-defaults, *runtime-limits]
+    image: "${GHCR_IMAGE_PREFIX}/router-svc:${SNAPHOST_VERSION}"
+    networks:
+      - control
+      - data
+    # Loopback only. Caddy on the host terminates TLS and proxies here; nothing
+    # off-box may reach the router directly, since it forwards whatever Host it
+    # is given.
+    ports:
+      - "127.0.0.1:${ROUTER_BIND_PORT}:8085"
+    depends_on:
+      user-billing:
+        condition: service_started
+    environment:
+      PORT: "8085"
+      DOMAIN_SUFFIX: "${DOMAIN_SUFFIX}"
+      USER_BILLING_URL: "http://user-billing:8081"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
+      # key_file rather than metadata: this runs on the VDS, not inside Yandex,
+      # so there is no metadata service to read an identity from.
+      YANDEX_AUTH_MODE: "key_file"
+      YANDEX_SA_KEY_PATH: "/secrets/runner-key.json"
+      # Serves Caddy's on-demand TLS `ask` probe. Safe here precisely because
+      # the port above is loopback-only; the Yandex instance of this image
+      # runs behind a public gateway and leaves it off.
+      TLS_ASK_ENABLED: "true"
+      PROXY_TIMEOUT_SEC: "${ROUTER_PROXY_TIMEOUT_SEC}"
+      LOG_LEVEL: "${LOG_LEVEL}"
+    volumes: *runner-volumes
+
+  ai-orchestrator:
+    <<: [*service-defaults, *runtime-limits]
+    image: "${GHCR_IMAGE_PREFIX}/ai-orchestrator:${SNAPHOST_VERSION}"
+    networks:
+      - control
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8083"
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
+      ALLOWED_BASE_IMAGES: "${ALLOWED_BASE_IMAGES}"
+      LLM_BASE_URL: "${LLM_BASE_URL}"
+      LLM_JSON_MODE: "${LLM_JSON_MODE}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL}"
+      OPENROUTER_REFERER: "${OPENROUTER_REFERER}"
+      OPENROUTER_APP_NAME: "${OPENROUTER_APP_NAME}"
+      LLM_TIMEOUT: "${LLM_TIMEOUT}"
+      LLM_MAX_RETRIES: "${LLM_MAX_RETRIES}"
+      CACHE_TTL_DAYS: "${CACHE_TTL_DAYS}"
+      MAX_FILE_SIZE_KB: "${MAX_FILE_SIZE_KB}"
+      MAX_FILES_PER_REQUEST: "${MAX_FILES_PER_REQUEST}"
+      RUN_MIGRATIONS: "false"
+      LOG_LEVEL: "${LOG_LEVEL}"
+
+  ai-orchestrator-migrate:
+    image: "${GHCR_IMAGE_PREFIX}/ai-orchestrator:${SNAPHOST_VERSION}"
+    profiles: ["migration"]
+    entrypoint: ["/migrate"]
+    restart: "no"
+    networks:
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+
+  postgres:
+    image: "postgres:16.4-alpine3.20"
+    restart: unless-stopped
+    networks:
+      - data
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "${POSTGRES_CPU_LIMIT}"
+          memory: "${POSTGRES_MEMORY_LIMIT}"
+
+  redis:
+    image: "redis:7.4.0-alpine3.20"
+    restart: unless-stopped
+    networks:
+      - data
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "${REDIS_CPU_LIMIT}"
+          memory: "${REDIS_MEMORY_LIMIT}"
+
+  buildkitd:
+    image: "moby/buildkit:v0.29.0-rootless"
+    restart: unless-stopped
+    command: ["--addr", "tcp://0.0.0.0:1234", "--config", "/home/user/.config/buildkit/buildkitd.toml"]
+    user: "1000:1000"
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=snaphost-buildkit-rootless
+      - systempaths=unconfined
+    networks:
+      - control
+      - data
+    volumes:
+      - buildkit_cache:/home/user/.local/share/buildkit
+      - ./buildkitd.prod.toml:/home/user/.config/buildkit/buildkitd.toml:ro
+    healthcheck:
+      test: ["CMD", "buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "${BUILDKIT_CPU_LIMIT}"
+          memory: "${BUILDKIT_MEMORY_LIMIT}"
+
+volumes:
+  postgres_data:
+  redis_data:
+  buildkit_cache:
+
+networks:
+  control:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true

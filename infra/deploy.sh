@@ -1,0 +1,519 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+COMPOSE_FILE=${SNAPHOST_COMPOSE_FILE:-/opt/snaphost/infra/docker-compose.prod.yml}
+COMPOSE_PROJECT=${SNAPHOST_COMPOSE_PROJECT:-snaphost}
+ENV_FILE=${SNAPHOST_ENV_FILE:-/opt/snaphost/env/production.env}
+STATE_DIR=${SNAPHOST_STATE_DIR:-/opt/snaphost/state}
+BACKUP_DIR=${SNAPHOST_BACKUP_DIR:-/opt/snaphost/backups}
+BUILDER_KEY_FILE=${SNAPHOST_BUILDER_KEY_FILE:-}
+RUNNER_KEY_FILE=${SNAPHOST_RUNNER_KEY_FILE:-}
+GHCR_TOKEN_FILE=${SNAPHOST_GHCR_TOKEN_FILE:-/opt/snaphost/secrets/ghcr-token}
+GHCR_USERNAME=${GHCR_USERNAME:-}
+PUBLIC_SMOKE_URL=${SNAPHOST_PUBLIC_SMOKE_URL:-}
+DRY_RUN=${SNAPHOST_DRY_RUN:-false}
+ALLOW_HTTP_SMOKE=${SNAPHOST_ALLOW_HTTP_SMOKE:-false}
+MIGRATIONS_BACKWARD_COMPATIBLE=${MIGRATIONS_BACKWARD_COMPATIBLE:-false}
+MIN_FREE_KB=${SNAPHOST_MIN_FREE_KB:-5242880}
+READINESS_TIMEOUT=${SNAPHOST_READINESS_TIMEOUT:-180}
+STABILITY_DELAY=${SNAPHOST_STABILITY_DELAY:-5}
+
+EXPECTED_SERVICES=(api-gateway user-billing builder-api builder-worker runner-api runner-watchdog router-svc ai-orchestrator postgres redis buildkitd)
+SNAPHOST_IMAGES=(api-gateway user-billing builder-svc runner-svc router-svc ai-orchestrator)
+PHASE=preflight
+TARGET_SHA=
+PREVIOUS_SHA=
+BACKUP_PATH=
+IMAGE_DIGESTS=
+SENSITIVE_TEMP_FILE=
+
+cleanup_sensitive_temp() {
+  if [[ -n "$SENSITIVE_TEMP_FILE" ]]; then
+    rm -f -- "$SENSITIVE_TEMP_FILE"
+    SENSITIVE_TEMP_FILE=
+  fi
+}
+trap cleanup_sensitive_temp EXIT
+trap 'cleanup_sensitive_temp; exit 130' INT
+trap 'cleanup_sensitive_temp; exit 143' TERM
+
+log() { printf '%s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
+action() {
+  if [[ "$DRY_RUN" == true ]]; then
+    log "DRY-RUN: $1"
+  else
+    shift
+    "$@"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Usage: deploy.sh [--dry-run] preflight <40-char-git-sha>
+       deploy.sh [--dry-run] deploy <40-char-git-sha>
+       deploy.sh [--dry-run] rollback
+EOF
+}
+
+env_value() {
+  local key=$1
+  awk -v key="$key" 'index($0, key "=")==1 {sub(/^[^=]*=/, ""); print; found=1; exit} END {if (!found) exit 1}' "$ENV_FILE"
+}
+
+require_env() {
+  local key=$1 value
+  value=$(env_value "$key") || die "required variable $key is missing from env file"
+  [[ -n "$value" ]] || die "required variable $key is empty in env file"
+}
+
+# A Yandex authorized key names the service account it acts as. Reading it does
+# not need a JSON parser, and must not need one: this runs before any tooling
+# beyond coreutils is assumed.
+key_service_account() {
+  local path=$1 id
+  id=$(grep -o '"service_account_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$path" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+  [[ -n "$id" ]] || die "cannot read service_account_id from key file: $path"
+  printf '%s' "$id"
+}
+
+# Staging and production use different service accounts against different
+# registries and folders, so crossing them fails — but it fails late, as a
+# `403 Forbidden` on the first user build, long after the deployment reported
+# success. That is what happened during the 2026-07-08 staging rebuild. Compare
+# the mounted key against the identity this environment's config expects, and
+# refuse before anything is started.
+check_key_identity() {
+  local label=$1 path=$2 expected=$3 actual
+  actual=$(key_service_account "$path") || return 1
+  [[ "$actual" == "$expected" ]] || die \
+    "$label key belongs to service account $actual, but this environment expects $expected: refusing to deploy another environment's credentials"
+}
+
+check_protected_file() {
+  local label=$1 path=$2 mode
+  [[ -f "$path" && ! -L "$path" ]] || die "$label file does not exist or is not a regular file: $path"
+  mode=$(stat -c '%a' "$path") || die "cannot inspect permissions for $label file: $path"
+  case "$mode" in
+    400|600) ;;
+    *) die "$label file permissions must be 0600 or 0400: $path" ;;
+  esac
+}
+
+compose() {
+  SNAPHOST_VERSION="$TARGET_SHA" docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+}
+
+validate_sha() {
+  [[ ${1:-} =~ ^[[:xdigit:]]{40}$ ]] || die "version must be exactly 40 hexadecimal characters"
+}
+
+check_tools() {
+  (( BASH_VERSINFO[0] >= 4 )) || die "Bash 4 or newer is required"
+  local tool
+  for tool in docker curl flock sha256sum awk grep sed stat df mktemp ln; do
+    command -v "$tool" >/dev/null || die "required command is unavailable: $tool"
+  done
+  docker compose version >/dev/null || die "Docker Compose v2 is unavailable"
+  docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
+  docker compose up --help 2>&1 | grep -q -- '--wait' || die "Docker Compose does not support up --wait"
+  docker compose config --help 2>&1 | grep -q -- '--quiet' || die "Docker Compose does not support config --quiet"
+}
+
+validate_rendered_compose() {
+  local services images rendered service count=0
+  compose config --quiet || die "Compose configuration validation failed"
+  services=$(compose config --services) || die "cannot list Compose services"
+  for service in "${EXPECTED_SERVICES[@]}"; do
+    grep -qx "$service" <<<"$services" || die "expected Compose service is missing: $service"
+    ((count += 1))
+  done
+  [[ $(wc -l <<<"$services" | tr -d ' ') -eq ${#EXPECTED_SERVICES[@]} ]] || die "Compose must contain exactly ${#EXPECTED_SERVICES[@]} default services"
+
+  images=$(compose config --images) || die "cannot list Compose images"
+  grep -Eq '(^|[/:])latest$' <<<"$images" && die "latest image tag is forbidden"
+  local image
+  for image in "${SNAPHOST_IMAGES[@]}"; do
+    grep -Fq "/$image:$TARGET_SHA" <<<"$images" || die "SnapHost image $image is not pinned to target SHA"
+  done
+  grep -Eq '^[[:space:]]*build:' "$COMPOSE_FILE" && die "build directives are forbidden"
+
+  rendered=$(mktemp)
+  chmod 600 "$rendered"
+  compose config >"$rendered" || { rm -f "$rendered"; die "cannot inspect rendered Compose"; }
+  for service in postgres redis buildkitd user-billing; do
+    if sed -n "/^  $service:/,/^  [a-zA-Z0-9_-]*:/p" "$rendered" | grep -q '^    ports:'; then
+      rm -f "$rendered"
+      die "$service must not publish host ports"
+    fi
+  done
+  rm -f "$rendered"
+}
+
+preflight() {
+  TARGET_SHA=$1
+  validate_sha "$TARGET_SHA"
+  [[ "$COMPOSE_PROJECT" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || die "SNAPHOST_COMPOSE_PROJECT must match ^[a-z0-9][a-z0-9_-]{0,62}$"
+  check_tools
+  [[ -f "$COMPOSE_FILE" ]] || die "Compose file does not exist: $COMPOSE_FILE"
+  check_protected_file "production env" "$ENV_FILE"
+  if grep -Eqi 'replace-with-|example-|example\.com|example-registry' "$ENV_FILE"; then
+    die "production env contains a template placeholder"
+  fi
+  local key
+  for key in \
+    SNAPHOST_VERSION GHCR_IMAGE_PREFIX API_GATEWAY_BIND_ADDRESS API_GATEWAY_PORT DOMAIN_SUFFIX \
+    POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD WEBHOOK_SECRET SUPABASE_URL SUPABASE_WEBHOOK_SECRET CORS_ALLOW_ORIGINS \
+    INITIAL_VIBECOIN_BALANCE SAGA_WORKER_ENABLED SAGA_BUILD_TIMEOUT_MIN SAGA_RESUME_INTERVAL_SEC \
+    DEPLOY_COST_COINS DEPLOY_DEFAULT_PORT RATE_LIMIT_IP RATE_LIMIT_USER RATE_LIMIT_DEPLOY LOG_LEVEL \
+    YANDEX_REGISTRY_PREFIX BUILDER_KEY_PATH MAX_REPO_SIZE_MB MAX_BUILD_TIME_MIN MAX_CONCURRENT_PER_USER \
+    ALLOWED_GIT_HOSTS ALLOWED_BASE_IMAGES ALLOWED_BASE_IMAGES_PERMISSIVE REGISTRY_INSECURE SCAN_FAIL_ON_CRITICAL \
+    RUNNER_KEY_PATH YANDEX_FOLDER_ID YANDEX_RUNNER_SA_ID YANDEX_BUILDER_SA_ID YANDEX_API_GATEWAY_ID \
+    CONTAINER_CPU_LIMIT CONTAINER_MEMORY_MB CONTAINER_DEFAULT_TTL_MIN WATCHDOG_INTERVAL_SEC STRICT_IMAGE_VALIDATION \
+    RUNTIME_PROBE_ENABLED RUNTIME_PROBE_TIMEOUT_SEC RESERVED_DOMAINS \
+    ROUTER_BIND_PORT ROUTER_PROXY_TIMEOUT_SEC \
+    DEPLOY_TTL_MIN DEPLOY_TTL_MAX_MIN MAX_DOMAINS_PER_USER DOMAIN_ATTACH_REQUIRE_IDENTITY DOMAIN_ATTACH_PER_HOUR \
+    DOMAIN_VERIFY_INTERVAL_SEC DOMAIN_REVERIFY_HOURS DOMAIN_VERIFY_GRACE_HOURS ALIAS_IDLE_GC_DAYS PROJECT_DEPLOY_RETENTION \
+    LLM_BASE_URL LLM_JSON_MODE OPENROUTER_API_KEY OPENROUTER_MODEL OPENROUTER_REFERER OPENROUTER_APP_NAME LLM_TIMEOUT LLM_MAX_RETRIES \
+    CACHE_TTL_DAYS MAX_FILE_SIZE_KB MAX_FILES_PER_REQUEST CONTROL_PLANE_CPU_LIMIT CONTROL_PLANE_MEMORY_LIMIT \
+    POSTGRES_CPU_LIMIT POSTGRES_MEMORY_LIMIT REDIS_CPU_LIMIT REDIS_MEMORY_LIMIT BUILDKIT_CPU_LIMIT BUILDKIT_MEMORY_LIMIT; do
+    require_env "$key"
+  done
+  BUILDER_KEY_FILE=${BUILDER_KEY_FILE:-$(env_value BUILDER_KEY_PATH)}
+  RUNNER_KEY_FILE=${RUNNER_KEY_FILE:-$(env_value RUNNER_KEY_PATH)}
+  check_protected_file "builder key" "$BUILDER_KEY_FILE"
+  check_protected_file "runner key" "$RUNNER_KEY_FILE"
+  # YANDEX_RUNNER_SA_ID is not a new setting invented for this check: it is the
+  # identity runner-svc already runs containers as, so a key that disagrees
+  # with it is broken either way.
+  check_key_identity "builder" "$BUILDER_KEY_FILE" "$(env_value YANDEX_BUILDER_SA_ID)"
+  check_key_identity "runner" "$RUNNER_KEY_FILE" "$(env_value YANDEX_RUNNER_SA_ID)"
+  if [[ -n "$GHCR_USERNAME" ]]; then
+    check_protected_file "GHCR token" "$GHCR_TOKEN_FILE"
+  fi
+  [[ -n "$PUBLIC_SMOKE_URL" ]] || die "SNAPHOST_PUBLIC_SMOKE_URL is required"
+  if [[ "$ALLOW_HTTP_SMOKE" != true && ! "$PUBLIC_SMOKE_URL" =~ ^https:// ]]; then
+    die "public smoke URL must use HTTPS"
+  fi
+  validate_rendered_compose
+  local free_kb disk_path requested
+  for requested in "$STATE_DIR" "$BACKUP_DIR"; do
+    disk_path=$requested
+    while [[ ! -e "$disk_path" && "$disk_path" != / ]]; do disk_path=$(dirname "$disk_path"); done
+    free_kb=$(df -Pk "$disk_path" 2>/dev/null | awk 'NR==2 {print $4}') || free_kb=0
+    (( free_kb >= MIN_FREE_KB )) || die "insufficient free disk space for $requested"
+  done
+  log "Preflight passed for $TARGET_SHA"
+}
+
+atomic_state() {
+  local file=$1; shift
+  local tmp
+  mkdir -p "$STATE_DIR"
+  tmp=$(mktemp "$STATE_DIR/.state.XXXXXX")
+  chmod 600 "$tmp"
+  printf '%s\n' "$@" >"$tmp"
+  mv -f "$tmp" "$STATE_DIR/$file"
+}
+
+state_value() {
+  local file=$1 key=$2
+  awk -F= -v key="$key" '$1==key {sub(/^[^=]*=/, ""); print; exit}' "$STATE_DIR/$file"
+}
+
+write_progress() {
+  atomic_state in-progress.env \
+    "sha=$TARGET_SHA" "previous_sha=$PREVIOUS_SHA" "started_at=$(date -u +%FT%TZ)" \
+    "status=$1" "backup_path=$BACKUP_PATH" "migration_status=$2" "smoke_status=$3" \
+    "image_digests=$IMAGE_DIGESTS"
+}
+
+acquire_lock() {
+  mkdir -p "$STATE_DIR" "$BACKUP_DIR"
+  exec 9>"$STATE_DIR/deploy.lock"
+  flock -n 9 || die "another deployment holds $STATE_DIR/deploy.lock"
+}
+
+login_and_pull() {
+  if [[ -n "$GHCR_USERNAME" ]]; then
+    action "login to GHCR" docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin <"$GHCR_TOKEN_FILE"
+  else
+    log "GHCR login skipped; using existing Docker credentials"
+  fi
+  action "pull all target images" compose pull
+  [[ "$DRY_RUN" == true ]] && { IMAGE_DIGESTS="dry-run"; return; }
+  local image digest entries=()
+  while IFS= read -r image; do
+    digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image") || die "cannot resolve digest for pulled image"
+    [[ -n "$digest" && "$digest" != '<no value>' ]] || die "pulled image has no repository digest"
+    entries+=("$digest")
+  done < <(compose config --images)
+  IMAGE_DIGESTS=$(IFS=,; echo "${entries[*]}")
+}
+
+ensure_previous_images() {
+  [[ -n "$PREVIOUS_SHA" ]] || return 0
+  local target=$TARGET_SHA
+  TARGET_SHA=$PREVIOUS_SHA
+  action "pull previous rollback images" compose pull
+  TARGET_SHA=$target
+}
+
+check_images_present() {
+  local image
+  while IFS= read -r image; do
+    docker image inspect "$image" >/dev/null 2>&1 || die "saved rollback image is unavailable locally: $image"
+  done < <(compose config --images)
+}
+
+postgres_running() {
+  local cid
+  cid=$(compose ps -q postgres 2>/dev/null) || return 1
+  [[ -n "$cid" ]] && [[ $(docker inspect -f '{{.State.Running}}' "$cid") == true ]]
+}
+
+backup_postgres() {
+  if ! postgres_running; then
+    [[ -f "$STATE_DIR/current.env" ]] && die "PostgreSQL is not running; refusing deployment with existing state"
+    BACKUP_PATH=bootstrap-no-existing-database
+    log "Bootstrap deployment: no existing PostgreSQL container to back up"
+    return
+  fi
+  local timestamp tmp final checksum checksum_tmp base
+  timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+  tmp=$(mktemp "$BACKUP_DIR/.postgres-${timestamp}-${TARGET_SHA}.XXXXXX")
+  base=${tmp##*/}
+  base=${base#.}
+  final="$BACKUP_DIR/$base.dump"
+  if [[ "$DRY_RUN" == true ]]; then
+    rm -f -- "$tmp"
+    BACKUP_PATH=$final
+    log "DRY-RUN: create PostgreSQL custom-format backup"
+    return
+  fi
+  umask 077
+  # </dev/null is load-bearing, not tidiness. `compose exec -T` forwards our
+  # stdin to the container, and this script is routinely fed to a remote shell
+  # as `ssh host bash -s <<EOF`. Without the redirect the dump consumes the
+  # rest of that heredoc, so every line after the deploy call silently never
+  # runs and the caller still sees exit 0 — which is exactly how the
+  # `/opt/snaphost/current` symlink went missing on 2026-08-03.
+  compose exec -T postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$tmp" </dev/null || { rm -f "$tmp"; die "PostgreSQL backup failed"; }
+  [[ -s "$tmp" ]] || { rm -f "$tmp"; die "PostgreSQL backup is empty"; }
+  chmod 600 "$tmp"
+  ln -- "$tmp" "$final" || { rm -f -- "$tmp"; die "backup destination already exists: $final"; }
+  rm -f -- "$tmp"
+  checksum=$(sha256sum "$final" | awk '{print $1}')
+  checksum_tmp=$(mktemp "$BACKUP_DIR/.checksum.XXXXXX")
+  printf '%s  %s\n' "$checksum" "$(basename "$final")" >"$checksum_tmp"
+  chmod 600 "$checksum_tmp"
+  ln -- "$checksum_tmp" "${final}.sha256" || {
+    rm -f -- "$checksum_tmp" "$final"
+    die "backup checksum destination already exists: ${final}.sha256"
+  }
+  rm -f -- "$checksum_tmp"
+  BACKUP_PATH=$final
+}
+
+wait_health() {
+  local service=$1 deadline=$((SECONDS + READINESS_TIMEOUT)) cid status
+  [[ "$DRY_RUN" == true ]] && { log "DRY-RUN: wait for $service readiness"; return; }
+  while (( SECONDS < deadline )); do
+    cid=$(compose ps -q "$service")
+    if [[ -n "$cid" ]]; then
+      status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")
+      [[ "$status" == healthy || "$status" == running ]] && return
+      [[ "$status" == exited || "$status" == dead ]] && break
+    fi
+    sleep 2
+  done
+  die "readiness timeout for $service"
+}
+
+probe_internal() {
+  local service=$1 url=$2 deadline=$((SECONDS + READINESS_TIMEOUT))
+  [[ "$DRY_RUN" == true ]] && { log "DRY-RUN: probe $service"; return; }
+  # Retry until the readiness deadline: a container can report healthy
+  # before its HTTP listener is up (api-gateway prefetches JWKS from
+  # Supabase at startup), and a single-shot probe turned that into a
+  # false deployment failure on 2026-07-12.
+  while (( SECONDS < deadline )); do
+    # </dev/null for the same reason as backup_postgres: `compose run` attaches
+    # our stdin to the container.
+    if compose run --rm --no-deps builder-api curl --fail --silent --max-time 10 "$url" >/dev/null </dev/null; then
+      return
+    fi
+    sleep 3
+  done
+  die "HTTP readiness failed for $service"
+}
+
+check_stable_container() {
+  local service=$1 cid before after
+  [[ "$DRY_RUN" == true ]] && { log "DRY-RUN: verify $service is stable"; return; }
+  cid=$(compose ps -q "$service")
+  [[ -n "$cid" ]] || die "$service container is missing"
+  before=$(docker inspect -f '{{.RestartCount}}' "$cid")
+  sleep "$STABILITY_DELAY"
+  after=$(docker inspect -f '{{.RestartCount}}' "$cid")
+  [[ "$before" == "$after" && $(docker inspect -f '{{.State.Running}}' "$cid") == true ]] || die "$service is stopped or in a restart loop"
+}
+
+rollout() {
+  local service
+  for service in postgres redis buildkitd; do
+    action "update $service" compose up -d --no-deps "$service"
+    wait_health "$service"
+  done
+
+  PHASE=migrations-started
+  write_progress migrations-running started pending
+  # </dev/null: `compose run` attaches stdin, see backup_postgres.
+  action "run user-billing migrations" compose --profile migration run --rm --no-deps user-billing-migrate </dev/null
+  action "run ai-orchestrator migrations" compose --profile migration run --rm --no-deps ai-orchestrator-migrate </dev/null
+  PHASE=migrations-applied
+  write_progress rolling-out applied pending
+
+  for service in user-billing ai-orchestrator builder-api builder-worker runner-api runner-watchdog router-svc; do
+    action "update $service" compose up -d --no-deps "$service"
+    wait_health "$service"
+  done
+  probe_internal user-billing http://user-billing:8081/health
+  probe_internal ai-orchestrator http://ai-orchestrator:8083/health
+  probe_internal builder-api http://builder-api:8082/health
+  probe_internal runner-api http://runner-api:8084/health
+  check_stable_container builder-worker
+  check_stable_container runner-watchdog
+
+  action "update api-gateway" compose up -d --no-deps api-gateway
+  wait_health api-gateway
+  probe_internal api-gateway http://api-gateway:8080/health
+}
+
+smoke() {
+  [[ "$DRY_RUN" == true ]] && { log "DRY-RUN: run public HTTPS smoke checks"; return; }
+  curl --fail --silent --max-time 15 "${PUBLIC_SMOKE_URL%/}/health" >/dev/null || die "public API health smoke failed"
+  local secret code
+  secret=$(env_value WEBHOOK_SECRET)
+  SENSITIVE_TEMP_FILE=$(mktemp)
+  chmod 600 "$SENSITIVE_TEMP_FILE"
+  printf 'header = "X-Webhook-Secret: %s"\n' "$secret" >"$SENSITIVE_TEMP_FILE"
+  if ! code=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 15 --config "$SENSITIVE_TEMP_FILE" "${PUBLIC_SMOKE_URL%/}/internal/routes?host=definitely-absent.invalid"); then
+    cleanup_sensitive_temp
+    die "authenticated route lookup smoke request failed"
+  fi
+  cleanup_sensitive_temp
+  [[ "$code" == 404 ]] || die "authenticated route lookup smoke returned unexpected status $code"
+  code=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 15 -H 'X-Webhook-Secret: intentionally-wrong' "${PUBLIC_SMOKE_URL%/}/internal/routes?host=definitely-absent.invalid")
+  [[ "$code" == 401 ]] || die "invalid-secret smoke returned unexpected status $code"
+}
+
+rollback_to() {
+  local sha=$1 service
+  validate_sha "$sha" || return 1
+  TARGET_SHA=$sha
+  for service in postgres redis buildkitd user-billing ai-orchestrator builder-api builder-worker runner-api runner-watchdog router-svc api-gateway; do
+    action "rollback $service" compose up -d --no-deps "$service" || return 1
+    wait_health "$service" || return 1
+  done
+  smoke || return 1
+}
+
+handle_failure() {
+  local rc=$?
+  trap - ERR
+  if [[ "$PHASE" == migrations-started || "$PHASE" == migrations-applied ]]; then
+    if [[ "$MIGRATIONS_BACKWARD_COMPATIBLE" == true && -n "$PREVIOUS_SHA" ]]; then
+      log "Deployment failed after migrations; compatibility confirmed, rolling images back"
+      if rollback_to "$PREVIOUS_SHA"; then
+        write_progress rolled-back applied failed
+      else
+        write_progress manual-intervention-required applied failed
+      fi
+    else
+      write_progress manual-intervention-required "$PHASE" failed
+      printf 'ERROR: deployment failed after migrations; automatic image rollback is blocked.\nPrevious SHA: %s\nBackup: %s\n' "$PREVIOUS_SHA" "$BACKUP_PATH" >&2
+    fi
+  else
+    write_progress failed-before-migrations not-started pending
+  fi
+  exit "$rc"
+}
+
+deploy() {
+  TARGET_SHA=$1
+  preflight "$TARGET_SHA"
+  if [[ "$DRY_RUN" == true ]]; then
+    log "DRY-RUN: lock, pull target and previous images, backup, migrations, ordered rollout, readiness, smoke, atomic state update"
+    return
+  fi
+  acquire_lock
+  if [[ -f "$STATE_DIR/in-progress.env" ]]; then
+    # A failed-before-migrations attempt touched no database and left current.env
+    # unchanged, so its state is safe to clear automatically — otherwise one
+    # flaky deploy would block every later deploy until manual cleanup. Any other
+    # unfinished status (migrations started/applied, manual-intervention-required)
+    # still halts and requires an operator.
+    local stale_status
+    stale_status=$(state_value in-progress.env status)
+    if [[ "$stale_status" == failed-before-migrations ]]; then
+      log "Clearing safe failed-before-migrations state from a prior attempt"
+      rm -f "$STATE_DIR/in-progress.env"
+    else
+      die "unfinished deployment state exists: $STATE_DIR/in-progress.env (status=$stale_status)"
+    fi
+  fi
+  if [[ -f "$STATE_DIR/current.env" ]]; then PREVIOUS_SHA=$(state_value current.env sha); fi
+  write_progress pulling not-started pending
+  trap handle_failure ERR
+  login_and_pull
+  ensure_previous_images
+  write_progress backed-up not-started pending
+  backup_postgres
+  write_progress backed-up not-started pending
+  rollout
+  smoke
+  if [[ -n "$PREVIOUS_SHA" ]]; then
+    validate_sha "$PREVIOUS_SHA"
+    atomic_state previous.env "sha=$PREVIOUS_SHA" "replaced_at=$(date -u +%FT%TZ)"
+  fi
+  atomic_state current.env "sha=$TARGET_SHA" "deployed_at=$(date -u +%FT%TZ)" "status=success" "backup_path=$BACKUP_PATH" "migration_status=applied" "smoke_status=passed" "image_digests=$IMAGE_DIGESTS"
+  rm -f "$STATE_DIR/in-progress.env"
+  trap - ERR
+  log "Deployment completed: $TARGET_SHA"
+}
+
+rollback() {
+  if [[ "$DRY_RUN" != true ]]; then
+    acquire_lock
+  fi
+  [[ -f "$STATE_DIR/current.env" && -f "$STATE_DIR/previous.env" ]] || die "current/previous deployment state is unavailable"
+  local current previous migration
+  current=$(state_value current.env sha)
+  previous=$(state_value previous.env sha)
+  migration=$(state_value current.env migration_status)
+  validate_sha "$current"; validate_sha "$previous"
+  if [[ "$migration" == applied && "$MIGRATIONS_BACKWARD_COMPATIBLE" != true ]]; then
+    die "rollback blocked: migrations ran and backward compatibility is not confirmed"
+  fi
+  TARGET_SHA=$previous
+  preflight "$TARGET_SHA"
+  check_images_present
+  if [[ "$DRY_RUN" == true ]]; then
+    log "DRY-RUN: rollback to saved SHA, readiness, smoke, atomic state update"
+    return
+  fi
+  rollback_to "$previous"
+  atomic_state current.env "sha=$previous" "deployed_at=$(date -u +%FT%TZ)" "status=rollback-success" "migration_status=$migration" "smoke_status=passed"
+  atomic_state previous.env "sha=$current" "replaced_at=$(date -u +%FT%TZ)"
+  log "Rollback completed: $previous"
+}
+
+if [[ ${1:-} == --dry-run ]]; then DRY_RUN=true; shift; fi
+command=${1:-}; shift || true
+case "$command" in
+  preflight) [[ $# -eq 1 ]] || { usage; exit 2; }; preflight "$1" ;;
+  deploy) [[ $# -eq 1 ]] || { usage; exit 2; }; deploy "$1" ;;
+  rollback) [[ $# -eq 0 ]] || { usage; exit 2; }; rollback ;;
+  *) usage; exit 2 ;;
+esac

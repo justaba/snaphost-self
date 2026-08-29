@@ -1,0 +1,41 @@
+[Unit]
+Description=SnapHost TLS certificate store backup
+Documentation=https://github.com/justaba/snaphost/blob/main/docs/operations/custom-domains.md
+
+[Service]
+Type=oneshot
+
+# Root, unlike snaphost-backup.service. Caddy's store is caddy:caddy 0700 and
+# must stay that way — the deployer account is the identity CD logs in with, so
+# letting it read TLS private keys would widen that blast radius. The archive
+# is encrypted to the age recipient while still owned by root, so plaintext key
+# material never reaches a less-privileged account.
+User=root
+Group=root
+WorkingDirectory=/opt/snaphost
+
+# Needs SNAPHOST_BACKUP_AGE_RECIPIENT (mandatory here: this artifact is
+# entirely key material), and the remote/credentials if the off-host copy is
+# configured.
+EnvironmentFile=-/opt/snaphost/env/backup.env
+
+ExecStart=/opt/snaphost/infra/backup.sh tls
+
+TimeoutStartSec=900
+Restart=on-failure
+RestartSec=300
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Read the certificate store, write the archive beside the other backups.
+ReadOnlyPaths=/var/lib/caddy
+ReadWritePaths=/opt/snaphost/backups
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

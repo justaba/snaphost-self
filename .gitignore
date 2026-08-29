@@ -1,0 +1,50 @@
+.env
+secrets/
+bin/
+dist/
+*.exe
+node_modules/
+.gocache/
+.tmp-*/
+*.tsbuildinfo
+
+# Docker artifacts
+docker-compose.override.yml
+.docker/
+
+# IDE files
+.idea/
+.vscode/
+.claude/settings.local.json
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test coverage
+*.out
+coverage/
+
+# Terraform local state, credentials, plans, and generated runtime keys
+**/.terraform/
+*.tfstate
+*.tfstate.*
+**/*.tfvars
+!**/*.tfvars.example
+**/*.auto.tfvars
+**/*.backend.hcl
+!**/*.backend.hcl.example
+**/.keys/
+*.tfplan
+*.tfplan.*
+*.plan
+terraform/bootstrap/
+terraform/outputs.json
+
+# Task 16c acceptance test: a throwaway DNS zone standing in for a customer.
+# Not platform infrastructure, keeps its own local state.
+terraform/.test-customer-domain/
+
+# Local tooling caches from existing developer checkouts
+.tools/

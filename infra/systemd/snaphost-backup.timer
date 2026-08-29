@@ -1,0 +1,21 @@
+[Unit]
+Description=Run the SnapHost PostgreSQL backup daily
+Documentation=https://github.com/justaba/snaphost/blob/main/docs/operations/backups.md
+
+[Timer]
+# 02:20 UTC: after the daily low point, and deliberately not on the hour, so
+# the dump does not compete with everything else scheduled at 02:00.
+OnCalendar=*-*-* 02:20:00 UTC
+
+# Spread the actual start over 20 minutes. With one host this only avoids
+# colliding with other :20 jobs; it matters more once there are two.
+RandomizedDelaySec=1200
+
+# A host that was powered off through the window still gets its backup rather
+# than silently skipping a day.
+Persistent=true
+
+Unit=snaphost-backup.service
+
+[Install]
+WantedBy=timers.target
