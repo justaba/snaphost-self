@@ -127,8 +127,9 @@ decides the validation, the rollback target resolution, and the CI trigger.
 
 ## Ordering
 
-**After Task 1, not before.** Every remaining item of Task 1 touches the same
-files:
+**After Task 1, not before** — after its items 7, 8, 10 and 9, in that order
+(see [Order of the remaining items](../active/0001-collapse-to-one-binary.md#order-of-the-remaining-items)).
+Three of them touch the same three files this task rewrites:
 
 - item 7 removes Redis, so the production manifest loses a service and
   `INFRA_SERVICES`, `EXPECTED_SERVICES`, the health dependencies and both test
@@ -139,7 +140,13 @@ files:
   change how it is tagged.
 
 Doing this first means rewriting `docker-compose.prod.yml`, `deploy.sh` and
-`deploy_test.sh` three more times.
+`deploy_test.sh` three more times. Work plan item 4 below has the same problem
+from the other end: shrinking the environment surface wants a settled set of
+variables, and items 7 and 8 are still removing and adding them.
+
+The argument against waiting is that the product stays uninstallable by anyone
+else for longer. It is weaker than it looks: finishing this before Task 1's
+item 10 would deliver an install procedure for a platform with no interface.
 
 ## Acceptance criteria
 

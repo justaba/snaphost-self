@@ -107,6 +107,11 @@ host before it becomes a plan.
 
 ## Work plan
 
+The numbers are identities, not an order — commits and other documents refer to
+"item 6a" and "item 10", so they do not move. What remains is done in the order
+**7 → 8 → 10 → 9**, which differs from the list below in one place and is
+argued at [Order of the remaining items](#order-of-the-remaining-items).
+
 1. [x] Remove the cloud runtime path: `terraform/`, `router-svc`, the Yandex and
    VK runtime backends, and every config reference to them.
 2. [x] Remove documentation describing the SaaS this forked from, and archive
@@ -380,6 +385,16 @@ host before it becomes a plan.
 9. [ ] Rewrite `CLAUDE.md` and the architecture docs, which currently describe
    seven services and a cloud runtime that no longer exist.
 
+   **Done last, after item 10**, because its whole job is to describe what is
+   there. Items 7 and 10 both change what that is — Redis leaves the manifest,
+   and the panel moves inside the binary along with a Node stage in the image
+   build. Writing this before them means writing the same two sections twice.
+
+   The cost is that `CLAUDE.md` stays wrong for one more item, while being the
+   file the work is done against. It carries a banner saying so, so the tax is
+   at least visible; if it starts costing more than the double write would,
+   move this ahead of item 10 and accept rewriting the panel section.
+
 10. [ ] The panel, embedded in the binary.
 
     There is no frontend in this repository. It stayed in `justaba/snaphost-ui`,
@@ -410,6 +425,37 @@ host before it becomes a plan.
     This is a first pass, not the last word on the panel. Tasks 2 and 3 add
     environment variables, volumes and managed services, and each of those
     brings its own screens.
+
+## Order of the remaining items
+
+**7 → 8 → 10 → 9**, then [Task 7](../planned/0007-install-and-upgrade.md).
+
+Two of those placements are dependencies rather than preference:
+
+- **7 before 8.** Item 7 changes the heap profile more than removing a 3.8 MiB
+  Redis container suggests: a 50 MB uploaded archive stops being held in RAM
+  and moves to a temp file, and an in-process queue arrives with a heap of its
+  own. A `GOMEMLIMIT` chosen before that is a number to be re-tuned immediately
+  after.
+- **9 last.** Its job is to describe what is there, and both 7 and 10 change
+  what that is. See item 9.
+
+Item 10 moved ahead of 9, which reverses what this document said until
+2026-08-29. The reason it gave — "10 sits last because it logs into 6a" — was
+about a dependency, and 6a is done, so nothing holds 10 at the end any more.
+
+**Task 7 after all of them.** It rewrites `docker-compose.prod.yml`,
+`deploy.sh` and `deploy_test.sh`, and items 7, 8 and 10 each touch those same
+three files; doing it first means rewriting them three more times. Its own
+work of shrinking the environment surface wants to shrink a settled set once,
+and items 7 and 8 are still removing and adding variables. There is no urgency
+pulling the other way: no one is installing this yet, and the two defects that
+made the deployment path actually broken were fixed on 2026-08-29.
+
+The honest argument against this order is that it leaves the product
+uninstallable by anyone else for longer. It is weaker than it looks — Task 7
+finishing before item 10 would deliver an install procedure for a platform with
+no interface, which is not a thing to hand anyone.
 
 ## Measurement
 
