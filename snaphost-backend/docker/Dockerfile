@@ -36,11 +36,18 @@ RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/control-migrate ./cmd/contro
 # ---------------------------------------------------------------------------
 FROM debian:12-slim
 
+# sqlite3 is here for one reason: taking a backup. The store is a single file
+# and the tempting move is to copy it, which is wrong while a process has it
+# open — under WAL the committed state is spread across the database and its
+# -wal, and a plain copy of the three files is a torn snapshot that restores as
+# a corrupt or stale database with nothing reporting an error. `sqlite3 .dump`
+# reads it in one transaction. About 1.5 MB for the only correct way to do it.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        git && \
+        git \
+        sqlite3 && \
     curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && \
     apt-get purge -y curl && apt-get autoremove -y && \
     apt-get clean && \
@@ -55,7 +62,8 @@ RUN groupadd --gid 1000 snaphost && \
 # Both directories are created here, with the right owner, because Docker
 # seeds a fresh named volume from the image — a mount point it creates itself
 # is owned by root, and this container is not.
-RUN mkdir -p /var/snaphost/builds /var/snaphost/data \n && chown -R snaphost:snaphost /var/snaphost
+RUN mkdir -p /var/snaphost/builds /var/snaphost/data && \
+    chown -R snaphost:snaphost /var/snaphost
 
 COPY --from=builder /out/snaphost /snaphost
 COPY --from=builder /out/control-migrate /control-migrate
