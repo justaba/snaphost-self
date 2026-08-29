@@ -1,6 +1,5 @@
-// Package watchdog implements a background process that periodically checks
-// for expired deployments and stops them. It runs as a separate process from
-// the API server, sharing the same binary.
+// Package watchdog implements a background loop that periodically checks for
+// expired deployments and stops them.
 package watchdog
 
 import (
@@ -14,16 +13,24 @@ import (
 	"snaphost/internal/runtime/runner"
 )
 
+// ExpiredLister is the one thing the watchdog needs from the control plane.
+// An interface rather than a concrete client so the sweep can read the deploy
+// repository directly in-process, without a round trip to an HTTP endpoint
+// that exists only to serve this caller.
+type ExpiredLister interface {
+	ListExpiredDeploys(ctx context.Context, limit int) ([]billing.ExpiredDeploy, error)
+}
+
 // Watchdog periodically sweeps for expired deploys and stops them.
 type Watchdog struct {
 	runner  *runner.Service
-	billing *billing.Client
+	billing ExpiredLister
 	cfg     *config.Config
 	log     *zap.Logger
 }
 
 // NewWatchdog creates a new Watchdog instance.
-func NewWatchdog(r *runner.Service, b *billing.Client, cfg *config.Config, log *zap.Logger) *Watchdog {
+func NewWatchdog(r *runner.Service, b ExpiredLister, cfg *config.Config, log *zap.Logger) *Watchdog {
 	return &Watchdog{
 		runner:  r,
 		billing: b,
