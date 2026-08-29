@@ -24,7 +24,7 @@ DATABASE_PATH=${SNAPHOST_DATABASE_PATH:-/var/snaphost/data/snaphost.db}
 # them for us. EXPECTED_SERVICES is derived rather than written twice: a second
 # list is what let the rollback path keep naming seven services that had not
 # existed for two commits.
-INFRA_SERVICES=(redis buildkitd)
+INFRA_SERVICES=(buildkitd)
 EXPECTED_SERVICES=("${INFRA_SERVICES[@]}" snaphost)
 SNAPHOST_IMAGES=(snaphost)
 PHASE=preflight
@@ -158,7 +158,7 @@ preflight() {
     DOMAIN_VERIFY_INTERVAL_SEC DOMAIN_REVERIFY_HOURS DOMAIN_VERIFY_GRACE_HOURS ALIAS_IDLE_GC_DAYS PROJECT_DEPLOY_RETENTION \
     LLM_BASE_URL LLM_JSON_MODE OPENROUTER_API_KEY OPENROUTER_MODEL OPENROUTER_REFERER OPENROUTER_APP_NAME LLM_TIMEOUT LLM_MAX_RETRIES \
     CACHE_TTL_DAYS MAX_FILE_SIZE_KB MAX_FILES_PER_REQUEST CONTROL_PLANE_CPU_LIMIT CONTROL_PLANE_MEMORY_LIMIT \
-    REDIS_CPU_LIMIT REDIS_MEMORY_LIMIT BUILDKIT_CPU_LIMIT BUILDKIT_MEMORY_LIMIT; do
+    BUILDKIT_CPU_LIMIT BUILDKIT_MEMORY_LIMIT; do
     require_env "$key"
   done
   # The builder and runner service-account keys, and the guard that checked a

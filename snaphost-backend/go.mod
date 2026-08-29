@@ -24,14 +24,12 @@ require (
 	github.com/gin-contrib/cors v1.5.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-git/go-git/v5 v5.12.0
-	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/golang-migrate/migrate/v4 v4.18.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/moby/buildkit v0.29.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/prometheus/client_golang v1.23.2
-	github.com/redis/go-redis/v9 v9.18.0
 	github.com/sashabaranov/go-openai v1.23.1
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.48.0
@@ -62,7 +60,6 @@ require (
 	github.com/containerd/ttrpc v1.2.8 // indirect
 	github.com/containerd/typeurl/v2 v2.2.3 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.0 // indirect
-	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/docker-credential-helpers v0.9.5 // indirect
 	github.com/docker/go-units v0.5.0 // indirect

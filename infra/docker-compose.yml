@@ -7,9 +7,10 @@ name: snaphost-self
 # runner-watchdog and ai-orchestrator.
 #
 # What is left beside it is infrastructure the platform genuinely does not
-# implement itself — Redis, BuildKit, a registry, and Traefik. PostgreSQL is
-# gone: the store is a SQLite file inside the application container.
-# Item 7 of Task 1 removes Redis as well.
+# implement itself — BuildKit, a registry, and Traefik. PostgreSQL went with
+# item 6 and Redis with item 7: the store is a SQLite file inside the
+# application container, and the queues, log fan-out, uploads and credentials
+# Redis held are all in the process that uses them.
 
 services:
   snaphost:
@@ -40,8 +41,6 @@ services:
     group_add:
       - "${DOCKER_SOCKET_GID:-0}"
     depends_on:
-      redis:
-        condition: service_started
       buildkitd:
         condition: service_started
       registry:
@@ -50,7 +49,6 @@ services:
       PORT: "8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_PATH: /var/snaphost/data/snaphost.db
-      REDIS_URL: ${REDIS_URL}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
 
       # Identity, issued here. The operator account is created on first start
@@ -167,20 +165,8 @@ services:
       - snaphost-net
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    networks:
-      - snaphost-net
-    restart: unless-stopped
-
 volumes:
   snaphost_data:
-  redis_data:
   buildkit_cache:
   registry_data:
 

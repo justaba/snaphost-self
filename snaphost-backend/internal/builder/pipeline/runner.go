@@ -32,7 +32,7 @@ import (
 )
 
 // StatusReporter is the interface for reporting deploy status back to the
-// user-billing service. The build-success path uses Redis BuildEvent
+// control plane. The build-success path uses a BuildEvent
 // (consumed by the saga) for image_ref / commit_sha / port — there is no
 // HTTP "built" callback because "built" is not a valid value of
 // deploys.status. See chk_deploys_status constraint and the saga
@@ -50,7 +50,7 @@ type StatusReporter interface {
 type Runner struct {
 	// Cfg is the service configuration.
 	Cfg *config.Config
-	// Queue is the Redis Streams job queue.
+	// Queue is the in-process build job queue.
 	Queue *queue.Queue
 	// Publisher is the build log publisher.
 	Publisher logs.Publisher
@@ -256,8 +256,8 @@ func (r *Runner) FinalizeAsFailed(ctx context.Context, deployID string, cause er
 // means the consumer should use its own default.
 func (r *Runner) executePipeline(ctx context.Context, job queue.Job, log *zap.Logger) (string, string, int, error) {
 	// Source dispatch (Task 14b): git_public/git_private clone (private
-	// with a short-lived credential), archive unpacks an uploaded Redis
-	// blob. The API gates unknown types upstream, so hitting the default
+	// with a short-lived credential), archive unpacks the uploaded
+	// archive. The API gates unknown types upstream, so hitting the default
 	// arm is a defence-in-depth check against stale or hand-crafted jobs.
 	switch job.SourceType {
 	case "", queue.SourceGitPublic, queue.SourceGitPrivate, queue.SourceArchive:

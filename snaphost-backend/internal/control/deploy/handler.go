@@ -65,7 +65,7 @@ type Handler struct {
 
 // NewHandler creates a new deploy HTTP handler. sagaQueue, logReader, and
 // uploads may be zero values when the corresponding subsystem is disabled
-// (CreateDeploy returns 503 if the saga is off; GetLogs returns 503 if Redis
+// (CreateDeploy returns 503 if the saga is off; GetLogs returns 503 if log
 // history is off; UploadArchive returns 503 if the upload store is off).
 // projects may be nil, in which case deploys are created without a project.
 func NewHandler(repo Repo, projects Projects, log *zap.Logger, sagaQueue *saga.Queue, runner saga.RunnerClient, logReader *logs.Reader, uploads *uploads.Store, maxUploadBytes int64, uploadTTL time.Duration, creds *gitcreds.Store, credTTL time.Duration) *Handler {
@@ -214,7 +214,7 @@ type CreateDeployRequest struct {
 	Branch     string `json:"branch"`
 	UploadID   string `json:"upload_id"`
 	// GitToken is the short-lived credential for source_type=git_private
-	// (a PAT or OAuth token). It is stored in Redis with a TTL and never
+	// (a PAT or OAuth token). It is held in memory with a TTL and never
 	// persisted or logged; only its opaque id travels further.
 	GitToken string `json:"git_token"`
 	// GitUsername optionally overrides the basic-auth username sent with
@@ -328,7 +328,7 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 	}
 	if req.SourceType == SourceGitPrivate && h.creds == nil {
 		c.JSON(http.StatusServiceUnavailable, errResponse("credentials_disabled",
-			"git_private deploys are not available (Redis not configured)"))
+			"git_private deploys are not available"))
 		return
 	}
 	// Archive deploys must reference a live upload owned by the caller.
@@ -363,7 +363,7 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 		uploadID = &req.UploadID
 	}
 
-	// git_private: park the credential in Redis under a fresh id. Only
+	// git_private: park the credential in memory under a fresh id. Only
 	// the id goes into the saga job / deploy_sagas; the builder deletes
 	// the secret right after the clone, the TTL is the backstop.
 	var credentialID string
@@ -436,12 +436,16 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 		return
 	}
 
+	// logs_channel and events_channel used to be here, naming the Redis
+	// channels a client was invited to subscribe to. There is no broker to
+	// subscribe to any more, and there never was one a client could reach —
+	// Redis was on an internal network. What a caller actually uses is below.
 	c.JSON(http.StatusAccepted, gin.H{
-		"deploy_id":      deployID.String(),
-		"status":         "pending",
-		"logs_channel":   "logs:" + deployID.String(),
-		"events_channel": "build-events:" + deployID.String(),
-		"poll_url":       "/api/v1/deploys/" + deployID.String(),
+		"deploy_id":  deployID.String(),
+		"status":     "pending",
+		"poll_url":   "/api/v1/deploys/" + deployID.String(),
+		"logs_url":   "/api/v1/deploys/" + deployID.String() + "/logs",
+		"stream_url": "/ws/logs/" + deployID.String(),
 	})
 }
 
@@ -615,12 +619,13 @@ func (h *Handler) DeleteDeploy(c *gin.Context) {
 }
 
 // GetLogs handles GET /api/v1/deploys/:id/logs?since=&limit= — returns
-// buffered build/saga logs from the Redis Stream that backs each deploy.
+// buffered build and saga logs: from memory while the deploy is live, and from
+// the archived tail once it is not.
 // Pass the response's `next_since` as `since` on the following request to
 // page through new entries; an empty `since` returns the full history.
 func (h *Handler) GetLogs(c *gin.Context) {
 	if h.logReader == nil {
-		c.JSON(http.StatusServiceUnavailable, errResponse("logs_disabled", "log history is not available (Redis not configured)"))
+		c.JSON(http.StatusServiceUnavailable, errResponse("logs_disabled", "log history is not available"))
 		return
 	}
 	userID, err := userIDFromHeader(c)

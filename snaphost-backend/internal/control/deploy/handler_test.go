@@ -495,7 +495,7 @@ func TestUploadArchive_Validation(t *testing.T) {
 	}
 }
 
-func TestUploadArchive_DisabledWithoutRedis(t *testing.T) {
+func TestUploadArchive_DisabledWithoutAStore(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &Handler{log: zap.NewNop()}
 	r := gin.New()

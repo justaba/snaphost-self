@@ -16,8 +16,6 @@ type Config struct {
 	// the switch survives because backend.Backend is the seam a future
 	// runtime would land on (ADR 0004).
 	RunnerBackend string
-	// RedisURL is the connection string for the Redis instance used for log pub/sub.
-	RedisURL string
 	// UserBillingURL is the base URL for the user-billing internal API.
 	UserBillingURL string
 	// WebhookSecret is the shared secret for service-to-service authentication.
@@ -75,12 +73,6 @@ func Load() (*Config, error) {
 		DockerSocket:   envOrDefault("DOCKER_SOCKET", "/var/run/docker.sock"),
 		LogLevel:       envOrDefault("LOG_LEVEL", "info"),
 		RegistryAuth:   os.Getenv("REGISTRY_AUTH"),
-	}
-
-	// Required: REDIS_URL
-	cfg.RedisURL = os.Getenv("REDIS_URL")
-	if cfg.RedisURL == "" {
-		return nil, fmt.Errorf("config: REDIS_URL is required but not set")
 	}
 
 	// Required: WEBHOOK_SECRET

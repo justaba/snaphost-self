@@ -15,7 +15,7 @@ mkdir -p "$BIN"
 # `config --services` from this and refuses `up` for anything else, so a script
 # that names a service the manifest dropped fails here the way it would on the
 # box — which is the bug this list was added after.
-export MANIFEST_SERVICES="snaphost redis buildkitd"
+export MANIFEST_SERVICES="snaphost buildkitd"
 
 cat >"$BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
@@ -55,9 +55,9 @@ case "$op" in
       sha=${SNAPHOST_VERSION:?}
       printf 'ghcr.io/acme/repo/%s:%s\n' snaphost "$sha"
     elif [[ "$*" != *'--quiet'* ]]; then
-      # snaphost publishes a port; the two infrastructure services must not.
+      # snaphost publishes a port; the infrastructure service must not.
       # The rendered-compose check greps exactly this shape.
-      printf 'services:\n  snaphost:\n    ports:\n      - target: 8080\n  redis:\n    image: redis\n  buildkitd:\n    image: buildkit\n'
+      printf 'services:\n  snaphost:\n    ports:\n      - target: 8080\n  buildkitd:\n    image: buildkit\n'
     fi
     ;;
   pull) [[ ${FAIL_PULL:-0} != 1 ]] ;;
@@ -195,8 +195,6 @@ MAX_FILE_SIZE_KB=50
 MAX_FILES_PER_REQUEST=20
 CONTROL_PLANE_CPU_LIMIT=1
 CONTROL_PLANE_MEMORY_LIMIT=512M
-REDIS_CPU_LIMIT=1
-REDIS_MEMORY_LIMIT=1G
 BUILDKIT_CPU_LIMIT=4
 BUILDKIT_MEMORY_LIMIT=4G
 EOF

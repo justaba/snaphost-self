@@ -1,29 +1,27 @@
 # Task catalog
 
 Status: Current
-Updated: 2026-08-29
+Updated: 2026-08-30
 
 ## Active
 
 | Task | Status | Document |
 | --- | --- | --- |
-| 1 — Collapse the control plane into one binary | In progress — the cloud runtime path, dead docs, billing and the module split are gone, the platform is one process, the store is SQLite, and identity is issued here rather than by Supabase. The in-process queue, `GOMEMLIMIT`, the docs rewrite and the embedded panel remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
+| 1 — Collapse the control plane into one binary | In progress — the cloud runtime path, dead docs, billing and the module split are gone, the platform is one process, the store is SQLite, identity is issued here rather than by Supabase, and Redis is gone. `GOMEMLIMIT`, the docs rewrite and the embedded panel remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
 
-Remaining order inside Task 1: **7** in-process queue → **8** `GOMEMLIMIT` →
-**10** the panel → **9** docs. Then Task 7.
+Remaining order inside Task 1: **8** `GOMEMLIMIT` → **10** the panel → **9**
+docs. Then Task 7.
 
-Two of those are dependencies. Item 7 moves a 50 MB upload out of RAM and adds
-an in-process queue, so a `GOMEMLIMIT` picked before it is a number to re-tune
-after. Item 9 describes what is there, and 7 and 10 both change what that is —
-so the docs go last, and `CLAUDE.md` stays wrong for one more item while
-carrying its banner about it.
+Item 9 describes what is there, and item 10 changes what that is, so the docs
+go last and `CLAUDE.md` stays wrong for one more item while carrying its banner
+about it.
 
 Item 10 moved ahead of 9 on 2026-08-29. It had been last because it logs into
 item 6a, and 6a is done.
 
-Measured after item 6a, before anyone logs in: **48.1 MiB idle across five
-containers**, from 131.1 MiB across twelve. The application itself is 7.4 of
-that — and 28.8 after a login, which is heap Go keeps rather than anything
+Measured after item 7, before anyone logs in: **44.7 MiB idle across four
+containers**, from 131.1 MiB across twelve. The application itself is 8.0 of
+that — and about 29 after a login, which is heap Go keeps rather than anything
 argon2 is still holding. Bounding it is item 8.
 
 ## Planned

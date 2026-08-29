@@ -15,7 +15,7 @@ import (
 
 // Handler provides HTTP endpoints for the builder-svc API.
 type Handler struct {
-	// Queue is the Redis Streams job queue.
+	// Queue is the in-process build job queue.
 	Queue *queue.Queue
 	// Cfg is the service configuration.
 	Cfg *config.Config
@@ -80,10 +80,9 @@ func (h *Handler) Build(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"job_id":       jobID,
-		"deploy_id":    req.DeployID,
-		"status":       "queued",
-		"logs_channel": "logs:" + req.DeployID,
+		"job_id":    jobID,
+		"deploy_id": req.DeployID,
+		"status":    "queued",
 	})
 }
 

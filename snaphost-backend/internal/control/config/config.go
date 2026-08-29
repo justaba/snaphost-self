@@ -15,10 +15,6 @@ type Config struct {
 	// DatabasePath is where the SQLite file lives. A directory that does not
 	// exist yet is created — a fresh install points this at an empty volume.
 	DatabasePath string
-	// RedisURL is the Redis connection string used by the saga queue and
-	// the build-events subscription. Optional — if empty, the saga
-	// worker is disabled regardless of SagaWorkerEnabled.
-	RedisURL string
 	// LogLevel controls the zap logger verbosity ("info" or "debug").
 	LogLevel string
 	// WebhookSecret is the shared secret used by api-gateway and other
@@ -64,10 +60,10 @@ type Config struct {
 	// POST /api/v1/deploys/upload. Must not exceed what api-gateway
 	// allows for the same route (MAX_UPLOAD_SIZE_MB there too).
 	MaxUploadSizeMB int
-	// UploadTTLMin is how long an uploaded archive blob lives in Redis
-	// before the TTL backstop deletes it.
+	// UploadTTLMin is how long an uploaded archive lives on disk
+	// before the expiry sweep deletes it.
 	UploadTTLMin int
-	// GitCredTTLMin is how long a git_private credential lives in Redis.
+	// GitCredTTLMin is how long a git_private credential stays in memory.
 	// Must exceed SagaBuildTimeoutMin so a slow build can still clone.
 	GitCredTTLMin int
 
@@ -130,7 +126,6 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Port:     envOrDefault("PORT", "8081"),
 		LogLevel: envOrDefault("LOG_LEVEL", "info"),
-		RedisURL: envOrDefault("REDIS_URL", ""),
 	}
 
 	// Optional: DATABASE_PATH. The default sits under a directory a container

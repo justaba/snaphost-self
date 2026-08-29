@@ -1,7 +1,7 @@
 name: snaphost-self
 
 # Production manifest. One application service pinned to an exact image SHA,
-# plus the two pieces of infrastructure the platform does not implement itself.
+# plus the one piece of infrastructure the platform does not implement itself.
 #
 # It used to be ten services and five images, and a deployment had to verify
 # every one of those manifests existed at the same SHA before it could start.
@@ -11,7 +11,11 @@ name: snaphost-self
 # application's own volume. That removes the container, the volume, five
 # environment variables and the healthcheck the whole rollout waited on — and
 # it moves the backup from `pg_dump` over a network socket to `sqlite3 .dump`
-# inside the one container that has the file. Item 7 removes Redis too.
+# inside the one container that has the file.
+#
+# Redis is gone with item 7. Its queues became channels, its pub/sub became a
+# fan-out in memory, its upload blobs became files, and its credentials became
+# a map — every one of them a broker between two goroutines in one process.
 #
 # Still the wrong shape for a self-hosted product: this describes pushing a
 # GHCR image onto a VDS over SSH, and a self-hosted platform is installed by
@@ -27,7 +31,7 @@ services:
       - control
       - data
     # The only published port. Everything else answers on an internal network,
-    # and `data` is marked internal so Redis has no route out.
+    # and `data` is marked internal, so nothing on it can reach outward.
     ports:
       - "${API_GATEWAY_BIND_ADDRESS}:${API_GATEWAY_PORT}:8080"
     volumes:
@@ -40,8 +44,6 @@ services:
       # backup runs `sqlite3 .dump` in here rather than copying the volume.
       - snaphost_data:/var/snaphost/data
     depends_on:
-      redis:
-        condition: service_healthy
       buildkitd:
         condition: service_healthy
     logging:
@@ -63,7 +65,6 @@ services:
       # profile-only migrate service was decoration. On SQLite that is two
       # containers opening one file.
       RUN_MIGRATIONS: "${RUN_MIGRATIONS}"
-      REDIS_URL: "redis://redis:6379"
       WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
 
       OPERATOR_EMAIL: "${OPERATOR_EMAIL:-operator@localhost}"
@@ -148,25 +149,6 @@ services:
       DATABASE_PATH: "/var/snaphost/data/snaphost.db"
       LOG_LEVEL: "${LOG_LEVEL}"
 
-  redis:
-    image: "redis:7.4.0-alpine3.20"
-    restart: unless-stopped
-    networks:
-      - data
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    deploy:
-      resources:
-        limits:
-          cpus: "${REDIS_CPU_LIMIT}"
-          memory: "${REDIS_MEMORY_LIMIT}"
-
   buildkitd:
     image: "moby/buildkit:v0.29.0-rootless"
     restart: unless-stopped
@@ -196,7 +178,6 @@ services:
 
 volumes:
   snaphost_data:
-  redis_data:
   buildkit_cache:
 
 networks:

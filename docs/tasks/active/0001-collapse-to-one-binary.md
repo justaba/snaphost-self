@@ -1,11 +1,11 @@
 # Task 1 — Collapse the control plane into one binary
 
-**Status:** In progress. The cloud runtime path, the dead documentation, and
+**Status:** In progress. The cloud runtime path, the dead documentation and
 billing are removed, the six modules are one, the platform is a single binary
-on SQLite, and it issues its own identity. The in-process queue, GOMEMLIMIT,
-the docs rewrite and the embedded panel remain.
+on SQLite, it issues its own identity, and Redis is gone. GOMEMLIMIT, the docs
+rewrite and the embedded panel remain.
 **Created:** 2026-08-29
-**Updated:** 2026-08-29
+**Updated:** 2026-08-30
 
 ## Goal
 
@@ -42,18 +42,31 @@ between runs, so the honest comparison is the application line.
 snaphost sits at 28.8 afterwards and does not climb further no matter how many
 times the operator logs in. Item 8 is what bounds this.
 
+After item 7 removed Redis, on a fresh stack restarted so the bootstrap hash is
+not in the sample: **44.7 MiB across four containers** — Traefik 17.2,
+BuildKit 15.3, snaphost 8.0, registry 4.3.
+
+The application did not get smaller, and that is the honest reading: 7.4 before,
+8.0 after, which is inside the noise of two measurements. Everything Redis held
+moved into this process, so the queues, the log history and the upload index are
+now its memory rather than another container's — and it still came out level,
+because what they replaced was a client library, four connection pools and a
+serialisation step per message. The 3.8 MiB the Redis container itself used is
+the whole saving, plus a daemon, a volume and an appendonly file with git
+tokens in it.
+
 So the ~170 MB target was already met before any of this work, and the headline
 justification was overstated by roughly four times. What the measurement does
 support is narrower and still real: the application side went from 40.5 MiB
 across seven processes to 8.9 MiB in one, and six containers stopped existing.
 
-Item 7 and the edge are what is left: Redis at 4.8 and the registry at 4.5 are
-now small beside Traefik at 21.0, which Caddy replaces in Task 4. The floor is
-BuildKit at 16.2, and it only exists while something is being built.
-
+The edge is what is left. Traefik at 17.2 is now the largest thing running,
+and Caddy replaces it in Task 4; the registry at 4.3 goes with the decision
+above that a build and the container running it share a host. The floor is
+BuildKit at 15.3, and it only exists while something is being built.
 
 The figure that matters is still what is left over rather than what the
-platform uses: on a 1 GB box, 56 MiB of platform leaves nearly 970 MiB for the
+platform uses: on a 1 GB box, 45 MiB of platform leaves nearly 980 MiB for the
 sites.
 
 ## Why this is deletion, not optimisation
@@ -87,7 +100,8 @@ Settled 2026-08-29, owner decision:
 - **SQLite, not PostgreSQL.** One writer, one operator, WAL mode. Only 13 lines
   of Postgres-specific SQL exist across all inherited migrations, so the port is
   bounded. A backup becomes copying one file.
-- **No Redis.** Its five jobs move in-process: the build queue becomes a channel
+- **No Redis.** Its jobs move in-process — eight of them, not the five counted
+  here: the build queue becomes a channel
   plus a durable table, log pub/sub becomes direct fan-out to WebSocket
   subscribers, git credentials become a map with a TTL, and rate limiting stops
   being a concept. Uploaded archives move to a temp file — today a 50 MB tarball
@@ -109,8 +123,8 @@ host before it becomes a plan.
 
 The numbers are identities, not an order — commits and other documents refer to
 "item 6a" and "item 10", so they do not move. What remains is done in the order
-**7 → 8 → 10 → 9**, which differs from the list below in one place and is
-argued at [Order of the remaining items](#order-of-the-remaining-items).
+**8 → 10 → 9**, which differs from the list below in one place and is argued at
+[Order of the remaining items](#order-of-the-remaining-items).
 
 1. [x] Remove the cloud runtime path: `terraform/`, `router-svc`, the Yandex and
    VK runtime backends, and every config reference to them.
@@ -369,7 +383,54 @@ argued at [Order of the remaining items](#order-of-the-remaining-items).
    Verified live from an empty volume, which is the acceptance test for the
    item: the stack starts with no `SUPABASE_URL` set anywhere.
 
-7. [ ] Replace Redis with the in-process queue, pub/sub, and credential store.
+7. [x] Replace Redis with the in-process queue, pub/sub, and credential store.
+
+   Eight jobs, not five: two queues, the log pub/sub, the bounded log history
+   the HTTP endpoint read back, the build-event channel, uploaded archives, git
+   credentials, and two rate limiters. Every one of them was a broker between
+   goroutines in one process.
+
+   Durability came out cheaper than planned. The task decisions call for "a
+   channel plus a durable table", and the durable table already existed:
+   `deploy_sagas` plus the resume sweeper. What was added instead is one query
+   at startup that rewinds sagas stranded mid-build, so a restart costs a fresh
+   build rather than the whole 15-minute build timeout followed by
+   compensation.
+
+   Four things this found that were not on the list:
+
+   - **The build queue's redelivery was already broken.** An un-acked job
+     would have been replayed against an uploaded archive and a git credential
+     that the pipeline deletes the moment it consumes them, so for two of the
+     three source types the replay could only fail.
+   - **The per-user in-flight count leaked.** It was a Redis sorted set with no
+     expiry on its members, so a build killed mid-flight shrank that user's
+     concurrency limit permanently.
+   - **Git tokens were being written to disk for no reason.** Redis ran with
+     appendonly persistence, so every private-repository token was appended to
+     a file in plaintext — and nothing ever read it back, because the token
+     lives for minutes and the builder deletes it after the clone.
+   - **A race in the first draft of the log bus.** Delivery copied the
+     subscriber channels out from under the lock and sent afterwards, so an
+     unsubscribe landing in that window closed a channel a publisher was about
+     to send on. That is a panic, and the way to reach it is closing a browser
+     tab during a build. Found by the race detector on the first concurrent
+     run.
+
+   Two decisions were taken rather than assumed, because the task's own
+   decisions did not cover them:
+
+   - **Log history is memory plus a tail on disk.** Redis persisted with
+     appendonly and memory does not. For a build someone watched succeed that
+     is nothing; for one that failed it is the whole reason to open the deploy
+     again, so the last 200 lines go to `deploys.log_tail` at the moment the
+     status becomes `failed`.
+   - **Rate limiting survives on the login endpoint only.** The decision that
+     it "stops being a concept" was written before item 6a added a password.
+     The sliding window that shaped traffic for a multi-tenant API is gone;
+     ten failures per address per five minutes is what replaced it, on the one
+     endpoint that accepts a guess at the credential which opens a panel that
+     runs containers as root.
 8. [ ] Set `GOMEMLIMIT` and a container memory limit that agree with each other.
    Neither `GOMEMLIMIT` nor `GOGC` is set anywhere in the inherited tree, while
    the production Compose file does set container memory limits — so Go never
@@ -428,17 +489,16 @@ argued at [Order of the remaining items](#order-of-the-remaining-items).
 
 ## Order of the remaining items
 
-**7 → 8 → 10 → 9**, then [Task 7](../planned/0007-install-and-upgrade.md).
+**8 → 10 → 9**, then [Task 7](../planned/0007-install-and-upgrade.md).
 
-Two of those placements are dependencies rather than preference:
+One of those placements is a dependency rather than preference: **9 last**,
+because its job is to describe what is there and item 10 changes what that is.
+See item 9.
 
-- **7 before 8.** Item 7 changes the heap profile more than removing a 3.8 MiB
-  Redis container suggests: a 50 MB uploaded archive stops being held in RAM
-  and moves to a temp file, and an in-process queue arrives with a heap of its
-  own. A `GOMEMLIMIT` chosen before that is a number to be re-tuned immediately
-  after.
-- **9 last.** Its job is to describe what is there, and both 7 and 10 change
-  what that is. See item 9.
+Item 7 came before 8 for the same kind of reason, and it landed on 2026-08-30:
+it moved a 50 MB upload out of RAM and brought two in-process queues with heaps
+of their own, so a `GOMEMLIMIT` picked before it would have been re-tuned
+straight afterwards.
 
 Item 10 moved ahead of 9, which reverses what this document said until
 2026-08-29. The reason it gave — "10 sits last because it logs into 6a" — was

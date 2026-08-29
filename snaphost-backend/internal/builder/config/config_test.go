@@ -24,7 +24,6 @@ func TestRegistryInsecureAutoDetect(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Set required env vars for Load().
-			t.Setenv("REDIS_URL", "redis://localhost:6379")
 			t.Setenv("REGISTRY_URL", tc.registry)
 			t.Setenv("WEBHOOK_SECRET", "test-secret")
 

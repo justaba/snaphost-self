@@ -14,8 +14,6 @@ import (
 type Config struct {
 	// Port is the HTTP listen port for the API process.
 	Port string
-	// RedisURL is the Redis connection string (e.g. redis://redis:6379).
-	RedisURL string
 	// BuildKitHost is the gRPC address of the BuildKit daemon.
 	BuildKitHost string
 	// RegistryURL is the container registry prefix (e.g. registry:5000/snaphost).
@@ -88,12 +86,6 @@ func Load() (*Config, error) {
 		UserBillingURL:    envOrDefault("USER_BILLING_URL", "http://user-billing:8081"),
 		RegistryUsername:  os.Getenv("REGISTRY_USERNAME"),
 		RegistryPassword:  os.Getenv("REGISTRY_PASSWORD"),
-	}
-
-	// Required: REDIS_URL
-	cfg.RedisURL = os.Getenv("REDIS_URL")
-	if cfg.RedisURL == "" {
-		return nil, fmt.Errorf("config: REDIS_URL is required but not set")
 	}
 
 	// Required: REGISTRY_URL

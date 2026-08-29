@@ -12,7 +12,7 @@
 //  2. the store, opened and migrated on one handle;
 //  3. the operator account, so the platform can be logged into before it can
 //     be asked to authenticate anyone;
-//  4. one Redis client, shared by everything;
+//  4. the in-process buses and stores that used to be Redis;
 //  5. components, then the adapters that join them;
 //  6. one HTTP engine;
 //  7. background loops last, so nothing starts working before the thing it
@@ -34,7 +34,6 @@ import (
 	"github.com/casbin/casbin/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	aiapi "snaphost/internal/ai/api"
@@ -171,24 +170,18 @@ func main() {
 	// transition the saga acts on.
 	events := buildevents.New(0)
 
-	rdb, err := newRedis(ctx, ctlCfg.RedisURL)
-	if err != nil {
-		log.Fatal("redis connection failed", zap.Error(err))
-	}
-	defer rdb.Close()
-
 	// 5. Components, bottom up.
 	ai := buildAI(pool, aiCfg, log)
 	rt := buildRuntime(pool, rtCfg, bus, log)
-	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, events, uploadsStore, credsStore, rdb, log)
-	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, events, uploadsStore, credsStore, rdb, log)
+	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, events, uploadsStore, credsStore, log)
+	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, events, uploadsStore, credsStore, log)
 
 	// 6. One engine. The middleware order is the gateway's, unchanged and
 	//    load-bearing: rate limiting before authentication so an IP limit
 	//    applies to unauthenticated traffic too, and Enrich last so the
 	//    identity headers downstream handlers read are written from a verified
 	//    token and deleted when there is none.
-	engine, err := buildEngine(gwCfg, ctlCfg, ctl, ai.handler, pool, bus, rdb, log)
+	engine, err := buildEngine(gwCfg, ctlCfg, ctl, ai.handler, pool, bus, log)
 	if err != nil {
 		log.Fatal("failed to build HTTP engine", zap.Error(err))
 	}
@@ -217,29 +210,6 @@ func main() {
 		log.Error("graceful shutdown failed", zap.Error(err))
 	}
 	log.Info("stopped")
-}
-
-// newRedis connects and verifies the connection. Unlike the split services,
-// Redis is not optional here: the build queue, the deploy log stream and the
-// saga all need it, and a process that silently disables half of itself is
-// worse than one that refuses to start. Item 7 of Task 1 removes the
-// dependency entirely.
-func newRedis(ctx context.Context, url string) (*redis.Client, error) {
-	if url == "" {
-		return nil, errors.New("REDIS_URL is required")
-	}
-	opts, err := redis.ParseURL(url)
-	if err != nil {
-		return nil, err
-	}
-	client := redis.NewClient(opts)
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := client.Ping(pingCtx).Err(); err != nil {
-		client.Close()
-		return nil, err
-	}
-	return client, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +277,7 @@ type builderParts struct {
 	runner   *builderpipeline.Runner
 }
 
-func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, events *buildevents.Bus, uploadsStore *uploads.Store, credsStore *gitcreds.Store, rdb *redis.Client, log *zap.Logger) builderParts {
+func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, events *buildevents.Bus, uploadsStore *uploads.Store, credsStore *gitcreds.Store, log *zap.Logger) builderParts {
 	_ = aiCfg
 
 	q := builderqueue.NewQueue(0, log)
@@ -386,7 +356,6 @@ func buildControl(
 	events *buildevents.Bus,
 	uploadsStore *uploads.Store,
 	credsStore *gitcreds.Store,
-	rdb *redis.Client,
 	log *zap.Logger,
 ) controlParts {
 	authSvc := auth.NewService(auth.NewRepository(pool), time.Duration(cfg.SessionTTLHours)*time.Hour)
@@ -506,7 +475,6 @@ func buildEngine(
 	aiHandler *aiapi.Handler,
 	pool *sql.DB,
 	bus *logbus.Bus,
-	rdb *redis.Client,
 	log *zap.Logger,
 ) (*gin.Engine, error) {
 	enforcer, err := casbin.NewEnforcer(gwCfg.RBACModelPath, gwCfg.RBACPolicyPath)
