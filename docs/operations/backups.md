@@ -1,11 +1,19 @@
 # Backup and restore
 
-Status: Current — scheduled backups, retention, encryption, and off-host copy implemented; restore drill proven on staging only
+Status: Current — the dump, its verification, retention, encryption and off-host copy are implemented against SQLite; the restore drill below has not been re-run since the store changed
 Type: Operations
-Updated: 2026-08-04
+Updated: 2026-08-29
 
-The durable state requiring backup is PostgreSQL. Redis is transport/cache
-state and must not be the only copy of billing or deploy ownership data.
+The durable state requiring backup is one SQLite file inside the application
+container's volume, `/var/snaphost/data/snaphost.db`. Redis is transport and
+cache state and must not be the only copy of deploy ownership.
+
+**The tempting thing is to copy that file, and it is wrong.** The database runs
+in WAL mode, so committed state is spread across `snaphost.db` and its `-wal`
+sidecar; a copy of both taken while the process is running is a torn snapshot
+that restores as a stale or corrupt database with nothing reporting an error.
+Every path below goes through `sqlite3 .dump`, which reads the whole database
+in one transaction.
 
 There are two backup mechanisms and they exist for different reasons.
 
@@ -30,14 +38,17 @@ without a copy, and nothing ever deleted what it wrote.
 1. takes `deploy.sh`'s lock, so a dump is never captured mid-migration. If a
    deployment holds it, the run exits successfully without dumping — that
    deployment is taking its own backup;
-2. `pg_dump -Fc` out of the running container, using the credentials already
-   inside it, so no password passes through this script;
-3. **verifies the archive before publishing it**: reads the table of contents
-   and requires table data for `wallets`, `transactions`, `deploys`,
-   `deploy_sagas`, `api_keys`, `projects`, and `custom_domains`. A dump that
-   restores to an empty schema is worse than no dump, because it looks like a
-   backup. The `ai_*` tables are cache and accounting logs and are deliberately
-   not required;
+2. `sqlite3 <db> .dump` inside the running application container, which is the
+   only one that has the file. There are no credentials in this step at all
+   now, where there used to be a password living inside the database container;
+3. **verifies the dump before publishing it**: the last line must be `COMMIT;`,
+   and `users`, `deploys`, `deploy_sagas`, `api_keys`, `projects` and
+   `custom_domains` must all be present. A dump that restores to an empty
+   schema is worse than no dump, because it looks like a backup — and a dump
+   cut short is worse still, because it restores cleanly into a database
+   missing everything after the cut, which a checksum cannot catch. The `ai_*`
+   tables are a cache and an accounting log and are deliberately not required;
+   `schema_migrations` is reconstructible;
 4. encrypts to `SNAPHOST_BACKUP_AGE_RECIPIENT` with `age`, if set;
 5. publishes atomically (`mktemp` + `ln`, never overwriting) with a `.sha256`
    beside it, mode `0600`;
@@ -122,7 +133,7 @@ deployment user:
 
 ```bash
 SNAPHOST_BACKUP_AGE_RECIPIENT=age1...
-SNAPHOST_BACKUP_REMOTE=s3://snaphost-backups-production/postgres
+SNAPHOST_BACKUP_REMOTE=s3://snaphost-backups-production/database
 SNAPHOST_BACKUP_S3_ENDPOINT=https://storage.yandexcloud.net
 SNAPHOST_BACKUP_HEARTBEAT_URL=https://hc-ping.com/...
 AWS_ACCESS_KEY_ID=...
@@ -146,46 +157,61 @@ The dry run touches nothing — it does not even take the lock.
 ## Verify a backup
 
 ```bash
-/opt/snaphost/infra/backup.sh verify /opt/snaphost/backups/scheduled-<UTC>.dump
+/opt/snaphost/infra/backup.sh verify /opt/snaphost/backups/scheduled-<UTC>.sql
 ```
 
-This checks the checksum and, for an unencrypted dump, that every required
+This checks the checksum, the terminating `COMMIT;`, and that every required
 table is present. For an `.age` file only the checksum is checked — decrypt it
 with the offline key first to check structure.
+
+It no longer needs a working deployment to run. Checking a dump used to mean
+running `pg_restore` inside the database container, so verifying a backup
+required the thing you were verifying the backup because of.
 
 For a `deploy.sh` dump the checksum check is the same shape:
 
 ```bash
 cd /opt/snaphost/backups
-sha256sum --check postgres-<UTC>-<sha>-<random>.dump.sha256
+sha256sum --check database-<UTC>-<sha>-<random>.sql.sha256
 ```
 
 ## Restore
 
-Restore is deliberately manual and must target an isolated PostgreSQL instance
-first. `deploy.sh` and `backup.sh` never restore.
+Restore is deliberately manual and must target a throwaway file first.
+`deploy.sh` and `backup.sh` never restore.
 
 ```bash
-age -d -i snaphost-backup.key -o restore.dump scheduled-<UTC>.dump.age   # if encrypted
+age -d -i snaphost-backup.key -o restore.sql scheduled-<UTC>.sql.age   # if encrypted
 
-docker run -d --name restore-test --network none \
-  -e POSTGRES_PASSWORD=throwaway postgres:16
-
-pg_restore --clean --if-exists --no-owner \
-  --dbname='<isolated-database-url>' restore.dump
+sqlite3 /tmp/restore-check.db < restore.sql
+sqlite3 /tmp/restore-check.db 'pragma integrity_check;'
 ```
 
-Then check the tables that carry money and ownership actually have rows:
+Then check the tables that carry identity and ownership actually have rows:
 
 ```sql
-select 'wallets', count(*) from wallets
-union all select 'transactions', count(*) from transactions
+select 'users', count(*) from users
 union all select 'deploys', count(*) from deploys
 union all select 'projects', count(*) from projects
 union all select 'custom_domains', count(*) from custom_domains;
 ```
 
-Do not place a database URL in a shared shell history in production.
+`users` is the one to look at first: it holds the operator's password hash, and
+a restore without it is a platform nobody can log in to.
+
+Putting it back is stopping the application, replacing the file, and starting
+it again — with the `-wal` and `-shm` sidecars removed, or SQLite will replay
+the old write-ahead log over the restored database:
+
+```bash
+docker compose -p snaphost -f /opt/snaphost/infra/docker-compose.prod.yml stop snaphost
+# then, with the volume mounted somewhere:
+rm -f snaphost.db snaphost.db-wal snaphost.db-shm
+sqlite3 snaphost.db < restore.sql
+```
+
+**Not drilled since the move to SQLite.** The proven drill in this document's
+history was against PostgreSQL and does not carry over.
 
 ## What is proven and what is not
 

@@ -1,8 +1,8 @@
 # Rollback
 
-Status: Implemented, covered by tests, and rehearsed on production 2026-08-03; an image-changing rollback is still unproven
+Status: Implemented and covered by tests; the 2026-08-03 production rehearsal predates the one-service collapse and SQLite, and the path it exercised was broken from item 5 until 2026-08-29
 Type: Operations
-Updated: 2026-08-04
+Updated: 2026-08-29
 
 Application images are identified by immutable Git SHA. A rollback should
 restore the previously recorded SHA, not rebuild an old branch or use `latest`.
@@ -45,7 +45,7 @@ MIGRATIONS_BACKWARD_COMPATIBLE=true infra/deploy.sh rollback
 
 On deployment failure after migration start without that confirmation, state
 becomes `manual-intervention-required`. The script reports the saved previous
-SHA and backup path but does not start old images or restore PostgreSQL. Inspect
+SHA and backup path but does not start old images or restore the database. Inspect
 service/migration logs and the migration ledger, verify the backup checksum,
 then choose a forward fix or a separately reviewed restore. Database restore is
 never automatic.
@@ -117,8 +117,6 @@ export SNAPHOST_COMPOSE_FILE=$R/docker-compose.prod.yml \
        SNAPHOST_ENV_FILE=/opt/snaphost/env/production.env \
        SNAPHOST_STATE_DIR=/opt/snaphost/state \
        SNAPHOST_BACKUP_DIR=/opt/snaphost/backups \
-       SNAPHOST_BUILDER_KEY_FILE=/opt/snaphost/secrets/builder-key.json \
-       SNAPHOST_RUNNER_KEY_FILE=/opt/snaphost/secrets/runner-key.json \
        SNAPHOST_GHCR_TOKEN_FILE=/opt/snaphost/secrets/ghcr-token \
        SNAPHOST_PUBLIC_SMOKE_URL=https://api.snaphost.ru
 ```
@@ -199,7 +197,12 @@ cost.
 
 ### Rehearsal record — 2026-08-03
 
-Run against production (`135.106.166.76`) at 22:49–22:50 UTC.
+Run against production (`135.106.166.76`) at 22:49–22:50 UTC. Kept as a record
+of what happened, not as a description of the current script: it predates both
+the collapse to one service and the move to SQLite, and the rollback path it
+exercised was broken shortly afterwards — `rollback_to` went on naming the
+seven services that stopped existing, and nothing rehearsed it again. **No
+rehearsal has been run since.**
 
 | Field | Value |
 | --- | --- |
@@ -245,8 +248,9 @@ discard any command and still exit `0`.
 CD runs the remote half of a deployment as `ssh host bash -s <<'REMOTE'`, so
 **the deployment commands and the script text share one stdin**. `docker
 compose exec -T` and `docker compose run` forward stdin to the container.
-`deploy.sh` uses both — for the `pg_dump` backup, the migration jobs, and the
-internal HTTP probes — so they drained the pipe that `bash -s` was still
+`deploy.sh` uses both — for the backup (`pg_dump` then, `sqlite3 .dump` now),
+the migration job, and the internal HTTP probes — so they drained the pipe that
+`bash -s` was still
 reading its own source from. Everything after the deploy call was discarded
 before bash ever parsed it, which in this script was exactly one line:
 
