@@ -12,6 +12,12 @@ paths.
 Read them for *why the code looks like this*. Do not read them as a statement
 of what this platform does or intends to do.
 
+Their file links were repointed when the services moved under `internal/`, so
+most still resolve. Sixteen do not, and deliberately so: they name the Yandex
+runtime, `router-svc`, the VK backend stub and the cloud registry auth, none of
+which exist here. A link that 404s is the correct answer to "where is this
+code now".
+
 ## What is still load-bearing here
 
 | Document | Why it still matters |

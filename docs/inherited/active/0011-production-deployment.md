@@ -500,7 +500,7 @@ and cannot deploy until seeded (see below).
 ### Supabase user-seed webhook
 
 api-gateway exposes `POST /internal/webhooks/supabase`
-([webhooks/supabase.go](../../../snaphost-backend/api-gateway/webhooks/supabase.go)),
+([webhooks/supabase.go](../../../snaphost-backend/internal/gateway/webhooks/supabase.go)),
 authenticated by `X-Webhook-Secret` against `SUPABASE_WEBHOOK_SECRET`. On an
 `INSERT` whose `type` is `INSERT` and `table` is `profiles` or `users`, with a
 `record` carrying `id` and `email`, it calls user-billing `/internal/users` to

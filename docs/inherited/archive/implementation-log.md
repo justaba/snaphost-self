@@ -144,7 +144,7 @@ Fixed the current SDK/API mismatches in
 
 ### Files changed
 
-- `snaphost-backend/runner-svc/internal/backend/yandex/yandex.go`
+- `snaphost-backend/internal/runtime/backend/yandex/yandex.go`
 
 ### Verification
 
@@ -159,7 +159,7 @@ worktree without changing global Git config.
 - `go test -tags yandex ./...` passed.
 - `go build ./...` passed.
 - `go build -tags yandex ./...` passed.
-- `git diff --check -- snaphost-backend/runner-svc/internal/backend/yandex/yandex.go REFACTOR_NOTES.md` passed.
+- `git diff --check -- snaphost-backend/internal/runtime/backend/yandex/yandex.go REFACTOR_NOTES.md` passed.
 
 Generated temporary Go cache/telemetry files under `.tmp-gocache` and
 `.tmp-appdata` were removed after verification.
@@ -193,11 +193,11 @@ Removed the runner-local hand-rolled IAM/JWT token exchange implementation:
 
 ### Files changed
 
-- `snaphost-backend/runner-svc/internal/backend/yandex/yandex.go`
-- `snaphost-backend/runner-svc/internal/backend/yandex/iam.go`
-- `snaphost-backend/runner-svc/go.mod`
-- `snaphost-backend/runner-svc/go.sum`
-- `snaphost-backend/runner-svc/Dockerfile`
+- `snaphost-backend/internal/runtime/backend/yandex/yandex.go`
+- `snaphost-backend/internal/runtime/backend/yandex/iam.go`
+- `snaphost-backend/internal/runtime/go.mod`
+- `snaphost-backend/internal/runtime/go.sum`
+- `snaphost-backend/internal/runtime/Dockerfile`
 - `infra/docker-compose.yml`
 
 ### Verification
@@ -267,9 +267,9 @@ path, not through a separate `log-streamer` service.
 
 ### Files changed
 
-- `snaphost-backend/api-gateway/config/config.go`
-- `snaphost-backend/api-gateway/routes/routes.go`
-- `snaphost-backend/api-gateway/rbac_policy.csv`
+- `snaphost-backend/internal/gateway/config/config.go`
+- `snaphost-backend/internal/gateway/routes/routes.go`
+- `snaphost-backend/internal/gateway/rbac_policy.csv`
 - `CLAUDE.md`
 
 ### Why
@@ -296,12 +296,12 @@ Isolated the broken `runner-svc/internal/backend/yandex/` package behind the `ya
 
 ### Files changed
 
-- `snaphost-backend/runner-svc/internal/backend/yandex/yandex.go` — added `//go:build yandex` tag.
-- `snaphost-backend/runner-svc/internal/backend/yandex/iam.go` — added `//go:build yandex` tag.
-- `snaphost-backend/runner-svc/internal/backend/yandex/gateway_spec.go` — added `//go:build yandex` tag.
-- `snaphost-backend/runner-svc/cmd/api/yandex_enabled.go` — new. Build-tagged `yandex`. Wraps `yandex.NewYandexBackend` + `yandex.SetMemoryAccessor` behind a local `newYandexBackend` helper so `cmd/api/main.go` does not import the yandex package directly.
-- `snaphost-backend/runner-svc/cmd/api/yandex_stub.go` — new. Build-tagged `!yandex`. `newYandexBackend` returns a clear error: `"yandex backend not compiled in: rebuild with -tags yandex"`.
-- `snaphost-backend/runner-svc/cmd/api/main.go` — dropped `internal/backend/yandex` import; switch case `"yandex"` now calls `newYandexBackend(cfg, publisher, log)`. Behaviour at runtime when `RUNNER_BACKEND=yandex` in default build: `log.Fatal` with the indirection's error message instead of crashing on import resolution (which never happens because the package is now excluded by build tag).
+- `snaphost-backend/internal/runtime/backend/yandex/yandex.go` — added `//go:build yandex` tag.
+- `snaphost-backend/internal/runtime/backend/yandex/iam.go` — added `//go:build yandex` tag.
+- `snaphost-backend/internal/runtime/backend/yandex/gateway_spec.go` — added `//go:build yandex` tag.
+- `snaphost-backend/internal/runtime/cmd/api/yandex_enabled.go` — new. Build-tagged `yandex`. Wraps `yandex.NewYandexBackend` + `yandex.SetMemoryAccessor` behind a local `newYandexBackend` helper so `cmd/api/main.go` does not import the yandex package directly.
+- `snaphost-backend/internal/runtime/cmd/api/yandex_stub.go` — new. Build-tagged `!yandex`. `newYandexBackend` returns a clear error: `"yandex backend not compiled in: rebuild with -tags yandex"`.
+- `snaphost-backend/cmd/runner-api/main.go` — dropped `internal/backend/yandex` import; switch case `"yandex"` now calls `newYandexBackend(cfg, publisher, log)`. Behaviour at runtime when `RUNNER_BACKEND=yandex` in default build: `log.Fatal` with the indirection's error message instead of crashing on import resolution (which never happens because the package is now excluded by build tag).
 
 `cmd/watchdog/main.go` already had `log.Fatal("yandex backend not implemented yet")` for the yandex case and never imported the yandex package — left unchanged.
 
@@ -365,12 +365,12 @@ Full recon table: [Yandex SDK ADR](../../decisions/0001-yandex-sdk-v0.md).
 
 ### Files changed
 
-- **New** `snaphost-backend/shared/yandexauth/sdk.go` — `NewSDK(ctx, keyPath) (*ycsdk.SDK, error)` reads authorized key JSON via `iamkey.ReadFromJSONFile`, builds credentials via `ycsdk.ServiceAccountKey`, returns lazy SDK via `ycsdk.Build`. `IAMToken(ctx, sdk) (string, error)` calls `sdk.CreateIAMToken(ctx)` and returns the `IamToken` field.
-- **New** `snaphost-backend/shared/yandexauth/sdk_test.go` — two unit tests: (1) construction with an in-memory RSA-2048 PKCS8 key, written to a temp authorized-key JSON file, verifies non-nil SDK without network; (2) missing-file path returns error. Tests pass: `ok snaphost/shared/yandexauth 0.090s`.
-- `snaphost-backend/shared/go.mod` — added `github.com/yandex-cloud/go-sdk v0.31.0` + transitive deps via `go get`.
-- `snaphost-backend/builder-svc/internal/build/yandex_iam.go` — rewrote. Was 168 lines (JWT signing, PKCS1/PKCS8 PEM parsing, token caching, HTTP client). Now 64 lines: a `yandexIAMAuth` struct holding `*ycsdk.SDK + *zap.Logger`, `Credentials` calls `yandexauth.IAMToken(ctx, a.sdk)` for any `cr.yandex` host. BuildKit's `session.Attachable` + `auth.AuthServer` interface shape preserved. No more direct imports of `crypto/rsa`, `crypto/x509`, `encoding/pem`, `golang-jwt/jwt/v5`, or `net/http`.
-- `snaphost-backend/builder-svc/internal/build/buildkit.go::NewBuilder` — the `"yandex_iam"` switch case now constructs the SDK via `yandexauth.NewSDK(context.Background(), cfg.YandexSAKeyPath)` and passes it to `newYandexIAMAuth(sdk, log)`.
-- `snaphost-backend/builder-svc/go.mod` — `go mod tidy` to refresh transitive deps. `github.com/golang-jwt/jwt/v5` no longer required by `internal/build/` (still appears via other transitive paths if any).
+- **New** `snaphost-backend/internal/shared/yandexauth/sdk.go` — `NewSDK(ctx, keyPath) (*ycsdk.SDK, error)` reads authorized key JSON via `iamkey.ReadFromJSONFile`, builds credentials via `ycsdk.ServiceAccountKey`, returns lazy SDK via `ycsdk.Build`. `IAMToken(ctx, sdk) (string, error)` calls `sdk.CreateIAMToken(ctx)` and returns the `IamToken` field.
+- **New** `snaphost-backend/internal/shared/yandexauth/sdk_test.go` — two unit tests: (1) construction with an in-memory RSA-2048 PKCS8 key, written to a temp authorized-key JSON file, verifies non-nil SDK without network; (2) missing-file path returns error. Tests pass: `ok snaphost/shared/yandexauth 0.090s`.
+- `snaphost-backend/internal/shared/go.mod` — added `github.com/yandex-cloud/go-sdk v0.31.0` + transitive deps via `go get`.
+- `snaphost-backend/internal/builder/build/yandex_iam.go` — rewrote. Was 168 lines (JWT signing, PKCS1/PKCS8 PEM parsing, token caching, HTTP client). Now 64 lines: a `yandexIAMAuth` struct holding `*ycsdk.SDK + *zap.Logger`, `Credentials` calls `yandexauth.IAMToken(ctx, a.sdk)` for any `cr.yandex` host. BuildKit's `session.Attachable` + `auth.AuthServer` interface shape preserved. No more direct imports of `crypto/rsa`, `crypto/x509`, `encoding/pem`, `golang-jwt/jwt/v5`, or `net/http`.
+- `snaphost-backend/internal/builder/build/buildkit.go::NewBuilder` — the `"yandex_iam"` switch case now constructs the SDK via `yandexauth.NewSDK(context.Background(), cfg.YandexSAKeyPath)` and passes it to `newYandexIAMAuth(sdk, log)`.
+- `snaphost-backend/internal/builder/go.mod` — `go mod tidy` to refresh transitive deps. `github.com/golang-jwt/jwt/v5` no longer required by `internal/build/` (still appears via other transitive paths if any).
 
 Verified no Task-1-introduced references to `crypto/rsa`, `crypto/x509`, `encoding/pem`, or `golang-jwt/jwt/v5` remain in `builder-svc/` source. `go mod why github.com/golang-jwt/jwt/v5` reports `(main module does not need package …)`.
 
@@ -431,13 +431,13 @@ Added a webhook-secret-protected `GET /internal/deploys/:id` endpoint to user-bi
 
 ### Files changed
 
-- `snaphost-backend/user-billing/internal/deploy/handler.go` —
+- `snaphost-backend/internal/control/deploy/handler.go` —
   - Extracted `Repo` interface (7 methods: `Create`, `Get`, `ListByUser`, `UpdateStatus`, `SetRunning`, `MarkDeleted`, `FindExpiredWithDetails`). `*Repository` satisfies it. `Handler.repo` field and `NewHandler` parameter retyped from `*Repository` to `Repo`. Required for mock-based handler tests; not a feature, just enables testability.
   - New `DeployInfo` struct — 4 fields (`deploy_id`, `user_id`, `status`, `image_ref`), **no `omitempty`** so callers can distinguish field-absent (bug) from field-empty (legitimate, e.g. status=pending).
   - New `GetDeployInternal` handler. Error mapping: invalid UUID → 400 via house `errResponse` shape; `pgx.ErrNoRows` → 404 with literal `{"error": "deploy not found"}` (verbatim contract for runner-svc client sentinel); other repo errors → 500 with generic message, internal detail logged but not leaked.
   - New imports: `context`, `errors`, `github.com/jackc/pgx/v5`.
-- `snaphost-backend/user-billing/routes/routes.go` — registered `GET /internal/deploys/:id` inside the existing `internal` group → same `wallet.WebhookSecretMiddleware` as the other `/internal/*` endpoints. No new middleware.
-- `snaphost-backend/user-billing/internal/deploy/handler_test.go` (new) — 5 tests using a `fakeRepo` that only stubs `Get`; the other interface methods `panic("not used")` to catch accidental calls. Coverage: happy path with all four JSON keys asserted; empty `ImageRef` round-trip as `""`; not-found 404 with literal body; invalid UUID 400 without touching repo; DB error 500 with no internal detail leakage.
+- `snaphost-backend/internal/control/routes/routes.go` — registered `GET /internal/deploys/:id` inside the existing `internal` group → same `wallet.WebhookSecretMiddleware` as the other `/internal/*` endpoints. No new middleware.
+- `snaphost-backend/internal/control/deploy/handler_test.go` (new) — 5 tests using a `fakeRepo` that only stubs `Get`; the other interface methods `panic("not used")` to catch accidental calls. Coverage: happy path with all four JSON keys asserted; empty `ImageRef` round-trip as `""`; not-found 404 with literal body; invalid UUID 400 without touching repo; DB error 500 with no internal detail leakage.
 
 ### Idempotency check
 
@@ -494,25 +494,25 @@ Added pre-flight validation in `runner-svc.Service.Deploy` before the backend co
 
 ### Files changed
 
-- `snaphost-backend/runner-svc/internal/billing/client.go` —
+- `snaphost-backend/internal/runtime/billing/client.go` —
   - New `DeployInfo` struct mirroring user-billing's response shape.
   - New sentinel `ErrDeployNotFound` returned on 404.
   - New `GetDeploy(ctx, deployID) (*DeployInfo, error)`. Status mapping: 404 → `ErrDeployNotFound`; 401 → typed error (auth misconfig); ≥500 → wrapped error (will retry-classify in Task 5); other non-200 → wrapped error.
-- `snaphost-backend/runner-svc/internal/runner/errors.go` (new) —
+- `snaphost-backend/internal/runtime/runner/errors.go` (new) —
   - `*ValidationError` (wraps a cause; HTTP 400).
   - `ErrAlreadyRunning` (HTTP 409; preserves idempotent saga retry).
   - Local `ErrTransient` + `wrapTransient` helper (5xx / network → retryable). Local sentinel only; Task 5 will introduce a shared pipeline-level type and consolidate.
-- `snaphost-backend/runner-svc/internal/runner/service.go` —
+- `snaphost-backend/internal/runtime/runner/service.go` —
   - New `BillingClient` interface (`UpdateDeployStatus`, `SetDeployRunning`, `GetDeploy`). `*billing.Client` satisfies it. `Service.billing` field retyped to the interface so tests can inject a fake without an HTTP server.
   - `deployableStatuses` map (`"built": true`) and `statusRunning` constant. Map structure preserved so future saga paths add a key, not a switch.
   - New `Service.validateDeployRequest(ctx, req)`. Order: (1) registry prefix allow-list (skipped if list empty, which is only reachable in non-strict mode — strict + empty list fatal at startup); (2) tag = `req.DeployID` check; (3) under `StrictImageValidation` only: `billing.GetDeploy` → `ErrDeployNotFound` → `*ValidationError`; other billing errors wrapped transient; `info.UserID != req.UserID` → `*ValidationError`; `info.Status == "running"` → `ErrAlreadyRunning`; `info.Status` not in `deployableStatuses` → `*ValidationError`.
   - `Service.Deploy` now calls `validateDeployRequest` first; returns its error unchanged so the HTTP layer can type-assert.
-- `snaphost-backend/runner-svc/config/config.go` —
+- `snaphost-backend/internal/runtime/config/config.go` —
   - New fields `AllowedRegistryPrefixes []string` (loaded from `REGISTRY_ALLOWED_PREFIXES`, comma-separated) and `StrictImageValidation bool` (loaded from `STRICT_IMAGE_VALIDATION`, default `true`).
   - **Secure default:** `StrictImageValidation=true` with empty `AllowedRegistryPrefixes` is a **fatal startup error** (verified empirically — runner-api panics with `REGISTRY_ALLOWED_PREFIXES must be set when STRICT_IMAGE_VALIDATION=true`). Misconfigured prod fails to start instead of silently accepting any image_ref.
-- `snaphost-backend/runner-svc/cmd/api/main.go` — added a single startup warning when `!StrictImageValidation && len(AllowedRegistryPrefixes) == 0` (dev-only configuration where any image_ref is accepted).
-- `snaphost-backend/runner-svc/api/handler.go::Deploy` — error mapping. `*ValidationError` → 400; `ErrAlreadyRunning` → 409; everything else → 500 (existing behaviour). Uses `errors.As` / `errors.Is`.
-- `snaphost-backend/runner-svc/internal/runner/service_test.go` (new) — 13 tests:
+- `snaphost-backend/cmd/runner-api/main.go` — added a single startup warning when `!StrictImageValidation && len(AllowedRegistryPrefixes) == 0` (dev-only configuration where any image_ref is accepted).
+- `snaphost-backend/internal/runtime/api/handler.go::Deploy` — error mapping. `*ValidationError` → 400; `ErrAlreadyRunning` → 409; everything else → 500 (existing behaviour). Uses `errors.As` / `errors.Is`.
+- `snaphost-backend/internal/runtime/runner/service_test.go` (new) — 13 tests:
   1. Happy path (status=built, prefix+tag+IDs match).
   2. Wrong registry prefix.
   3. Tag mismatch.
@@ -582,10 +582,10 @@ Replaced the fragile `rel[0] != '.'` check in `builder-svc/internal/clone/cloner
 
 ### Files changed
 
-- `snaphost-backend/builder-svc/internal/clone/cloner.go` —
+- `snaphost-backend/internal/builder/clone/cloner.go` —
   - Replaced `isWithin` with canonical implementation. Resolves both arguments via `filepath.Abs`, computes `filepath.Rel(absParent, absChild)`, returns false only when rel equals `".."` or starts with `".." + os.PathSeparator`. Identical paths return true (rel == ".").
   - Added `strings` import for `HasPrefix` check.
-- `snaphost-backend/builder-svc/internal/clone/path_test.go` (new) — table-driven tests, 15 cases:
+- `snaphost-backend/internal/builder/clone/path_test.go` (new) — table-driven tests, 15 cases:
   identical absolute paths, child file under parent, hidden file `.config` directly under parent, nested hidden file `.config/auth.json`, sibling directory, parent-of-parent (above), unrelated `/var/log`, hidden file `.foo` outside parent in `/tmp`, `..`-segment that resolves outside, `..`-segment that resolves back inside (`sub/../src`), `.`-segment, relative child path (filepath.Abs anchors to cwd, demonstrating that callers must pass absolute paths), empty child, empty parent, both empty.
 
 ### Build matrix + tests + lint
@@ -912,7 +912,7 @@ Items observed during prior tasks that Task 5 should investigate as part of its 
 
 ### Problem
 
-`runner-svc/internal/runner/service.go::generateSubdomain` used the first 8 hex characters of the deploy UUID (32 bits of entropy). By the birthday paradox, ~50% collision probability at ~65k deploys. A collision today causes the INSERT to fail on `uq_deploys_subdomain UNIQUE` ([0003_deploys.up.sql](../../../snaphost-backend/user-billing/db/migrations/0003_deploys.up.sql)) → deploy marked failed → user retries with a fresh UUID. Collision space far too small for a public service.
+`runner-svc/internal/runner/service.go::generateSubdomain` used the first 8 hex characters of the deploy UUID (32 bits of entropy). By the birthday paradox, ~50% collision probability at ~65k deploys. A collision today causes the INSERT to fail on `uq_deploys_subdomain UNIQUE` ([0003_deploys.up.sql](../../../snaphost-backend/internal/control/db/migrations/0003_deploys.up.sql)) → deploy marked failed → user retries with a fresh UUID. Collision space far too small for a public service.
 
 ### Option A (chosen): full UUID
 
@@ -938,10 +938,10 @@ Considered: keep short subdomains, retry with random suffix on UNIQUE violation.
 
 ### Call-site audit
 
-`grep -rn generateSubdomain` confirms a single call site: [service.go:101](../../../snaphost-backend/runner-svc/internal/runner/service.go#L101). Output is passed to `backend.RunRequest.Subdomain`, consumed by:
+`grep -rn generateSubdomain` confirms a single call site: [service.go:101](../../../snaphost-backend/internal/runtime/runner/service.go#L101). Output is passed to `backend.RunRequest.Subdomain`, consumed by:
 
-- [`docker/docker.go`](../../../snaphost-backend/runner-svc/internal/backend/docker/docker.go) — used as-is for Traefik label + endpoint URL construction.
-- [`yandex/yandex.go`](../../../snaphost-backend/runner-svc/internal/backend/yandex/yandex.go) — used as-is for the hostname in API Gateway spec.
+- [`docker/docker.go`](../../../snaphost-backend/internal/runtime/backend/docker/docker.go) — used as-is for Traefik label + endpoint URL construction.
+- [`yandex/yandex.go`](../../../snaphost-backend/internal/runtime/backend/yandex/yandex.go) — used as-is for the hostname in API Gateway spec.
 
 Neither parses the subdomain back into a deploy_id. No code anywhere depends on the 8-hex length. The Yandex backend also constructs an internal `containerName` from `deployID` directly (not from `subdomain`), so the path is independent.
 
@@ -1468,10 +1468,10 @@ required for legitimate Bun/Deno projects.
 - `infra/.env.example`
 - `infra/.env`
 - `infra/docker-compose.yml`
-- `snaphost-backend/ai-orchestrator/config/config.go`
-- `snaphost-backend/ai-orchestrator/internal/service/service.go`
-- `snaphost-backend/ai-orchestrator/internal/service/service_test.go` (new)
-- `snaphost-backend/builder-svc/config/config.go`
+- `snaphost-backend/internal/ai/config/config.go`
+- `snaphost-backend/internal/ai/service/service.go`
+- `snaphost-backend/internal/ai/service/service_test.go` (new)
+- `snaphost-backend/internal/builder/config/config.go`
 
 ### Build matrix verification
 
@@ -1567,10 +1567,10 @@ that shipped their own Dockerfile.
 - `infra/.env.example`
 - `infra/.env`
 - `infra/docker-compose.yml`
-- `snaphost-backend/builder-svc/config/config.go`
-- `snaphost-backend/builder-svc/internal/pipeline/runner.go`
-- `snaphost-backend/shared/validator/dockerfile.go`
-- `snaphost-backend/shared/validator/dockerfile_test.go` (new)
+- `snaphost-backend/internal/builder/config/config.go`
+- `snaphost-backend/internal/builder/pipeline/runner.go`
+- `snaphost-backend/internal/shared/validator/dockerfile.go`
+- `snaphost-backend/internal/shared/validator/dockerfile_test.go` (new)
 
 ### Build matrix verification
 
@@ -1682,15 +1682,15 @@ nothing previously accepted becomes rejected.
 
 ### Files changed
 
-- `snaphost-backend/shared/validator/normalize.go` — new file, two
+- `snaphost-backend/internal/shared/validator/normalize.go` — new file, two
   private helpers.
-- `snaphost-backend/shared/validator/normalize_test.go` — new file,
+- `snaphost-backend/internal/shared/validator/normalize_test.go` — new file,
   ~47 tests (25 normalizeImageRef, 12 normalizeAllowedPrefix,
   10 end-to-end allow-list match scenarios).
-- `snaphost-backend/shared/validator/dockerfile.go` — modified:
+- `snaphost-backend/internal/shared/validator/dockerfile.go` — modified:
   allow-list normalized once before FROM-line loop; `isAllowedBaseImage`
   uses normalized list and normalizes input image.
-- `snaphost-backend/shared/validator/dockerfile_test.go` — modified:
+- `snaphost-backend/internal/shared/validator/dockerfile_test.go` — modified:
   added `TestValidate_FullyQualifiedDockerHub` regression test.
 
 ### Build matrix verification
@@ -1768,7 +1768,7 @@ nothing previously accepted becomes rejected.
   Yandex images can be built with:
 
 ```powershell
-docker build -f snaphost-backend/runner-svc/Dockerfile `
+docker build -f snaphost-backend/internal/runtime/Dockerfile `
   --build-arg GO_BUILD_TAGS=yandex `
   snaphost-backend
 ```
@@ -1887,11 +1887,11 @@ Runtime issues found and fixed during smoke:
 
 ### Files changed
 
-- `snaphost-backend/runner-svc/cmd/watchdog/main.go`
-- `snaphost-backend/runner-svc/cmd/watchdog/yandex_enabled.go`
-- `snaphost-backend/runner-svc/cmd/watchdog/yandex_stub.go`
-- `snaphost-backend/runner-svc/internal/backend/yandex/yandex.go`
-- `snaphost-backend/runner-svc/internal/backend/yandex/gateway_spec_test.go`
+- `snaphost-backend/cmd/runner-watchdog/main.go`
+- `snaphost-backend/internal/runtime/cmd/watchdog/yandex_enabled.go`
+- `snaphost-backend/internal/runtime/cmd/watchdog/yandex_stub.go`
+- `snaphost-backend/internal/runtime/backend/yandex/yandex.go`
+- `snaphost-backend/internal/runtime/backend/yandex/gateway_spec_test.go`
 - `REFACTOR_NOTES.md`
 
 ### Verification run
@@ -1934,7 +1934,7 @@ Smoke setup:
 Manual delete cleanup result:
 
 ```bash
-docker build -f snaphost-backend/runner-svc/Dockerfile \
+docker build -f snaphost-backend/internal/runtime/Dockerfile \
   --build-arg GO_BUILD_TAGS=yandex \
   -t snaphost-runner-svc:yandex \
   snaphost-backend
@@ -2075,8 +2075,8 @@ accounting remains owned by `MarkDeleted`.
 
 ### Files changed
 
-- `snaphost-backend/user-billing/internal/deploy/repository.go`
-- `snaphost-backend/user-billing/internal/deploy/repository_test.go`
+- `snaphost-backend/internal/control/deploy/repository.go`
+- `snaphost-backend/internal/control/deploy/repository_test.go`
 - `REFACTOR_NOTES.md`
 
 ### Verification status
@@ -2171,13 +2171,13 @@ shape.
 ### Files changed
 
 - `snaphost-backend/router-svc/`
-- `snaphost-backend/user-billing/internal/deploy/handler.go`
-- `snaphost-backend/user-billing/internal/deploy/handler_test.go`
-- `snaphost-backend/user-billing/internal/deploy/repository.go`
-- `snaphost-backend/user-billing/internal/deploy/repository_test.go`
-- `snaphost-backend/user-billing/routes/routes.go`
-- `snaphost-backend/runner-svc/config/config.go`
-- `snaphost-backend/runner-svc/internal/backend/yandex/yandex.go`
+- `snaphost-backend/internal/control/deploy/handler.go`
+- `snaphost-backend/internal/control/deploy/handler_test.go`
+- `snaphost-backend/internal/control/deploy/repository.go`
+- `snaphost-backend/internal/control/deploy/repository_test.go`
+- `snaphost-backend/internal/control/routes/routes.go`
+- `snaphost-backend/internal/runtime/config/config.go`
+- `snaphost-backend/internal/runtime/backend/yandex/yandex.go`
 - `docs/yandex-runtime.md`
 - `REFACTOR_NOTES.md`
 
@@ -2566,14 +2566,14 @@ This task intentionally does not stream Yandex Cloud Logging stdout/stderr.
 ### Files changed
 
 - `docs/yandex-runtime.md`
-- `snaphost-backend/runner-svc/internal/backend/backend.go`
-- `snaphost-backend/runner-svc/internal/backend/docker/docker.go`
-- `snaphost-backend/runner-svc/internal/backend/vk/vk.go`
-- `snaphost-backend/runner-svc/internal/backend/yandex/yandex.go`
-- `snaphost-backend/runner-svc/internal/backend/yandex/yandex_test.go`
-- `snaphost-backend/runner-svc/internal/runner/service.go`
-- `snaphost-backend/runner-svc/internal/runner/service_test.go`
-- `snaphost-backend/runner-svc/internal/watchdog/watchdog.go`
+- `snaphost-backend/internal/runtime/backend/backend.go`
+- `snaphost-backend/internal/runtime/backend/docker/docker.go`
+- `snaphost-backend/internal/runtime/backend/vk/vk.go`
+- `snaphost-backend/internal/runtime/backend/yandex/yandex.go`
+- `snaphost-backend/internal/runtime/backend/yandex/yandex_test.go`
+- `snaphost-backend/internal/runtime/runner/service.go`
+- `snaphost-backend/internal/runtime/runner/service_test.go`
+- `snaphost-backend/internal/runtime/watchdog/watchdog.go`
 
 ### Behavior and logging changes
 
@@ -2661,17 +2661,17 @@ contract.
 - `docs/cloud-setup.md`
 - `docs/yandex-runtime.md`
 - `infra/.env.example`
-- `snaphost-backend/runner-svc/api/handler.go`
-- `snaphost-backend/runner-svc/internal/backend/docker/docker.go`
-- `snaphost-backend/runner-svc/internal/backend/docker/labels.go`
-- `snaphost-backend/runner-svc/internal/backend/docker/labels_test.go`
-- `snaphost-backend/runner-svc/internal/backend/yandex/yandex.go`
-- `snaphost-backend/runner-svc/internal/backend/yandex/yandex_test.go`
-- `snaphost-backend/runner-svc/internal/billing/client.go`
-- `snaphost-backend/runner-svc/internal/runner/service.go`
-- `snaphost-backend/runner-svc/internal/runner/service_test.go`
-- `snaphost-backend/user-billing/internal/deploy/handler.go`
-- `snaphost-backend/user-billing/internal/deploy/handler_test.go`
+- `snaphost-backend/internal/runtime/api/handler.go`
+- `snaphost-backend/internal/runtime/backend/docker/docker.go`
+- `snaphost-backend/internal/runtime/backend/docker/labels.go`
+- `snaphost-backend/internal/runtime/backend/docker/labels_test.go`
+- `snaphost-backend/internal/runtime/backend/yandex/yandex.go`
+- `snaphost-backend/internal/runtime/backend/yandex/yandex_test.go`
+- `snaphost-backend/internal/runtime/billing/client.go`
+- `snaphost-backend/internal/runtime/runner/service.go`
+- `snaphost-backend/internal/runtime/runner/service_test.go`
+- `snaphost-backend/internal/control/deploy/handler.go`
+- `snaphost-backend/internal/control/deploy/handler_test.go`
 
 ### Security behavior changes
 

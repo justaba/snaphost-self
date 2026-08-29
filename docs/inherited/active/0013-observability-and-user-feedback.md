@@ -10,7 +10,7 @@ switched off there. 13b planned
 
 Runtime logs are now collected. Every Yandex Serverless Container revision is
 deployed with `log_options`
-([logging.go](../../../snaphost-backend/runner-svc/internal/backend/yandex/logging.go)),
+([logging.go](../../../snaphost-backend/internal/runtime/backend/yandex/logging.go)),
 so a user application's `stdout`/`stderr` lands in a dedicated Cloud Logging
 group instead of being discarded.
 

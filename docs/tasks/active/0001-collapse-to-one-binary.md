@@ -137,9 +137,26 @@ host before it becomes a plan.
    Docker socket the runner mounts, which is root on the host and has no
    equivalent identity check.
 
-5. [ ] One `main` wiring those packages together. The saga's HTTP clients
-   (`internal/saga/clients.go`) become interfaces satisfied by direct calls,
-   which is what deletes the internal `X-Webhook-Secret` layer with them.
+5. [~] One `main` wiring those packages together.
+
+   **5a — layout, done.** The services moved under `internal/` (`gateway`,
+   `control`, `builder`, `runtime`, `ai`, `shared`), every entry point moved to
+   `cmd/`, and the five Dockerfiles collected into `snaphost-backend/docker/`.
+   Pure renaming: no behaviour changed, and the compiler verified every one of
+   the ~150 files it touched.
+
+   Two things the rename surfaced that predated it. `parseInt64Env` in the
+   control config had been dead since billing was removed, and fourteen files
+   had struct alignment left wrong by the same commit — both caught by running
+   `golangci-lint` locally in a Go 1.25 container, which is what CI does and
+   what had not been done here before. The published v1.64.8 binary cannot lint
+   this module at all: it is built with go1.24 and refuses a module targeting
+   1.25, exactly as the CI comment predicts.
+
+   **5b — wiring, not started.** The saga's HTTP clients
+   (`internal/control/saga/clients.go`) become interfaces satisfied by direct
+   calls, which is what deletes the internal `X-Webhook-Secret` layer with
+   them, and the nine `cmd/` entry points collapse into one.
 6. [ ] Port the store to SQLite and squash twelve migrations into one baseline.
    There is no data to migrate — a fork starts empty — so the inherited
    migration history buys nothing and carries vibecoin columns forward.

@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **This file is stale and known to be.** It describes SnapHost, the
+> multi-tenant SaaS this repository was forked from on 2026-08-29: seven
+> services, vibecoin billing, a Yandex Cloud runtime, `router-svc`. None of
+> those exist here any more. Its file paths were updated when the services
+> moved under `internal/`, so the links resolve — the prose did not.
+>
+> Rewriting it is item 9 of
+> [Task 1](docs/tasks/active/0001-collapse-to-one-binary.md), deliberately
+> last: it describes an architecture currently being demolished, and writing
+> it twice would be the only result of doing it sooner. Until then, trust
+> [docs/tasks/](docs/tasks/) over this file wherever they disagree.
+
 ## Project
 
 Snaphost is an instant deployment platform ("paste a repo URL and see your project live"). This repository owns the Go backend (`snaphost-backend/`), shared infra (`infra/`), and Terraform. The React frontend is maintained independently in [justaba/snaphost-ui](https://github.com/justaba/snaphost-ui); Supabase Auth configuration and identity-schema migrations are maintained independently in [justaba/snaphost-supabase](https://github.com/justaba/snaphost-supabase).
@@ -29,7 +41,7 @@ Before running anything, copy `infra/.env.example` to `infra/.env` (the backend 
 
 ## Backend architecture
 
-The Go backend is a set of microservices under `snaphost-backend/`. `api-gateway` is the only public entry point; everything else is reachable only over the internal Docker network and authenticated with a shared `X-Webhook-Secret` header (see [shared/webhook.go](snaphost-backend/shared/webhook.go), constant-time compare). All services expose `/health` and `/metrics` (Prometheus).
+The Go backend is a set of microservices under `snaphost-backend/`. `api-gateway` is the only public entry point; everything else is reachable only over the internal Docker network and authenticated with a shared `X-Webhook-Secret` header (see [shared/webhook.go](snaphost-backend/internal/shared/webhook.go), constant-time compare). All services expose `/health` and `/metrics` (Prometheus).
 
 ### Service map & deploy saga
 
@@ -43,48 +55,48 @@ The end-to-end deploy flow is a saga orchestrated by `user-billing`:
 
 ### api-gateway
 
-`api-gateway` is a Gin-based reverse-proxy gateway. It does not own business logic — it authenticates, rate-limits, authorizes, and proxies only to implemented downstream HTTP services defined in [config.go](snaphost-backend/api-gateway/config/config.go): `user-billing` and `ai-orchestrator`. Build orchestration is reached through `user-billing`'s deploy saga, runtime provisioning is handled by `runner-svc` through internal saga calls, and log streaming is handled by the Redis-backed log stream endpoint rather than by a separate public `log-streamer` service.
+`api-gateway` is a Gin-based reverse-proxy gateway. It does not own business logic — it authenticates, rate-limits, authorizes, and proxies only to implemented downstream HTTP services defined in [config.go](snaphost-backend/internal/gateway/config/config.go): `user-billing` and `ai-orchestrator`. Build orchestration is reached through `user-billing`'s deploy saga, runtime provisioning is handled by `runner-svc` through internal saga calls, and log streaming is handled by the Redis-backed log stream endpoint rather than by a separate public `log-streamer` service.
 
 ### Request lifecycle — middleware order is load-bearing
 
-[main.go](snaphost-backend/api-gateway/main.go) registers handlers in a precise order; do not reorder without understanding why:
+[main.go](snaphost-backend/cmd/gateway/main.go) registers handlers in a precise order; do not reorder without understanding why:
 
 1. **Before any middleware:** `/health`, `/metrics`, and `POST /internal/webhooks/supabase` are registered directly on the engine so they bypass auth, rate-limiting, and Casbin.
 2. **Middleware chain** (in order): `gin.Recovery` → `RequestID` → `Logger` → `RateLimit` → `JWT` → `Casbin` → `Enrich`.
 3. **Routes** (under `/api/v1/*` and `/ws/*`) are all registered as `r.Any("/<group>/*path", proxy.HTTP(...))` catch-alls that forward to the mapped downstream service.
 
-The JWT and Casbin middlewares both consult the `PublicRoutes` map in [middleware/jwt.go](snaphost-backend/api-gateway/middleware/jwt.go) to skip validation for `auth/register`, `auth/login`, `/health`, `/metrics`, and the Supabase webhook. If you add a new public endpoint, update that map — the proxy/Any routes will otherwise fail Casbin lookup.
+The JWT and Casbin middlewares both consult the `PublicRoutes` map in [middleware/jwt.go](snaphost-backend/internal/gateway/middleware/jwt.go) to skip validation for `auth/register`, `auth/login`, `/health`, `/metrics`, and the Supabase webhook. If you add a new public endpoint, update that map — the proxy/Any routes will otherwise fail Casbin lookup.
 
 ### Auth — Supabase JWT with JWKS
 
-JWTs are Supabase-issued RS256 tokens. [jwt.go](snaphost-backend/api-gateway/middleware/jwt.go) implements its own JWKS cache (1h TTL) that fetches from `${SUPABASE_URL}/auth/v1/.well-known/jwks.json` and is prefetched at startup (fatal if prefetch fails). The custom `SupabaseClaims` struct reads a non-standard `snaphost_role` claim to determine RBAC role; falls back to `"user"` if empty. The user ID (`sub`), email, and role are set on the Gin context.
+JWTs are Supabase-issued RS256 tokens. [jwt.go](snaphost-backend/internal/gateway/middleware/jwt.go) implements its own JWKS cache (1h TTL) that fetches from `${SUPABASE_URL}/auth/v1/.well-known/jwks.json` and is prefetched at startup (fatal if prefetch fails). The custom `SupabaseClaims` struct reads a non-standard `snaphost_role` claim to determine RBAC role; falls back to `"user"` if empty. The user ID (`sub`), email, and role are set on the Gin context.
 
 ### RBAC — Casbin with `keyMatch2`
 
-[rbac_model.conf](snaphost-backend/api-gateway/rbac_model.conf) + [rbac_policy.csv](snaphost-backend/api-gateway/rbac_policy.csv) define roles (`guest`, `user`, `admin` — `admin` inherits `user` via `g, admin, user`). The Casbin middleware enforces against `c.Request.URL.Path` (the actual URL, with IDs substituted), not Gin's `FullPath` — the policy file uses `:id` placeholders that `keyMatch2` resolves. When adding a new proxied endpoint, add a matching policy line.
+[rbac_model.conf](snaphost-backend/internal/gateway/rbac_model.conf) + [rbac_policy.csv](snaphost-backend/internal/gateway/rbac_policy.csv) define roles (`guest`, `user`, `admin` — `admin` inherits `user` via `g, admin, user`). The Casbin middleware enforces against `c.Request.URL.Path` (the actual URL, with IDs substituted), not Gin's `FullPath` — the policy file uses `:id` placeholders that `keyMatch2` resolves. When adding a new proxied endpoint, add a matching policy line.
 
 ### Rate limiting — Redis sliding window
 
-[ratelimit.go](snaphost-backend/api-gateway/middleware/ratelimit.go) runs *before* JWT, so IP-based limits always apply. Once JWT runs and sets the user context, a second RateLimit pass would apply per-user limits — but note this middleware only runs once; the per-user branch only triggers if `ContextKeyUserID` is already set when RateLimit runs. Today that won't happen (JWT runs after), so per-user and per-deploy limiting paths are effectively dead code. Be careful if you touch middleware ordering here.
+[ratelimit.go](snaphost-backend/internal/gateway/middleware/ratelimit.go) runs *before* JWT, so IP-based limits always apply. Once JWT runs and sets the user context, a second RateLimit pass would apply per-user limits — but note this middleware only runs once; the per-user branch only triggers if `ContextKeyUserID` is already set when RateLimit runs. Today that won't happen (JWT runs after), so per-user and per-deploy limiting paths are effectively dead code. Be careful if you touch middleware ordering here.
 
 ### Supabase user sync webhook
 
-[webhooks/supabase.go](snaphost-backend/api-gateway/webhooks/supabase.go) handles a Supabase Database Webhook fired on `INSERT` into `public.users`, authenticated with the `X-Webhook-Secret` header against `SUPABASE_WEBHOOK_SECRET`. It POSTs to the `user-billing` service's `/internal/users` to seed the user with `INITIAL_VIBECOIN_BALANCE` credits. Webhook routing is registered before middleware in `main.go`, not in `routes/`.
+[webhooks/supabase.go](snaphost-backend/internal/gateway/webhooks/supabase.go) handles a Supabase Database Webhook fired on `INSERT` into `public.users`, authenticated with the `X-Webhook-Secret` header against `SUPABASE_WEBHOOK_SECRET`. It POSTs to the `user-billing` service's `/internal/users` to seed the user with `INITIAL_VIBECOIN_BALANCE` credits. Webhook routing is registered before middleware in `main.go`, not in `routes/`.
 
 ### Proxying
 
-[proxy/http.go](snaphost-backend/api-gateway/proxy/http.go) is a thin `httputil.ReverseProxy` wrapper. Gin's `*path` catch-all is read in the handler and forwarded via a context value so the Director can build the upstream URL. Adds `X-Proxied-By: api-gateway` to responses and returns `502 bad_gateway` on upstream failure. WebSocket proxy lives in `proxy/websocket.go` and is wired for `/ws/logs/*path`.
+[proxy/http.go](snaphost-backend/internal/gateway/proxy/http.go) is a thin `httputil.ReverseProxy` wrapper. Gin's `*path` catch-all is read in the handler and forwarded via a context value so the Director can build the upstream URL. Adds `X-Proxied-By: api-gateway` to responses and returns `502 bad_gateway` on upstream failure. WebSocket proxy lives in `proxy/websocket.go` and is wired for `/ws/logs/*path`.
 
 ### user-billing (port 8081)
 
-Wallet + deploy-saga orchestrator. Owns the `wallets`, `transactions`, `deploys`, `deploy_sagas`, `projects`, and `custom_domains` Postgres tables (migrations in [user-billing/db/](snaphost-backend/user-billing/db/)). Two surfaces:
+Wallet + deploy-saga orchestrator. Owns the `wallets`, `transactions`, `deploys`, `deploy_sagas`, `projects`, and `custom_domains` Postgres tables (migrations in [user-billing/db/](snaphost-backend/internal/control/db/)). Two surfaces:
 
 - **Public** (proxied by api-gateway under `/api/v1/`): `GET /billing`, `POST/GET/DELETE /deploys[/:id]`, `GET /deploys/:id/logs` (WebSocket — aggregates Redis pub/sub from builder/runner), `POST/GET /domains`, `DELETE /domains/:id`, `POST /domains/:id/target`, and the admin read surface below.
 - **Internal** (`X-Webhook-Secret`): `POST /internal/users` (called by api-gateway's Supabase webhook to seed `INITIAL_BALANCE` coins), `POST /internal/billing/{topup,reserve,commit,refund}`, `POST /internal/deploys/:id/status`, `POST /internal/deploys/:id/running`, `GET /internal/deploys/expired`.
 
 `POST /billing/topup` is **internal-only** and takes an explicit `user_id`. It was public until 2026-08-07, crediting whatever amount the request body asked for with no payment verification — free coins for any account or `sk_` key. When payments land, the provider's verified callback is what calls it, with the provider's payment id as `idempotency_key`. Regression tests in `routes/routes_test.go` and the gateway's `routes/rbac_policy_test.go` keep it off the public surface.
 
-**Operator console (Task 17a).** `GET /api/v1/admin/*` in [internal/admin/](snaphost-backend/user-billing/internal/admin/) — overview, users (+ their deploys, ledger, projects, domains, keys), global deploy/transaction/domain lists, and a deploy detail carrying its saga row. Read-only: mutations wait for an audit trail. Authorised twice — the gateway's Casbin policy for the `admin` role, and a second `X-User-Role` check inside user-billing, so a missing policy line cannot expose it. The `admin` role comes from the `snaphost_role` JWT claim written by a Supabase Postgres hook that is configured by hand; without that hook everyone falls back to `user`. Migration 0012 added the `users` table (identity + email), populated by the same Supabase webhook that seeds the wallet.
+**Operator console (Task 17a).** `GET /api/v1/admin/*` in [internal/admin/](snaphost-backend/internal/control/admin/) — overview, users (+ their deploys, ledger, projects, domains, keys), global deploy/transaction/domain lists, and a deploy detail carrying its saga row. Read-only: mutations wait for an audit trail. Authorised twice — the gateway's Casbin policy for the `admin` role, and a second `X-User-Role` check inside user-billing, so a missing policy line cannot expose it. The `admin` role comes from the `snaphost_role` JWT claim written by a Supabase Postgres hook that is configured by hand; without that hook everyone falls back to `user`. Migration 0012 added the `users` table (identity + email), populated by the same Supabase webhook that seeds the wallet.
 
 The saga worker runs in-process (toggle via `SAGA_WORKER_ENABLED`, default on) and consumes a Redis Stream — if `REDIS_URL` is unset, the saga path is disabled and only synchronous wallet ops work. Stuck sagas are resumed on a `SAGA_RESUME_INTERVAL_SEC` ticker; build steps time out after `SAGA_BUILD_TIMEOUT_MIN`. Each deploy costs `DEPLOY_COST_COINS` (vibecoins).
 
@@ -129,7 +141,7 @@ This service is not part of the local Docker dev path. Local dev still uses Dock
 
 LLM-backed Dockerfile generator. Single internal endpoint: `POST /internal/ai/generate-dockerfile` taking `{deploy_id, user_id, repo_contents[]}` and returning a generated Dockerfile. Talks to OpenRouter (`OPENROUTER_API_KEY`, model from `OPENROUTER_MODEL` in `vendor/model` form, e.g. `openai/gpt-4o-mini`). Per-request deadline `LLM_TIMEOUT` (default 30s).
 
-Owns two Postgres tables (migrations in [ai-orchestrator/db/](snaphost-backend/ai-orchestrator/db/)): `ai_cache` (7-day TTL response cache keyed on repo signature — repeat requests don't re-hit the LLM) and `ai_usage` (per-user token/cost accounting). A circuit breaker opens after 10 consecutive OpenRouter failures and stays open for 60s, so a flaky vendor doesn't take builds down.
+Owns two Postgres tables (migrations in [ai-orchestrator/db/](snaphost-backend/internal/ai/db/)): `ai_cache` (7-day TTL response cache keyed on repo signature — repeat requests don't re-hit the LLM) and `ai_usage` (per-user token/cost accounting). A circuit breaker opens after 10 consecutive OpenRouter failures and stays open for 60s, so a flaky vendor doesn't take builds down.
 
 ### shared
 

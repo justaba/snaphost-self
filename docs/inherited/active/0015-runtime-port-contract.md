@@ -8,7 +8,7 @@ Task 13b, and staging proof is still outstanding.
 ## Implementation status (2026-07-30)
 
 - **15a** — `detect.FixedPortRisk`
-  ([port.go](../../../snaphost-backend/builder-svc/internal/detect/port.go))
+  ([port.go](../../../snaphost-backend/internal/builder/detect/port.go))
   flags a user-shipped Dockerfile that exposes a numeric port and never
   mentions `PORT`; the pipeline publishes a `warn` line naming the port, the
   fix, and when to ignore it. Warning only, per item 2: a Dockerfile cannot see

@@ -5,11 +5,13 @@
 // they are one process (Task 1), and separate modules only bought a `replace`
 // directive per service and six dependency sets to keep in step.
 //
-// The module path and the directory layout were chosen so this merge changes
-// no import path: `snaphost/user-billing/internal/deploy` resolved through
-// `module snaphost/user-billing` before and resolves through `module snaphost`
-// rooted here now. Renaming the directories is deliberately a later, separate
-// step — doing both at once would hide a real break inside a rename diff.
+// The merge itself changed no import path, because the old module paths and
+// the directory layout already agreed. The rename that followed it is what
+// moved the services under internal/ — kept a separate step so a real break
+// could not hide inside a rename diff.
+//
+// Layout: cmd/ holds the entry points, internal/ holds everything they wire
+// together, one package tree per former service.
 module snaphost
 
 go 1.25.5

@@ -18,8 +18,8 @@ to follow successive agent deploys ([Task 14](0014-vibecoder-ingress.md)).
 Shipped in this pass:
 
 - **16a** — `projects` table, `deploys.project_id`, `deploys.last_request_at`
-  ([0010_projects.up.sql](../../../snaphost-backend/user-billing/db/migrations/0010_projects.up.sql),
-  [internal/project](../../../snaphost-backend/user-billing/internal/project/project.go)).
+  ([0010_projects.up.sql](../../../snaphost-backend/internal/control/db/migrations/0010_projects.up.sql),
+  [internal/project](../../../snaphost-backend/internal/control/project/project.go)).
   Deploys of the same source converge on one project through a deterministic
   source key; archive uploads get their own project, having no stable identity.
   Alias-pinned deploys are excluded from TTL expiry, idle aliases are unpinned
@@ -29,7 +29,7 @@ Shipped in this pass:
   Per-deploy TTL is now sent by the saga (`DEPLOY_TTL_MIN`) and capped in
   user-billing (`DEPLOY_TTL_MAX_MIN`); production examples ship 1440.
 - **16b** — `custom_domains`
-  ([0011_custom_domains.up.sql](../../../snaphost-backend/user-billing/db/migrations/0011_custom_domains.up.sql)),
+  ([0011_custom_domains.up.sql](../../../snaphost-backend/internal/control/db/migrations/0011_custom_domains.up.sql)),
   public API `POST/GET /api/v1/domains`, `DELETE /api/v1/domains/:id`, and
   `POST /api/v1/domains/:id/target` (the pointer move that serves both publish
   and rollback), with matching `rbac_policy.csv` lines. Attach validates the
@@ -146,7 +146,7 @@ makes the quality of that serving path (see Decided policy) worth paying for.
   A foreign host is rejected with `400 bad host` before any lookup runs.
 - `GET /internal/routes?host=` resolves that host by **stripping the suffix and
   matching `deploys.subdomain`**
-  ([repository.go](../../../snaphost-backend/user-billing/internal/deploy/repository.go)
+  ([repository.go](../../../snaphost-backend/internal/control/deploy/repository.go)
   `FindRouteByHost`). There is no lookup path for an arbitrary hostname.
 - TLS terminates at one Yandex API Gateway bound to a single wildcard
   certificate for `*.${domain_name}` + the apex
@@ -157,7 +157,7 @@ makes the quality of that serving path (see Decided policy) worth paying for.
 ## Blocking design gap: nothing stable to point a domain at
 
 `deploys.subdomain` is unique **per deploy** (`uq_deploys_subdomain`,
-[0003_deploys.up.sql](../../../snaphost-backend/user-billing/db/migrations/0003_deploys.up.sql)),
+[0003_deploys.up.sql](../../../snaphost-backend/internal/control/db/migrations/0003_deploys.up.sql)),
 and every deploy gets a fresh one. Deploys also expire — `CONTAINER_DEFAULT_TTL_MIN`
 is 30 minutes and the watchdog tears them down.
 
@@ -344,7 +344,7 @@ throwaway previews.
    default was sized for.
 10. [x] Make TTL a per-deploy decision rather than a global constant. The wire
     contract already carries it — `ttl_minutes` exists in the saga's runner
-    request ([clients.go](../../../snaphost-backend/user-billing/internal/saga/clients.go))
+    request ([clients.go](../../../snaphost-backend/internal/control/saga/clients.go))
     and `runner-svc` honors any non-zero value over its config default — but
     nothing ever sets it. The saga should fill it from the deploy's tier.
 11. [x] Enforce the tier's TTL ceiling in `user-billing`, not `runner-svc`.
@@ -474,7 +474,7 @@ either ships:
     is trivially abusable.
 
     Implemented as `GET /internal/tls/authorize?domain=`
-    ([tls.go](../../../snaphost-backend/user-billing/internal/domain/tls.go)),
+    ([tls.go](../../../snaphost-backend/internal/control/domain/tls.go)),
     behind the shared webhook secret like every other internal route. It
     normalizes the host exactly as attach does, so `Example.COM.` cannot slip
     past as an unverified name; **fails closed** on a database error, because a

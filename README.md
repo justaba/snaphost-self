@@ -37,13 +37,16 @@ on the injected port.
 
 ```
 snaphost-self/
-├── snaphost-backend/      six Go modules, being merged into one
-│   ├── api-gateway/       JWT auth, RBAC, proxying — collapses into the binary
-│   ├── user-billing/      deploys, projects, domains, saga orchestration
-│   ├── builder-svc/       clone/unpack → Dockerfile → BuildKit → image
-│   ├── runner-svc/        starts containers on Docker, probes them, enforces TTL
-│   ├── ai-orchestrator/   generates a Dockerfile when the repo has none
-│   └── shared/            webhook auth and Dockerfile validation
+├── snaphost-backend/      one Go module
+│   ├── cmd/               entry points — nine today, one after Task 1
+│   ├── internal/
+│   │   ├── gateway/       JWT auth, RBAC, proxying
+│   │   ├── control/       deploys, projects, domains, saga orchestration
+│   │   ├── builder/       clone/unpack → Dockerfile → BuildKit → image
+│   │   ├── runtime/       starts containers on Docker, probes them, enforces TTL
+│   │   ├── ai/            generates a Dockerfile when the repo has none
+│   │   └── shared/        webhook auth and Dockerfile validation
+│   └── docker/            one Dockerfile per image
 ├── infra/                 Compose manifests, Caddy, deploy and backup scripts
 └── docs/
     ├── architecture/      how the system works
@@ -53,8 +56,10 @@ snaphost-self/
     └── inherited/         the SaaS task catalog this forked from
 ```
 
-The module list is a description of the current tree, not the target. Task 1
-turns it into `cmd/` plus packages under `internal/`.
+Nine entry points under `cmd/` is the shape being removed, not the target: the
+whole point of [Task 1](docs/tasks/active/0001-collapse-to-one-binary.md) is
+one process. They are separate for now so the collapse can be done and
+verified one seam at a time.
 
 ## Commands
 

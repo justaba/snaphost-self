@@ -25,7 +25,7 @@ folder that is not a public git repo.
 
 - **No editor entry point.** The audience lives in an AI editor, not a browser.
 - **Auth is browser-shaped.** api-gateway accepts only a Supabase `Bearer` JWT
-  ([middleware/jwt.go](../../../snaphost-backend/api-gateway/middleware/jwt.go)).
+  ([middleware/jwt.go](../../../snaphost-backend/internal/gateway/middleware/jwt.go)).
   A "press deploy in VS Code" client needs a long-lived **API key**.
 - **Ingest is git-only.** builder validates and clones a public `repo_url`
   (host allowlist, private-IP filter). A local project is often not in a public

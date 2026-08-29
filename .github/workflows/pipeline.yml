@@ -88,11 +88,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { image: api-gateway, context: snaphost-backend, dockerfile: snaphost-backend/api-gateway/Dockerfile }
-          - { image: user-billing, context: snaphost-backend, dockerfile: snaphost-backend/user-billing/Dockerfile }
-          - { image: builder-svc, context: snaphost-backend, dockerfile: snaphost-backend/builder-svc/Dockerfile }
-          - { image: runner-svc, context: snaphost-backend, dockerfile: snaphost-backend/runner-svc/Dockerfile }
-          - { image: ai-orchestrator, context: snaphost-backend, dockerfile: snaphost-backend/ai-orchestrator/Dockerfile }
+          - { image: api-gateway, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.gateway }
+          - { image: user-billing, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.control }
+          - { image: builder-svc, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.builder }
+          - { image: runner-svc, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.runtime }
+          - { image: ai-orchestrator, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.ai }
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
