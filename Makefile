@@ -32,7 +32,7 @@ build-frontend:
 
 # Every Go module under snaphost-backend/. They are separate modules, so each
 # loop below enters the directory rather than relying on one ./... walk.
-GO_MODULES := api-gateway user-billing builder-svc runner-svc ai-orchestrator router-svc shared
+GO_MODULES := api-gateway user-billing builder-svc runner-svc ai-orchestrator shared
 
 # Runs golangci-lint for each backend module.
 # Configuration is snaphost-backend/.golangci.yml, found by walking up from
@@ -42,8 +42,6 @@ lint:
 		echo "==> lint $$m"; \
 		(cd snaphost-backend/$$m && golangci-lint run) || exit 1; \
 	done
-	@echo "==> lint runner-svc (yandex build tag)"
-	@cd snaphost-backend/runner-svc && golangci-lint run --build-tags yandex
 
 # Convenience target for the standalone sibling frontend checkout.
 lint-frontend:
@@ -55,8 +53,6 @@ test:
 		echo "==> test $$m"; \
 		(cd snaphost-backend/$$m && go test ./...) || exit 1; \
 	done
-	@echo "==> test runner-svc (yandex build tag)"
-	@cd snaphost-backend/runner-svc && go test -tags yandex ./...
 
 # Stops all docker compose services
 stop:

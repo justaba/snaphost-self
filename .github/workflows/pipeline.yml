@@ -25,9 +25,7 @@ jobs:
           - { name: user-billing, module: snaphost-backend/user-billing }
           - { name: builder-svc, module: snaphost-backend/builder-svc }
           - { name: runner-svc, module: snaphost-backend/runner-svc }
-          - { name: runner-svc-yandex, module: snaphost-backend/runner-svc, tags: yandex }
           - { name: ai-orchestrator, module: snaphost-backend/ai-orchestrator }
-          - { name: router-svc, module: snaphost-backend/router-svc }
           - { name: shared, module: snaphost-backend/shared }
     defaults:
       run:
@@ -67,21 +65,6 @@ jobs:
       - name: Lint
         run: golangci-lint run ${{ matrix.tags && format('--build-tags {0}', matrix.tags) || '' }} ./...
 
-  terraform:
-    name: Terraform
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: terraform/yandex
-    steps:
-      - uses: actions/checkout@v6
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~1.7"
-      - run: terraform fmt -check
-      - run: terraform init -backend=false
-      - run: terraform validate
-
   shell:
     name: Deployment scripts
     runs-on: ubuntu-latest
@@ -113,7 +96,7 @@ jobs:
 
   images:
     name: Image / ${{ matrix.image }}
-    needs: [go, terraform, shell]
+    needs: [go, shell]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -122,9 +105,8 @@ jobs:
           - { image: api-gateway, context: snaphost-backend/api-gateway, dockerfile: snaphost-backend/api-gateway/Dockerfile }
           - { image: user-billing, context: snaphost-backend/user-billing, dockerfile: snaphost-backend/user-billing/Dockerfile }
           - { image: builder-svc, context: snaphost-backend, dockerfile: snaphost-backend/builder-svc/Dockerfile }
-          - { image: runner-svc, context: snaphost-backend, dockerfile: snaphost-backend/runner-svc/Dockerfile, build_args: GO_BUILD_TAGS=yandex }
+          - { image: runner-svc, context: snaphost-backend, dockerfile: snaphost-backend/runner-svc/Dockerfile }
           - { image: ai-orchestrator, context: snaphost-backend, dockerfile: snaphost-backend/ai-orchestrator/Dockerfile }
-          - { image: router-svc, context: snaphost-backend, dockerfile: snaphost-backend/router-svc/Dockerfile }
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3

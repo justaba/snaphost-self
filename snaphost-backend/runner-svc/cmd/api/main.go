@@ -20,7 +20,6 @@ import (
 	"snaphost/runner-svc/config"
 	"snaphost/runner-svc/internal/backend"
 	"snaphost/runner-svc/internal/backend/docker"
-	"snaphost/runner-svc/internal/backend/vk"
 	"snaphost/runner-svc/internal/billing"
 	"snaphost/runner-svc/internal/logs"
 	"snaphost/runner-svc/internal/runner"
@@ -62,7 +61,10 @@ func main() {
 		log.Warn("STRICT_IMAGE_VALIDATION=false and REGISTRY_ALLOWED_PREFIXES empty: any image_ref will be accepted (dev-only safe configuration)")
 	}
 
-	// 5. Select backend.
+	// 5. Select backend. Docker is the only one: this platform runs on the
+	// operator's own host, so there is no cloud runtime to dispatch to. The
+	// backend.Backend interface stays because it is what keeps the runtime
+	// swappable at all (ADR 0004), not because a second backend exists.
 	var b backend.Backend
 	switch cfg.RunnerBackend {
 	case "docker":
@@ -70,13 +72,6 @@ func main() {
 		if err != nil {
 			log.Fatal("failed to initialise docker backend", zap.Error(err))
 		}
-	case "yandex":
-		b, err = newYandexBackend(cfg, publisher, log)
-		if err != nil {
-			log.Fatal("yandex backend init failed", zap.Error(err))
-		}
-	case "vk":
-		b = vk.NewVKBackend(log)
 	default:
 		log.Fatal("unknown RUNNER_BACKEND value", zap.String("value", cfg.RunnerBackend))
 	}

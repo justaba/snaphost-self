@@ -219,45 +219,6 @@ services:
     environment: *runner-environment
     volumes: *runner-volumes
 
-  # Ingress for custom domains only (ADR 0007). The same router image already
-  # runs as a Yandex Serverless Container behind the API Gateway for generated
-  # `*.${DOMAIN_SUFFIX}` hostnames; this instance serves customer domains,
-  # which no Yandex certificate can cover.
-  #
-  # It is deliberately a separate path from the generated-hostname one: a
-  # failure here must not reach deploys served on their own subdomains, and it
-  # must never be able to fail a deploy.
-  router-svc:
-    <<: [*service-defaults, *runtime-limits]
-    image: "${GHCR_IMAGE_PREFIX}/router-svc:${SNAPHOST_VERSION}"
-    networks:
-      - control
-      - data
-    # Loopback only. Caddy on the host terminates TLS and proxies here; nothing
-    # off-box may reach the router directly, since it forwards whatever Host it
-    # is given.
-    ports:
-      - "127.0.0.1:${ROUTER_BIND_PORT}:8085"
-    depends_on:
-      user-billing:
-        condition: service_started
-    environment:
-      PORT: "8085"
-      DOMAIN_SUFFIX: "${DOMAIN_SUFFIX}"
-      USER_BILLING_URL: "http://user-billing:8081"
-      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
-      # key_file rather than metadata: this runs on the VDS, not inside Yandex,
-      # so there is no metadata service to read an identity from.
-      YANDEX_AUTH_MODE: "key_file"
-      YANDEX_SA_KEY_PATH: "/secrets/runner-key.json"
-      # Serves Caddy's on-demand TLS `ask` probe. Safe here precisely because
-      # the port above is loopback-only; the Yandex instance of this image
-      # runs behind a public gateway and leaves it off.
-      TLS_ASK_ENABLED: "true"
-      PROXY_TIMEOUT_SEC: "${ROUTER_PROXY_TIMEOUT_SEC}"
-      LOG_LEVEL: "${LOG_LEVEL}"
-    volumes: *runner-volumes
-
   ai-orchestrator:
     <<: [*service-defaults, *runtime-limits]
     image: "${GHCR_IMAGE_PREFIX}/ai-orchestrator:${SNAPHOST_VERSION}"

@@ -53,18 +53,13 @@ func main() {
 	// 4. Initialise billing client.
 	billingClient := billing.NewClient(cfg.UserBillingURL, cfg.WebhookSecret, log)
 
-	// 5. Select backend.
+	// 5. Select backend. Docker only — see the note in cmd/api/main.go.
 	var b backend.Backend
 	switch cfg.RunnerBackend {
 	case "docker":
 		b, err = docker.NewDockerBackend(cfg, publisher, log)
 		if err != nil {
 			log.Fatal("failed to initialise docker backend", zap.Error(err))
-		}
-	case "yandex":
-		b, err = newYandexBackend(cfg, publisher, log)
-		if err != nil {
-			log.Fatal("yandex backend init failed", zap.Error(err))
 		}
 	default:
 		log.Fatal("unknown RUNNER_BACKEND value", zap.String("value", cfg.RunnerBackend))
