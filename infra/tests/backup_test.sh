@@ -18,7 +18,7 @@ set -u
 echo "docker $*" >>"${FAKE_LOG:?}"
 if [[ ${1:-} == info ]]; then exit 0; fi
 if [[ ${1:-} == inspect ]]; then
-  if [[ ${PG_STOPPED:-0} == 1 ]]; then echo false; else echo true; fi
+  if [[ ${APP_STOPPED:-0} == 1 ]]; then echo false; else echo true; fi
   exit 0
 fi
 [[ ${1:-} == compose ]] || exit 0
@@ -29,19 +29,23 @@ for arg in "$@"; do
 done
 case "$op" in
   ps)
-    [[ ${PG_MISSING:-0} != 1 ]] || exit 1
-    echo postgres-container-id
+    [[ ${APP_MISSING:-0} != 1 ]] || exit 1
+    echo snaphost-container-id
     ;;
   exec)
-    if [[ "$*" == *pg_restore* ]]; then
-      # Table-of-contents listing consumed by verify_archive.
-      cat "${FAKE_TOC:?}"
-      exit 0
-    fi
-    # pg_dump
+    # `sqlite3 <db> .dump`. There is no separate table-of-contents command any
+    # more: the dump is SQL text and verify_archive reads the same bytes that
+    # get published, so this fake produces the artifact rather than a listing
+    # of it. The old split is how a check for two tables deleted in item 3
+    # stayed green — the fake listing was written from the same list.
     [[ ${FAIL_DUMP:-0} != 1 ]] || exit 1
     [[ ${EMPTY_DUMP:-0} != 1 ]] || exit 0
-    printf 'fake-pg-dump-payload'
+    printf 'PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\n'
+    for table in ${FAKE_TABLES:-}; do
+      printf 'CREATE TABLE %s (id text primary key);\n' "$table"
+      printf "INSERT INTO %s VALUES('row');\n" "$table"
+    done
+    [[ ${TRUNCATED_DUMP:-0} == 1 ]] || printf 'COMMIT;\n'
     ;;
 esac
 FAKE
@@ -98,19 +102,15 @@ setup_case() {
   ENV_FILE="$CASE_DIR/production.env"
   COMPOSE="$CASE_DIR/compose.yml"
   FAKE_LOG="$CASE_DIR/commands.log"
-  FAKE_TOC="$CASE_DIR/toc.txt"
   : >"$FAKE_LOG"
   : >"$COMPOSE"
   cat >"$ENV_FILE" <<EOF
 SNAPHOST_VERSION=$SHA
-POSTGRES_DB=snaphost
-POSTGRES_USER=snaphost
-POSTGRES_PASSWORD=production-password
 WEBHOOK_SECRET=internal-secret-value
 EOF
   chmod 600 "$ENV_FILE"
-  write_toc wallets transactions deploys deploy_sagas api_keys projects custom_domains
-  export PATH="$BIN:$PATH" FAKE_LOG FAKE_TOC
+  write_tables users deploys deploy_sagas api_keys projects custom_domains
+  export PATH="$BIN:$PATH" FAKE_LOG FAKE_TABLES
   export SNAPHOST_COMPOSE_FILE="$COMPOSE" SNAPHOST_ENV_FILE="$ENV_FILE"
   export SNAPHOST_COMPOSE_PROJECT=snaphost-test
   export SNAPHOST_STATE_DIR="$CASE_DIR/state" SNAPHOST_BACKUP_DIR="$CASE_DIR/backups"
@@ -119,16 +119,13 @@ EOF
   unset SNAPHOST_BACKUP_KEEP_DAYS SNAPHOST_BACKUP_KEEP_MIN
   unset SNAPHOST_DEPLOY_BACKUP_KEEP_DAYS SNAPHOST_DEPLOY_BACKUP_KEEP_MIN
   unset SNAPHOST_TLS_STATE_DIR SNAPHOST_TLS_BACKUP_KEEP_DAYS SNAPHOST_TLS_BACKUP_KEEP_MIN
-  unset FAIL_DUMP EMPTY_DUMP FAIL_ENCRYPT FAIL_UPLOAD FAIL_HEAD FAIL_HEARTBEAT PG_STOPPED PG_MISSING
+  unset FAIL_DUMP EMPTY_DUMP TRUNCATED_DUMP FAIL_ENCRYPT FAIL_UPLOAD FAIL_HEAD FAIL_HEARTBEAT APP_STOPPED APP_MISSING
 }
 
-write_toc() {
-  : >"$FAKE_TOC"
-  local table
-  for table in "$@"; do
-    printf '2345; 0 16456 TABLE DATA public %s snaphost\n' "$table" >>"$FAKE_TOC"
-  done
-}
+# Which tables the fake dump contains. Read straight by the fake `docker`, so a
+# test that removes one is removing it from the artifact rather than from a
+# listing that describes the artifact.
+write_tables() { FAKE_TABLES="$*"; export FAKE_TABLES; }
 
 run_capture() {
   OUTPUT="$CASE_DIR/output"
@@ -159,20 +156,20 @@ snapshot_case() {
 
 setup_case
 run_capture run
-if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.dump') -eq 1 ]]; then
+if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.sql') -eq 1 ]]; then
   pass 'scheduled backup produces one dump'
 else fail 'scheduled backup produces one dump'; fi
 
 setup_case
 run_capture run
-dump=$(find "$CASE_DIR/backups" -name 'scheduled-*.dump' | head -1)
+dump=$(find "$CASE_DIR/backups" -name 'scheduled-*.sql' | head -1)
 if [[ -f "${dump}.sha256" ]] && (cd "$CASE_DIR/backups" && sha256sum --check --status "$(basename "$dump").sha256"); then
   pass 'checksum is written and matches'
 else fail 'checksum is written and matches'; fi
 
 setup_case
 run_capture run
-mode=$(stat -c '%a' "$(find "$CASE_DIR/backups" -name 'scheduled-*.dump' | head -1)")
+mode=$(stat -c '%a' "$(find "$CASE_DIR/backups" -name 'scheduled-*.sql' | head -1)")
 if [[ "$mode" == 600 ]]; then pass 'dump is mode 0600'; else fail 'dump is mode 0600'; fi
 
 setup_case
@@ -184,27 +181,36 @@ else fail 'completion is recorded in state'; fi
 # --- failure paths ------------------------------------------------------
 
 setup_case; export FAIL_DUMP=1; run_capture run
-if [[ $RC -ne 0 && $(count_dumps 'scheduled-*.dump') -eq 0 ]]; then
+if [[ $RC -ne 0 && $(count_dumps 'scheduled-*.sql') -eq 0 ]]; then
   pass 'dump failure publishes nothing'
 else fail 'dump failure publishes nothing'; fi
 
 setup_case; export EMPTY_DUMP=1; run_capture run
-if [[ $RC -ne 0 && $(count_dumps 'scheduled-*.dump') -eq 0 ]]; then
+if [[ $RC -ne 0 && $(count_dumps 'scheduled-*.sql') -eq 0 ]]; then
   pass 'empty dump is rejected'
 else fail 'empty dump is rejected'; fi
 
-setup_case; write_toc wallets transactions deploys deploy_sagas api_keys projects; run_capture run
-if [[ $RC -ne 0 && $(count_dumps 'scheduled-*.dump') -eq 0 ]]; then
+# `users` is the one that carries the operator's password hash, so a dump
+# without it restores into a platform nobody can log into.
+setup_case; write_tables deploys deploy_sagas api_keys projects custom_domains; run_capture run
+if [[ $RC -ne 0 && $(count_dumps 'scheduled-*.sql') -eq 0 ]]; then
   pass 'dump missing a required table is rejected'
 else fail 'dump missing a required table is rejected'; fi
 
-setup_case; write_toc; run_capture run
+setup_case; write_tables; run_capture run
 if [[ $RC -ne 0 ]]; then pass 'dump with no table data at all is rejected'; else fail 'dump with no table data at all is rejected'; fi
 
-setup_case; export PG_STOPPED=1; run_capture run
-if [[ $RC -ne 0 ]] && grep -q 'PostgreSQL is not running' "$OUTPUT"; then
-  pass 'stopped PostgreSQL fails loudly'
-else fail 'stopped PostgreSQL fails loudly'; fi
+# A dump cut short is the case a checksum cannot catch: the file is intact, it
+# is just not all of the database. The terminating COMMIT is the evidence.
+setup_case; export TRUNCATED_DUMP=1; run_capture run
+if [[ $RC -ne 0 && $(count_dumps 'scheduled-*.sql') -eq 0 ]] && grep -q 'truncated' "$OUTPUT"; then
+  pass 'truncated dump is rejected'
+else fail 'truncated dump is rejected'; fi
+
+setup_case; export APP_STOPPED=1; run_capture run
+if [[ $RC -ne 0 ]] && grep -q 'the application is not running' "$OUTPUT"; then
+  pass 'a stopped application fails loudly'
+else fail 'a stopped application fails loudly'; fi
 
 setup_case
 mkdir -p "$CASE_DIR/state"
@@ -214,7 +220,7 @@ holder=$!
 sleep 0.3
 run_capture run
 wait "$holder" 2>/dev/null || true
-if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.dump') -eq 0 ]] && grep -q 'holds the lock' "$OUTPUT"; then
+if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.sql') -eq 0 ]] && grep -q 'holds the lock' "$OUTPUT"; then
   pass 'a running deployment defers the scheduled backup'
 else fail 'a running deployment defers the scheduled backup'; fi
 
@@ -222,12 +228,12 @@ else fail 'a running deployment defers the scheduled backup'; fi
 
 setup_case; export SNAPHOST_BACKUP_AGE_RECIPIENT=age1testrecipient; run_capture run
 # The plaintext dump must not survive next to the encrypted one.
-if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.dump.age') -eq 1 && $(count_dumps 'scheduled-*.dump') -eq 0 ]]; then
+if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.sql.age') -eq 1 && $(count_dumps 'scheduled-*.sql') -eq 0 ]]; then
   pass 'encryption publishes only the .age artifact'
 else fail 'encryption publishes only the .age artifact'; fi
 
 setup_case; export SNAPHOST_BACKUP_AGE_RECIPIENT=age1testrecipient; run_capture run
-if ! grep -Fq 'fake-pg-dump-payload' "$(find "$CASE_DIR/backups" -name '*.age' | head -1)"; then
+if ! grep -Fq 'CREATE TABLE users' "$(find "$CASE_DIR/backups" -name '*.age' | head -1)"; then
   pass 'the published artifact is the encrypted one'
 else fail 'the published artifact is the encrypted one'; fi
 
@@ -274,60 +280,60 @@ else fail 'a bucket-root remote produces no empty key prefix'; fi
 
 setup_case
 export SNAPHOST_BACKUP_KEEP_DAYS=14 SNAPHOST_BACKUP_KEEP_MIN=2
-seed_backup scheduled-20260101T000000Z.dump 40
-seed_backup scheduled-20260102T000000Z.dump 39
-seed_backup scheduled-20260103T000000Z.dump 38
-seed_backup scheduled-20260720T000000Z.dump 1
+seed_backup scheduled-20260101T000000Z.sql 40
+seed_backup scheduled-20260102T000000Z.sql 39
+seed_backup scheduled-20260103T000000Z.sql 38
+seed_backup scheduled-20260720T000000Z.sql 1
 run_capture prune
-if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.dump') -eq 2 ]]; then
+if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.sql') -eq 2 ]]; then
   pass 'retention removes dumps past the age limit'
 else fail 'retention removes dumps past the age limit'; fi
 
 setup_case
 export SNAPHOST_BACKUP_KEEP_DAYS=14 SNAPHOST_BACKUP_KEEP_MIN=3
-seed_backup scheduled-20260101T000000Z.dump 40
-seed_backup scheduled-20260102T000000Z.dump 39
-seed_backup scheduled-20260103T000000Z.dump 38
+seed_backup scheduled-20260101T000000Z.sql 40
+seed_backup scheduled-20260102T000000Z.sql 39
+seed_backup scheduled-20260103T000000Z.sql 38
 run_capture prune
-if [[ $(count_dumps 'scheduled-*.dump') -eq 3 ]]; then
+if [[ $(count_dumps 'scheduled-*.sql') -eq 3 ]]; then
   pass 'the retention minimum outranks the age limit'
 else fail 'the retention minimum outranks the age limit'; fi
 
 setup_case
 export SNAPHOST_BACKUP_KEEP_DAYS=1 SNAPHOST_BACKUP_KEEP_MIN=0
-seed_backup scheduled-20260101T000000Z.dump 40
+seed_backup scheduled-20260101T000000Z.sql 40
 run_capture prune
-if [[ ! -f "$CASE_DIR/backups/scheduled-20260101T000000Z.dump.sha256" ]]; then
+if [[ ! -f "$CASE_DIR/backups/scheduled-20260101T000000Z.sql.sha256" ]]; then
   pass 'a pruned dump takes its checksum with it'
 else fail 'a pruned dump takes its checksum with it'; fi
 
 setup_case
 export SNAPHOST_BACKUP_KEEP_DAYS=1 SNAPHOST_BACKUP_KEEP_MIN=0
-seed_backup scheduled-20260101T000000Z.dump 40
-printf 'sha=%s\nbackup_path=%s\n' "$SHA" "$CASE_DIR/backups/scheduled-20260101T000000Z.dump" >"$CASE_DIR/state/current.env"
+seed_backup scheduled-20260101T000000Z.sql 40
+printf 'sha=%s\nbackup_path=%s\n' "$SHA" "$CASE_DIR/backups/scheduled-20260101T000000Z.sql" >"$CASE_DIR/state/current.env"
 run_capture prune
-if [[ -f "$CASE_DIR/backups/scheduled-20260101T000000Z.dump" ]]; then
+if [[ -f "$CASE_DIR/backups/scheduled-20260101T000000Z.sql" ]]; then
   pass 'a backup referenced by deployment state is never pruned'
 else fail 'a backup referenced by deployment state is never pruned'; fi
 
 setup_case
 export SNAPHOST_DEPLOY_BACKUP_KEEP_DAYS=90 SNAPHOST_DEPLOY_BACKUP_KEEP_MIN=1 SNAPHOST_BACKUP_KEEP_DAYS=1 SNAPHOST_BACKUP_KEEP_MIN=0
-seed_backup "postgres-20260101T000000Z-$SHA-abc.dump" 40
-seed_backup scheduled-20260101T000000Z.dump 40
+seed_backup "database-20260101T000000Z-$SHA-abc.sql" 40
+seed_backup scheduled-20260101T000000Z.sql 40
 run_capture prune
-if [[ -f "$CASE_DIR/backups/postgres-20260101T000000Z-$SHA-abc.dump" && ! -f "$CASE_DIR/backups/scheduled-20260101T000000Z.dump" ]]; then
+if [[ -f "$CASE_DIR/backups/database-20260101T000000Z-$SHA-abc.sql" && ! -f "$CASE_DIR/backups/scheduled-20260101T000000Z.sql" ]]; then
   pass 'pre-deploy dumps keep their own longer retention'
 else fail 'pre-deploy dumps keep their own longer retention'; fi
 
 setup_case
 export SNAPHOST_BACKUP_KEEP_DAYS=1 SNAPHOST_BACKUP_KEEP_MIN=2
-seed_backup scheduled-20260101T000000Z.dump 40
-seed_backup scheduled-20260102T000000Z.dump 39
-seed_backup scheduled-20260103T000000Z.dump 38
+seed_backup scheduled-20260101T000000Z.sql 40
+seed_backup scheduled-20260102T000000Z.sql 39
+seed_backup scheduled-20260103T000000Z.sql 38
 run_capture prune
 # If checksums counted as backups, the two newest "files" would be checksums
 # and every real dump would be eligible for deletion.
-if [[ $(count_dumps 'scheduled-*.dump') -eq 2 ]]; then
+if [[ $(count_dumps 'scheduled-*.sql') -eq 2 ]]; then
   pass 'checksums are not counted against the retention minimum'
 else fail 'checksums are not counted against the retention minimum'; fi
 
@@ -344,7 +350,7 @@ if [[ $RC -ne 0 ]] && ! grep -q 'hc.invalid/ping' "$FAKE_LOG"; then
 else fail 'a failed backup does not ping the heartbeat'; fi
 
 setup_case; export SNAPHOST_BACKUP_HEARTBEAT_URL=https://hc.invalid/ping FAIL_HEARTBEAT=1; run_capture run
-if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.dump') -eq 1 ]]; then
+if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.sql') -eq 1 ]]; then
   pass 'a failed heartbeat does not fail a good backup'
 else fail 'a failed heartbeat does not fail a good backup'; fi
 
@@ -402,9 +408,9 @@ else fail 'a missing TLS store fails loudly rather than archiving nothing'; fi
 setup_case; seed_tls_state; export SNAPHOST_BACKUP_AGE_RECIPIENT=age1testrecipient
 export SNAPHOST_TLS_BACKUP_KEEP_DAYS=1 SNAPHOST_TLS_BACKUP_KEEP_MIN=0
 seed_backup tls-20260101T000000Z.tar.gz.age 40
-seed_backup scheduled-20260101T000000Z.dump 40
+seed_backup scheduled-20260101T000000Z.sql 40
 run_capture tls
-if [[ ! -f "$CASE_DIR/backups/tls-20260101T000000Z.tar.gz.age" && -f "$CASE_DIR/backups/scheduled-20260101T000000Z.dump" ]]; then
+if [[ ! -f "$CASE_DIR/backups/tls-20260101T000000Z.tar.gz.age" && -f "$CASE_DIR/backups/scheduled-20260101T000000Z.sql" ]]; then
   pass 'TLS retention prunes its own group and leaves database dumps alone'
 else fail 'TLS retention prunes its own group and leaves database dumps alone'; fi
 
@@ -419,7 +425,7 @@ else fail 'dry-run tls is filesystem read-only'; fi
 # --- dry run, verify, secrets ------------------------------------------
 
 setup_case
-seed_backup scheduled-20260101T000000Z.dump 40
+seed_backup scheduled-20260101T000000Z.sql 40
 export SNAPHOST_BACKUP_KEEP_DAYS=1 SNAPHOST_BACKUP_KEEP_MIN=0
 before=$(snapshot_case)
 run_capture --dry-run run
@@ -430,7 +436,7 @@ else fail 'dry-run run is filesystem read-only'; fi
 
 setup_case
 run_capture run
-dump=$(find "$CASE_DIR/backups" -name 'scheduled-*.dump' | head -1)
+dump=$(find "$CASE_DIR/backups" -name 'scheduled-*.sql' | head -1)
 run_capture verify "$dump"
 if [[ $RC -eq 0 ]] && grep -q 'Checksum OK' "$OUTPUT"; then
   pass 'verify accepts an intact backup'
@@ -438,7 +444,7 @@ else fail 'verify accepts an intact backup'; fi
 
 setup_case
 run_capture run
-dump=$(find "$CASE_DIR/backups" -name 'scheduled-*.dump' | head -1)
+dump=$(find "$CASE_DIR/backups" -name 'scheduled-*.sql' | head -1)
 printf 'corrupted' >>"$dump"
 run_capture verify "$dump"
 if [[ $RC -ne 0 ]]; then pass 'verify rejects a corrupted backup'; else fail 'verify rejects a corrupted backup'; fi

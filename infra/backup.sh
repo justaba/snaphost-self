@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Scheduled PostgreSQL backup for the SnapHost control plane.
+# Scheduled database backup for the SnapHost control plane.
 #
 # deploy.sh already dumps the database before migrations, but that is a
 # deployment safety net, not a backup schedule: a week without a deploy is a
 # week without a copy, and nothing ever prunes what it writes. This script is
 # the schedule, the retention policy, and the off-host copy.
+#
+# The store is one SQLite file (item 6), so the dump runs inside the
+# application container rather than against a database over a socket. Copying
+# the volume is the obvious alternative and it is wrong: under WAL the
+# committed state is spread across the database and its -wal, and a copy of the
+# two restores as a torn snapshot without reporting anything.
 #
 # It shares deploy.sh's lock, so a backup never runs against a database that
 # is mid-migration. If a deployment holds the lock, this run exits successfully
@@ -66,10 +72,21 @@ TLS_STATE_DIR=${SNAPHOST_TLS_STATE_DIR:-/var/lib/caddy/.local/share/caddy}
 TLS_KEEP_DAYS=${SNAPHOST_TLS_BACKUP_KEEP_DAYS:-30}
 TLS_KEEP_MIN=${SNAPHOST_TLS_BACKUP_KEEP_MIN:-7}
 
-# Losing any of these is unrecoverable: they carry money, ownership, and what
-# is currently published. The ai_* tables are cache and accounting logs and are
-# deliberately not required — a dump that lost them is still worth keeping.
-REQUIRED_TABLES=(wallets transactions deploys deploy_sagas api_keys projects custom_domains)
+# Path inside the container, matching DATABASE_PATH in docker-compose.prod.yml.
+DATABASE_PATH=${SNAPHOST_DATABASE_PATH:-/var/snaphost/data/snaphost.db}
+
+# Losing any of these is unrecoverable: they carry identity, ownership, and
+# what is currently published. The ai_* tables are a cache and an accounting
+# log and are deliberately not required — a dump that lost them is still worth
+# keeping. schema_migrations is not required either: it is reconstructible.
+#
+# `wallets` and `transactions` were in this list until now, and they were
+# dropped with billing in item 3 — so verify_archive looked for table data that
+# could not exist and every backup would have been refused as incomplete. The
+# test suite passed because its fake dump was written from this same list.
+# `users` is here in their place: it is where the operator's password hash
+# lives, and losing it means losing the ability to log in.
+REQUIRED_TABLES=(users deploys deploy_sagas api_keys projects custom_domains)
 
 TEMP_FILES=()
 
@@ -154,19 +171,27 @@ check_space() {
   (( free >= MIN_FREE_KB )) || die "insufficient free space in $BACKUP_DIR: ${free}KB available, ${MIN_FREE_KB}KB required"
 }
 
-postgres_running() {
+snaphost_running() {
   local cid
-  cid=$(compose ps -q postgres 2>/dev/null) || return 1
+  cid=$(compose ps -q snaphost 2>/dev/null) || return 1
   [[ -n "$cid" ]] && [[ $(docker inspect -f '{{.State.Running}}' "$cid") == true ]]
 }
 
 # A dump that restores to an empty schema is worse than no dump, because it
-# looks like a backup. Check the archive's table of contents before publishing.
+# looks like a backup. Check it before publishing.
+#
+# A SQLite dump is SQL text rather than an archive with a table of contents, so
+# there is nothing to ask a tool about — the check reads the file. Two things
+# are asserted: it ends with COMMIT;, which is the only evidence the read
+# transaction finished rather than the dump being cut short, and every table
+# that cannot be reconstructed is in it.
 verify_archive() {
-  local path=$1 toc table
-  toc=$(compose exec -T postgres pg_restore --list <"$path" 2>/dev/null) || die "backup is not a readable PostgreSQL archive: $path"
+  local path=$1 table
+  tail -n 1 "$path" | grep -qx 'COMMIT;' || die "backup is truncated, no terminating COMMIT: $path"
+  grep -q '^BEGIN TRANSACTION;$' "$path" || die "backup is not a readable SQLite dump: $path"
   for table in "${REQUIRED_TABLES[@]}"; do
-    grep -Eq "TABLE DATA [^ ]+ $table " <<<"$toc" || die "backup is missing table data for $table: $path"
+    grep -Eq "^CREATE TABLE (IF NOT EXISTS )?[\"']?$table[\"']?[ (]" "$path" \
+      || die "backup is missing table $table: $path"
   done
 }
 
@@ -259,8 +284,12 @@ prune_group() {
 }
 
 prune() {
-  prune_group 'scheduled-*.dump*' "$KEEP_DAYS" "$KEEP_MIN" scheduled
-  prune_group 'postgres-*.dump' "$DEPLOY_KEEP_DAYS" "$DEPLOY_KEEP_MIN" pre-deploy
+  # The patterns follow what each producer writes: scheduled-*.sql[.age] here,
+  # database-*.sql from deploy.sh. Both were *.dump when the dumps were
+  # PostgreSQL archives, and a pattern left behind would quietly stop pruning
+  # its group rather than fail.
+  prune_group 'scheduled-*.sql*' "$KEEP_DAYS" "$KEEP_MIN" scheduled
+  prune_group 'database-*.sql' "$DEPLOY_KEEP_DAYS" "$DEPLOY_KEEP_MIN" pre-deploy
 }
 
 heartbeat() {
@@ -299,7 +328,7 @@ run() {
   # lock file is itself a write, and an operator checking configuration must
   # not be able to disturb a real deployment.
   if [[ "$DRY_RUN" == true ]]; then
-    log "DRY-RUN: take the lock, dump PostgreSQL, verify the archive, encrypt, publish, upload"
+    log "DRY-RUN: take the lock, dump the database, verify it, encrypt, publish, upload"
     prune
     return 0
   fi
@@ -313,7 +342,7 @@ run() {
     return 0
   fi
 
-  postgres_running || die "PostgreSQL is not running; no backup was taken"
+  snaphost_running || die "the application is not running; no backup was taken"
 
   local timestamp tmp base final artifact bytes
   timestamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -321,14 +350,14 @@ run() {
   TEMP_FILES+=("$tmp")
   base=${tmp##*/}
   base=${base#.}
-  final="$BACKUP_DIR/$base.dump"
+  final="$BACKUP_DIR/$base.sql"
 
   umask 077
   # </dev/null: `compose exec -T` forwards our stdin to the container, which
   # would swallow the rest of this script when it is piped to a shell.
-  compose exec -T postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$tmp" </dev/null \
-    || die "PostgreSQL dump failed"
-  [[ -s "$tmp" ]] || die "PostgreSQL dump is empty"
+  compose exec -T snaphost sqlite3 "$DATABASE_PATH" .dump >"$tmp" </dev/null \
+    || die "database dump failed"
+  [[ -s "$tmp" ]] || die "database dump is empty"
   chmod 600 "$tmp"
   verify_archive "$tmp"
 
@@ -422,9 +451,12 @@ verify_one() {
     log "Encrypted archive; decrypt with the offline key before a structural check"
     return 0
   fi
-  VERSION=$(resolve_version)
+  # No longer resolves the deployed version first. Checking a dump used to mean
+  # running pg_restore inside the database container, so verifying a backup
+  # needed a working deployment — exactly what an operator does not have when
+  # they reach for one. It reads the file now.
   verify_archive "$path"
-  log "Archive structure OK: all required tables present"
+  log "Dump structure OK: all required tables present"
 }
 
 list_backups() {
@@ -433,7 +465,7 @@ list_backups() {
   while IFS= read -r file; do
     [[ -n "$file" ]] || continue
     printf '%-46s %12s %s\n' "$(basename "$file")" "$(stat -c '%s' "$file")" "$(date -u -r "$file" +%FT%TZ)"
-  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'scheduled-*.dump*' -o -name 'postgres-*.dump' -o -name 'tls-*.tar.gz.age' \) ! -name '*.sha256' -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
+  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'scheduled-*.sql*' -o -name 'database-*.sql' -o -name 'tls-*.tar.gz.age' \) ! -name '*.sha256' -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
 }
 
 if [[ ${1:-} == --dry-run ]]; then DRY_RUN=true; shift; fi
