@@ -14,8 +14,6 @@ type Step string
 const (
 	// StepPending — saga row exists but no work has begun.
 	StepPending Step = "pending"
-	// StepReserved — coins have been moved from balance to reserved.
-	StepReserved Step = "reserved"
 	// StepBuilding — build job has been enqueued to builder-svc.
 	StepBuilding Step = "building"
 	// StepBuilt — builder-svc has reported a successful build.
@@ -23,7 +21,7 @@ const (
 	// StepProvisioning — runner-svc has accepted the deploy and the
 	// container is starting up.
 	StepProvisioning Step = "provisioning"
-	// StepRunning — terminal success: container is up and coins committed.
+	// StepRunning — terminal success: the container is up and answering.
 	StepRunning Step = "running"
 	// StepFailed — terminal failure: rollback completed.
 	StepFailed Step = "failed"
@@ -48,10 +46,8 @@ type SagaJob struct {
 	UploadID   string `json:"upload_id,omitempty"`
 	// CredentialID references the short-lived git credential in Redis
 	// (gitcred:<id>) for git_private. Never the secret itself.
-	CredentialID   string    `json:"credential_id,omitempty"`
-	CostCoins      int64     `json:"cost_coins"`
-	IdempotencyKey string    `json:"idempotency_key"`
-	EnqueuedAt     time.Time `json:"enqueued_at"`
+	CredentialID string    `json:"credential_id,omitempty"`
+	EnqueuedAt   time.Time `json:"enqueued_at"`
 }
 
 // SagaState mirrors a row in deploy_sagas. Pointer fields are nullable
@@ -67,11 +63,8 @@ type SagaState struct {
 	UploadID         *string
 	CredentialID     *string
 	CurrentStep      Step
-	CoinsReserved    bool
 	ImageBuilt       bool
 	ContainerRunning bool
-	CoinsCommitted   bool
-	ReservationTxID  *string
 	ImageRef         *string
 	CommitSHA        *string
 	// AppPort is the application listen port published by builder-svc

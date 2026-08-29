@@ -1,6 +1,10 @@
-// Package main is the entry point for the user-billing microservice.
-// It manages user wallets, vibecoin transactions, and deploy records
-// for the SnapHost platform, and runs the saga orchestrator worker.
+// Package main is the entry point for the control-plane service. It owns
+// accounts, projects, deploys, and custom domains, and runs the saga
+// orchestrator worker.
+//
+// The directory is still called user-billing and there is no billing in it:
+// renaming it is deferred to the module merge, where every import path
+// changes once instead of twice.
 package main
 
 import (
@@ -18,6 +22,7 @@ import (
 
 	"snaphost/user-billing/config"
 	"snaphost/user-billing/db"
+	"snaphost/user-billing/internal/account"
 	"snaphost/user-billing/internal/admin"
 	"snaphost/user-billing/internal/apikey"
 	"snaphost/user-billing/internal/deploy"
@@ -26,9 +31,7 @@ import (
 	"snaphost/user-billing/internal/logs"
 	"snaphost/user-billing/internal/project"
 	"snaphost/user-billing/internal/saga"
-	"snaphost/user-billing/internal/transaction"
 	"snaphost/user-billing/internal/upload"
-	"snaphost/user-billing/internal/wallet"
 	"snaphost/user-billing/routes"
 )
 
@@ -106,8 +109,7 @@ func main() {
 	}
 
 	// 7. Wire repositories.
-	walletRepo := wallet.NewRepository(pool)
-	_ = transaction.NewRepository(pool) // available for future handler wiring
+	accountRepo := account.NewRepository(pool)
 	deployRepo := deploy.NewRepository(pool,
 		deploy.WithDomainSuffix(cfg.DomainSuffix),
 		deploy.WithGCPolicy(deploy.GCPolicy{
@@ -121,12 +123,11 @@ func main() {
 	adminRepo := admin.NewRepository(pool)
 
 	// 8. Wire services.
-	walletSvc := wallet.NewService(walletRepo, log)
 	runnerClient := saga.NewHTTPRunnerClient(cfg.RunnerSvcURL, cfg.WebhookSecret)
 
 	// 9. Wire HTTP handlers.
-	walletHandler := wallet.NewHandler(walletSvc, log, cfg.WebhookSecret, cfg.InitialBalance)
-	deployHandler := deploy.NewHandler(deployRepo, projectRepo, log, sagaQueue, runnerClient, logReader, cfg.DeployCostCoins,
+	accountHandler := account.NewHandler(accountRepo, log)
+	deployHandler := deploy.NewHandler(deployRepo, projectRepo, log, sagaQueue, runnerClient, logReader,
 		uploadStore, int64(cfg.MaxUploadSizeMB)*1024*1024, time.Duration(cfg.UploadTTLMin)*time.Minute,
 		credStore, time.Duration(cfg.GitCredTTLMin)*time.Minute)
 	apikeyHandler := apikey.NewHandler(apikeyRepo, log)
@@ -160,8 +161,8 @@ func main() {
 	// 10. Optionally wire and start the saga worker in-process.
 	if cfg.SagaWorkerEnabled && rdb != nil {
 		orch := &saga.Orchestrator{
-			Repo:             sagaRepo,
-			WalletRepo:       walletRepo,
+			Repo: sagaRepo,
+
 			DeployRepo:       deployRepo,
 			Builder:          saga.NewHTTPBuilderClient(cfg.BuilderSvcURL, cfg.WebhookSecret),
 			Runner:           runnerClient,
@@ -204,7 +205,7 @@ func main() {
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// 13. Register application routes.
-	routes.Register(r, walletHandler, deployHandler, apikeyHandler, domainHandler, tlsHandler, adminHandler, cfg.WebhookSecret)
+	routes.Register(r, accountHandler, deployHandler, apikeyHandler, domainHandler, tlsHandler, adminHandler, cfg.WebhookSecret)
 
 	// 14. Start HTTP server with graceful shutdown.
 	srv := &http.Server{

@@ -14,16 +14,15 @@ type Services struct {
 
 // Config holds all configuration for the API Gateway
 type Config struct {
-	Port                   string
-	RedisURL               string
-	SupabaseURL            string
-	SupabaseWebhookSecret  string
-	WebhookSecret          string
-	InitialVibecoinBalance int64
-	Services               Services
-	RateLimitIP            int
-	RateLimitUser          int
-	RateLimitDeploy        int
+	Port                  string
+	RedisURL              string
+	SupabaseURL           string
+	SupabaseWebhookSecret string
+	WebhookSecret         string
+	Services              Services
+	RateLimitIP           int
+	RateLimitUser         int
+	RateLimitDeploy       int
 	// MaxUploadSizeMB bounds POST /api/v1/deploys/upload bodies at the
 	// gateway; keep in sync with user-billing's MAX_UPLOAD_SIZE_MB.
 	MaxUploadSizeMB int
@@ -32,12 +31,11 @@ type Config struct {
 // Load reads configuration from environment variables and applies defaults
 func Load() (*Config, error) {
 	cfg := &Config{
-		Port:                   getEnv("PORT", "8080"),
-		RedisURL:               getEnv("REDIS_URL", "redis://redis:6379"),
-		SupabaseURL:            getEnv("SUPABASE_URL", ""),
-		SupabaseWebhookSecret:  getEnv("SUPABASE_WEBHOOK_SECRET", ""),
-		WebhookSecret:          getEnv("WEBHOOK_SECRET", ""),
-		InitialVibecoinBalance: int64(getEnvAsInt("INITIAL_VIBECOIN_BALANCE", 100)),
+		Port:                  getEnv("PORT", "8080"),
+		RedisURL:              getEnv("REDIS_URL", "redis://redis:6379"),
+		SupabaseURL:           getEnv("SUPABASE_URL", ""),
+		SupabaseWebhookSecret: getEnv("SUPABASE_WEBHOOK_SECRET", ""),
+		WebhookSecret:         getEnv("WEBHOOK_SECRET", ""),
 		Services: Services{
 			UserBilling:    getEnv("USER_BILLING_URL", "http://user-billing:8081"),
 			AIOrchestrator: getEnv("AI_ORCHESTRATOR_URL", "http://ai-orchestrator:8087"),

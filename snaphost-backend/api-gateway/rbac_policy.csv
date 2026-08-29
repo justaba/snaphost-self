@@ -9,7 +9,6 @@ p, user, /api/v1/deploys/:id, DELETE
 p, user, /api/v1/deploys/:id/logs, GET
 p, user, /api/v1/profile, GET
 p, user, /api/v1/profile, PATCH
-p, user, /api/v1/billing, GET
 p, user, /api/v1/keys, POST
 p, user, /api/v1/keys, GET
 p, user, /api/v1/keys/:id, DELETE
@@ -24,13 +23,11 @@ p, admin, /api/v1/admin/overview, GET
 p, admin, /api/v1/admin/users, GET
 p, admin, /api/v1/admin/users/:id, GET
 p, admin, /api/v1/admin/users/:id/deploys, GET
-p, admin, /api/v1/admin/users/:id/transactions, GET
 p, admin, /api/v1/admin/users/:id/domains, GET
 p, admin, /api/v1/admin/users/:id/projects, GET
 p, admin, /api/v1/admin/users/:id/keys, GET
 p, admin, /api/v1/admin/deploys, GET
 p, admin, /api/v1/admin/deploys/:id, GET
-p, admin, /api/v1/admin/transactions, GET
 p, admin, /api/v1/admin/domains, GET
 
 g, admin, user

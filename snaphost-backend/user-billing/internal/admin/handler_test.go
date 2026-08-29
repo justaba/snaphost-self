@@ -26,7 +26,7 @@ type fakeStore struct {
 }
 
 func (f *fakeStore) Overview(context.Context) (*Overview, error) {
-	return &Overview{Users: 3, TotalBalance: 250}, nil
+	return &Overview{Users: 3, Deploys: 12}, nil
 }
 
 func (f *fakeStore) ListUsers(_ context.Context, flt Filter) (*Page[UserSummary], error) {
@@ -45,7 +45,7 @@ func (f *fakeStore) GetUser(_ context.Context, userID uuid.UUID) (*UserDetail, e
 		return nil, f.userErr
 	}
 	return &UserDetail{
-		UserSummary: UserSummary{ID: userID, HasWallet: true},
+		UserSummary: UserSummary{ID: userID, DeploysTotal: 4},
 		Projects:    []ProjectRow{},
 		Domains:     []DomainRow{},
 		APIKeys:     f.keys,
@@ -62,11 +62,6 @@ func (f *fakeStore) ListDeploys(_ context.Context, flt Filter) (*Page[DeployRow]
 
 func (f *fakeStore) GetDeploy(context.Context, uuid.UUID) (*DeployDetail, error) {
 	panic("not used")
-}
-
-func (f *fakeStore) ListTransactions(_ context.Context, flt Filter) (*Page[LedgerRow], error) {
-	f.gotFilter = flt
-	return &Page[LedgerRow]{Items: []LedgerRow{}, Limit: flt.Limit, Offset: flt.Offset}, nil
 }
 
 func (f *fakeStore) ListDomains(_ context.Context, flt Filter) (*Page[DomainRow], error) {
@@ -94,7 +89,7 @@ func newTestRouter(store Store) *gin.Engine {
 	adm.GET("/users/:id", h.GetUser)
 	adm.GET("/users/:id/keys", h.UserKeys)
 	adm.GET("/deploys", h.ListDeploys)
-	adm.GET("/transactions", h.ListTransactions)
+	adm.GET("/domains", h.ListDomains)
 	return r
 }
 
@@ -305,7 +300,7 @@ func TestPageShapeIsStable(t *testing.T) {
 func TestEmptyListSerialisesAsArray(t *testing.T) {
 	r := newTestRouter(&fakeStore{})
 
-	w := do(r, http.MethodGet, "/api/v1/admin/transactions", "admin")
+	w := do(r, http.MethodGet, "/api/v1/admin/domains", "admin")
 	if !strings.Contains(w.Body.String(), `"items":[]`) {
 		t.Fatalf("empty page did not serialise items as []: %s", w.Body.String())
 	}

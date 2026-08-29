@@ -78,35 +78,25 @@ func seed(t *testing.T, pool *pgxpool.Pool) seeded {
 	}
 
 	exec(`INSERT INTO users (id, email) VALUES ($1, $2)`, s.userID, s.email)
-	exec(`INSERT INTO wallets (user_id, balance, reserved) VALUES ($1, 500, 25)`, s.userID)
 	exec(`INSERT INTO projects (id, user_id, slug, source_key) VALUES ($1, $2, $3, $4)`,
 		s.project, s.userID, "demo-app", "git:github.com/acme/demo#main")
 
 	exec(`INSERT INTO deploys (id, user_id, project_id, source_type, repo_url, branch, status,
-	          cost_vibecoins, subdomain, endpoint_url, container_id)
+	          subdomain, endpoint_url, container_id)
 	      VALUES ($1, $2, $3, 'git_public', 'https://github.com/acme/demo', 'main', 'running',
-	              10, $4, 'https://proj.example.test', 'container-1')`,
+	              $4, 'https://proj.example.test', 'container-1')`,
 		s.deployOK, s.userID, s.project, "proj-"+s.deployOK.String()[:12])
 
-	exec(`INSERT INTO deploys (id, user_id, project_id, source_type, status, cost_vibecoins,
+	exec(`INSERT INTO deploys (id, user_id, project_id, source_type, status,
 	          failure_reason, upload_id)
-	      VALUES ($1, $2, $3, 'archive', 'failed', 10,
+	      VALUES ($1, $2, $3, 'archive', 'failed',
 	              'the container started but nothing answered on PORT', 'upload-1')`,
 		s.deployKO, s.userID, s.project)
 
-	exec(`INSERT INTO deploy_sagas (deploy_id, user_id, current_step, coins_reserved, image_built,
-	          container_running, coins_committed, retry_count, failure_reason)
-	      VALUES ($1, $2, 'failed', true, true, false, false, 2, 'probe_failed')`,
+	exec(`INSERT INTO deploy_sagas (deploy_id, user_id, current_step, image_built,
+	          container_running, retry_count, failure_reason)
+	      VALUES ($1, $2, 'failed', true, false, 2, 'probe_failed')`,
 		s.deployKO, s.userID)
-
-	exec(`INSERT INTO transactions (user_id, deploy_id, type, amount, status, idempotency_key)
-	      VALUES ($1, NULL, 'topup', 100, 'completed', $2)`, s.userID, "topup-"+s.userID.String())
-	exec(`INSERT INTO transactions (user_id, deploy_id, type, amount, status, idempotency_key)
-	      VALUES ($1, $2, 'reserve', 10, 'pending', $3)`,
-		s.userID, s.deployKO, "reserve-"+s.deployKO.String())
-	exec(`INSERT INTO transactions (user_id, deploy_id, type, amount, status, idempotency_key)
-	      VALUES ($1, $2, 'commit', 10, 'completed', $3)`,
-		s.userID, s.deployOK, "commit-"+s.deployOK.String())
 
 	exec(`INSERT INTO custom_domains (id, user_id, project_id, target_deploy_id, domain,
 	          verification_token, status, verified_at)
@@ -131,7 +121,7 @@ func TestIntegration_Overview(t *testing.T) {
 
 	// Absolute values depend on what else is in the database, so assert the
 	// invariants the screen relies on rather than exact counts.
-	if o.Users == 0 || o.Wallets == 0 || o.Deploys == 0 || o.Projects == 0 {
+	if o.Users == 0 || o.Deploys == 0 || o.Projects == 0 {
 		t.Fatalf("overview came back empty: %+v", o)
 	}
 	if o.DeploysRunning == 0 || o.DeploysFailed == 0 {
@@ -139,9 +129,6 @@ func TestIntegration_Overview(t *testing.T) {
 	}
 	if o.DomainsActive == 0 {
 		t.Errorf("verified domain not counted: %+v", o)
-	}
-	if o.CoinsToppedUp < 100 || o.CoinsSpent < 10 {
-		t.Errorf("ledger totals wrong: topped_up=%d spent=%d", o.CoinsToppedUp, o.CoinsSpent)
 	}
 	if o.ActiveAPIKeys == 0 {
 		t.Errorf("api key not counted: %+v", o)
@@ -169,15 +156,9 @@ func TestIntegration_ListAndGetUser(t *testing.T) {
 	if got.Email == nil || *got.Email != s.email {
 		t.Errorf("email not joined: %v", got.Email)
 	}
-	if !got.HasWallet || got.Balance == nil || *got.Balance != 500 || got.Reserved == nil || *got.Reserved != 25 {
-		t.Errorf("wallet not joined: has=%v balance=%v reserved=%v", got.HasWallet, got.Balance, got.Reserved)
-	}
 	if got.DeploysTotal != 2 || got.DeploysRunning != 1 || got.DeploysFailed != 1 {
 		t.Errorf("deploy rollup wrong: total=%d running=%d failed=%d",
 			got.DeploysTotal, got.DeploysRunning, got.DeploysFailed)
-	}
-	if got.CoinsToppedUp != 100 || got.CoinsSpent != 10 {
-		t.Errorf("ledger rollup wrong: topped_up=%d spent=%d", got.CoinsToppedUp, got.CoinsSpent)
 	}
 	if got.DomainsCount != 1 {
 		t.Errorf("domain rollup wrong: %d", got.DomainsCount)
@@ -264,11 +245,8 @@ func TestIntegration_DeploysAndDetail(t *testing.T) {
 	if detail.Saga.CurrentStep != "failed" || detail.Saga.RetryCount != 2 || !detail.Saga.ImageBuilt {
 		t.Errorf("saga fields wrong: %+v", detail.Saga)
 	}
-	if detail.Saga.ContainerRunning || detail.Saga.CoinsCommitted {
+	if detail.Saga.ContainerRunning {
 		t.Errorf("saga flags should be false for a failed deploy: %+v", detail.Saga)
-	}
-	if len(detail.Ledger) != 1 || detail.Ledger[0].Type != "reserve" {
-		t.Errorf("deploy ledger wrong: %+v", detail.Ledger)
 	}
 	if len(detail.Domains) != 0 {
 		t.Errorf("failed deploy should carry no alias: %+v", detail.Domains)
@@ -291,39 +269,11 @@ func TestIntegration_DeploysAndDetail(t *testing.T) {
 	}
 }
 
-func TestIntegration_TransactionsAndDomains(t *testing.T) {
+func TestIntegration_Domains(t *testing.T) {
 	pool := testPool(t)
 	repo := NewRepository(pool)
 	s := seed(t, pool)
 	ctx := context.Background()
-
-	ledger, err := repo.ListTransactions(ctx, Filter{UserID: &s.userID, Limit: 10})
-	if err != nil {
-		t.Fatalf("list transactions: %v", err)
-	}
-	if ledger.Total != 3 {
-		t.Fatalf("expected 3 ledger rows, got %d", ledger.Total)
-	}
-	if ledger.Items[0].UserEmail == nil {
-		t.Error("ledger row missing joined email")
-	}
-
-	topups, err := repo.ListTransactions(ctx, Filter{UserID: &s.userID, Type: "topup", Limit: 10})
-	if err != nil {
-		t.Fatalf("filter ledger by type: %v", err)
-	}
-	if topups.Total != 1 || topups.Items[0].Amount != 100 {
-		t.Fatalf("type filter wrong: total=%d", topups.Total)
-	}
-
-	pendingReserves, err := repo.ListTransactions(ctx,
-		Filter{UserID: &s.userID, Type: "reserve", Status: "pending", Limit: 10})
-	if err != nil {
-		t.Fatalf("filter ledger by status: %v", err)
-	}
-	if pendingReserves.Total != 1 {
-		t.Fatalf("status filter wrong: total=%d", pendingReserves.Total)
-	}
 
 	domains, err := repo.ListDomains(ctx, Filter{UserID: &s.userID, Status: "verified", Limit: 10})
 	if err != nil {
@@ -372,9 +322,12 @@ func TestIntegration_PagingIsConsistent(t *testing.T) {
 	}
 }
 
-// An account with no wallet is the production symptom of a seed webhook that
-// never fired. It must still be listed, and must be countable.
-func TestIntegration_WalletlessUserIsVisible(t *testing.T) {
+// An account that has never deployed anything must still appear in the list
+// with zeroed rollups. Every aggregate is a LEFT JOIN for exactly this reason,
+// and one of them turned into an inner join is invisible until the operator
+// goes looking for an account that has done nothing yet — which is precisely
+// when they are trying to work out whether signup worked at all.
+func TestIntegration_AccountWithNoActivityIsListed(t *testing.T) {
 	pool := testPool(t)
 	repo := NewRepository(pool)
 	ctx := context.Background()
@@ -390,21 +343,13 @@ func TestIntegration_WalletlessUserIsVisible(t *testing.T) {
 		t.Fatalf("list users: %v", err)
 	}
 	if page.Total != 1 {
-		t.Fatalf("orphan not listed: total=%d", page.Total)
+		t.Fatalf("account with no activity not listed: total=%d", page.Total)
 	}
 	got := page.Items[0]
-	if got.HasWallet {
-		t.Error("orphan reported as having a wallet")
+	if got.DeploysTotal != 0 || got.DomainsCount != 0 {
+		t.Errorf("rollups should be zero, got deploys=%d domains=%d", got.DeploysTotal, got.DomainsCount)
 	}
-	if got.Balance != nil {
-		t.Errorf("orphan balance should be null, got %v", *got.Balance)
-	}
-
-	o, err := repo.Overview(ctx)
-	if err != nil {
-		t.Fatalf("overview: %v", err)
-	}
-	if o.WalletlessUsers == 0 {
-		t.Error("walletless_users did not count the orphan")
+	if got.LastDeployAt != nil {
+		t.Errorf("last_deploy_at should be null, got %v", *got.LastDeployAt)
 	}
 }

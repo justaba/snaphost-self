@@ -51,8 +51,6 @@ type Deploy struct {
 	EndpointURL     *string    `json:"endpoint_url,omitempty"`
 	Subdomain       *string    `json:"subdomain,omitempty"`
 	ContainerID     *string    `json:"container_id,omitempty"`
-	CostVibecoins   int64      `json:"cost_vibecoins"`
-	ReservationTxID *uuid.UUID `json:"reservation_tx_id,omitempty"`
 	TTLExpiresAt    *time.Time `json:"ttl_expires_at,omitempty"`
 	FailureReason   *string    `json:"failure_reason,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
@@ -118,9 +116,9 @@ func (r *Repository) Create(ctx context.Context, d Deploy) error {
 		d.SourceType = SourceGitPublic
 	}
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO deploys (id, user_id, project_id, source_type, repo_url, branch, upload_id, commit_sha, status, cost_vibecoins, reservation_tx_id, metadata)
-		 VALUES ($1, $2, $3, $4, nullif($5, ''), $6, $7, $8, $9, $10, $11, '{}'::jsonb)`,
-		d.ID, d.UserID, d.ProjectID, d.SourceType, d.RepoURL, d.Branch, d.UploadID, d.CommitSHA, d.Status, d.CostVibecoins, d.ReservationTxID,
+		`INSERT INTO deploys (id, user_id, project_id, source_type, repo_url, branch, upload_id, commit_sha, status, metadata)
+		 VALUES ($1, $2, $3, $4, nullif($5, ''), $6, $7, $8, $9, '{}'::jsonb)`,
+		d.ID, d.UserID, d.ProjectID, d.SourceType, d.RepoURL, d.Branch, d.UploadID, d.CommitSHA, d.Status,
 	)
 	if err != nil {
 		return fmt.Errorf("create deploy: %w", err)
@@ -131,7 +129,7 @@ func (r *Repository) Create(ctx context.Context, d Deploy) error {
 // deployColumns is the shared SELECT list for full Deploy rows; scanDeploy
 // consumes it in the same order.
 const deployColumns = `id, user_id, project_id, source_type, coalesce(repo_url, ''), branch, upload_id, commit_sha, status,
-	        image_ref, endpoint_url, subdomain, container_id, cost_vibecoins, reservation_tx_id, ttl_expires_at,
+	        image_ref, endpoint_url, subdomain, container_id, ttl_expires_at,
 	        failure_reason, created_at, updated_at, stopped_at`
 
 // rowScanner is satisfied by both pgx.Row and pgx.Rows.
@@ -142,8 +140,8 @@ type rowScanner interface {
 func scanDeploy(row rowScanner) (Deploy, error) {
 	var d Deploy
 	err := row.Scan(&d.ID, &d.UserID, &d.ProjectID, &d.SourceType, &d.RepoURL, &d.Branch, &d.UploadID, &d.CommitSHA, &d.Status,
-		&d.ImageRef, &d.EndpointURL, &d.Subdomain, &d.ContainerID, &d.CostVibecoins,
-		&d.ReservationTxID, &d.TTLExpiresAt, &d.FailureReason,
+		&d.ImageRef, &d.EndpointURL, &d.Subdomain, &d.ContainerID,
+		&d.TTLExpiresAt, &d.FailureReason,
 		&d.CreatedAt, &d.UpdatedAt, &d.StoppedAt)
 	return d, err
 }

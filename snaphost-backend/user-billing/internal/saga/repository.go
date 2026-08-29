@@ -52,7 +52,6 @@ func (r *Repository) Get(ctx context.Context, deployID uuid.UUID) (*SagaState, e
 	s := &SagaState{}
 	var (
 		stepStr       string
-		reservationTx *uuid.UUID
 		imageRef      *string
 		commitSHA     *string
 		appPort       *int
@@ -62,16 +61,16 @@ func (r *Repository) Get(ctx context.Context, deployID uuid.UUID) (*SagaState, e
 	)
 	err := r.pool.QueryRow(ctx,
 		`SELECT deploy_id::text, user_id::text, current_step, source_type, upload_id, credential_id,
-		        coins_reserved, image_built, container_running, coins_committed,
-		        reservation_tx_id, image_ref, commit_sha, app_port,
+		        image_built, container_running,
+		        image_ref, commit_sha, app_port,
 		        container_id, endpoint_url,
 		        failure_reason, retry_count
 		 FROM deploy_sagas WHERE deploy_id = $1`,
 		deployID,
 	).Scan(
 		&s.DeployID, &s.UserID, &stepStr, &s.SourceType, &s.UploadID, &s.CredentialID,
-		&s.CoinsReserved, &s.ImageBuilt, &s.ContainerRunning, &s.CoinsCommitted,
-		&reservationTx, &imageRef, &commitSHA, &appPort,
+		&s.ImageBuilt, &s.ContainerRunning,
+		&imageRef, &commitSHA, &appPort,
 		&containerID, &endpointURL,
 		&failureReason, &s.RetryCount,
 	)
@@ -82,10 +81,6 @@ func (r *Repository) Get(ctx context.Context, deployID uuid.UUID) (*SagaState, e
 		return nil, fmt.Errorf("get saga: %w", err)
 	}
 	s.CurrentStep = Step(stepStr)
-	if reservationTx != nil {
-		v := reservationTx.String()
-		s.ReservationTxID = &v
-	}
 	s.ImageRef = imageRef
 	s.CommitSHA = commitSHA
 	s.AppPort = appPort
@@ -111,23 +106,6 @@ func (r *Repository) UpdateStep(ctx context.Context, deployID uuid.UUID, step St
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrSagaNotFound
-	}
-	return nil
-}
-
-// MarkCoinsReserved records that wallet.Reserve completed and stores the
-// transaction id for later Commit/Refund calls.
-func (r *Repository) MarkCoinsReserved(ctx context.Context, deployID uuid.UUID, txID string) error {
-	parsed, err := uuid.Parse(txID)
-	if err != nil {
-		return fmt.Errorf("invalid tx id %q: %w", txID, err)
-	}
-	_, err = r.pool.Exec(ctx,
-		`UPDATE deploy_sagas SET coins_reserved = true, reservation_tx_id = $1 WHERE deploy_id = $2`,
-		parsed, deployID,
-	)
-	if err != nil {
-		return fmt.Errorf("mark coins reserved: %w", err)
 	}
 	return nil
 }
@@ -163,18 +141,6 @@ func (r *Repository) MarkContainerRunning(ctx context.Context, deployID uuid.UUI
 	)
 	if err != nil {
 		return fmt.Errorf("mark container running: %w", err)
-	}
-	return nil
-}
-
-// MarkCoinsCommitted records that the reservation has been finalized.
-func (r *Repository) MarkCoinsCommitted(ctx context.Context, deployID uuid.UUID) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE deploy_sagas SET coins_committed = true WHERE deploy_id = $1`,
-		deployID,
-	)
-	if err != nil {
-		return fmt.Errorf("mark coins committed: %w", err)
 	}
 	return nil
 }
@@ -227,12 +193,12 @@ func (r *Repository) IncrementRetry(ctx context.Context, deployID uuid.UUID, las
 func (r *Repository) ListInFlight(ctx context.Context, limit int) ([]SagaState, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT s.deploy_id::text, s.user_id::text, s.current_step, s.source_type, s.upload_id, s.credential_id,
-		        s.coins_reserved, s.image_built, s.container_running, s.coins_committed,
-		        s.reservation_tx_id, s.image_ref, s.commit_sha, s.app_port,
+		        s.image_built, s.container_running,
+		        s.image_ref, s.commit_sha, s.app_port,
 		        s.container_id, s.endpoint_url,
 		        s.failure_reason, s.retry_count
 		 FROM deploy_sagas s
-		 WHERE s.current_step IN ('reserved','building','built','provisioning','compensating')
+		 WHERE s.current_step IN ('pending','building','built','provisioning','compensating')
 		   AND s.updated_at < now() - interval '5 minutes'
 		 ORDER BY s.updated_at
 		 LIMIT $1`,
@@ -246,24 +212,19 @@ func (r *Repository) ListInFlight(ctx context.Context, limit int) ([]SagaState, 
 	var out []SagaState
 	for rows.Next() {
 		var (
-			s             SagaState
-			stepStr       string
-			reservationTx *uuid.UUID
+			s       SagaState
+			stepStr string
 		)
 		if err := rows.Scan(
 			&s.DeployID, &s.UserID, &stepStr, &s.SourceType, &s.UploadID, &s.CredentialID,
-			&s.CoinsReserved, &s.ImageBuilt, &s.ContainerRunning, &s.CoinsCommitted,
-			&reservationTx, &s.ImageRef, &s.CommitSHA, &s.AppPort,
+			&s.ImageBuilt, &s.ContainerRunning,
+			&s.ImageRef, &s.CommitSHA, &s.AppPort,
 			&s.ContainerID, &s.EndpointURL,
 			&s.FailureReason, &s.RetryCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan in-flight saga: %w", err)
 		}
 		s.CurrentStep = Step(stepStr)
-		if reservationTx != nil {
-			v := reservationTx.String()
-			s.ReservationTxID = &v
-		}
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {

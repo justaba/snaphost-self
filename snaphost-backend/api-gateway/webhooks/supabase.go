@@ -18,9 +18,8 @@ type BillingClient interface {
 
 // CreateUserRequest payload for user creation
 type CreateUserRequest struct {
-	ID             string `json:"id"`
-	Email          string `json:"email"`
-	InitialBalance int64  `json:"initial_balance"`
+	ID    string `json:"id"`
+	Email string `json:"email"`
 }
 
 // WebhookHandler handles incoming webhooks
@@ -82,9 +81,8 @@ func (h *WebhookHandler) SupabaseUserCreated(c *gin.Context) {
 	defer cancel()
 
 	req := CreateUserRequest{
-		ID:             payload.Record.ID,
-		Email:          payload.Record.Email,
-		InitialBalance: h.cfg.InitialVibecoinBalance,
+		ID:    payload.Record.ID,
+		Email: payload.Record.Email,
 	}
 
 	if err := h.billing.CreateUser(ctx, req); err != nil {

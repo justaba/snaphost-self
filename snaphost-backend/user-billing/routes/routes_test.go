@@ -9,8 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"snaphost/user-billing/internal/account"
 	"snaphost/user-billing/internal/apikey"
-	"snaphost/user-billing/internal/wallet"
 )
 
 const testSecret = "test-webhook-secret"
@@ -23,11 +23,11 @@ func newEngine(t *testing.T) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 
 	log := zap.NewNop()
-	walletHandler := wallet.NewHandler(wallet.NewService(wallet.NewRepository(nil), log), log, testSecret, 100)
+	accountHandler := account.NewHandler(account.NewRepository(nil), log)
 	apikeyHandler := apikey.NewHandler(apikey.NewRepository(nil), log)
 
 	r := gin.New()
-	Register(r, walletHandler, nil, apikeyHandler, nil, nil, nil, testSecret)
+	Register(r, accountHandler, nil, apikeyHandler, nil, nil, nil, testSecret)
 	return r
 }
 
@@ -51,80 +51,93 @@ func request(t *testing.T, r *gin.Engine, method, path, body string, headers map
 	return w
 }
 
-// Until 2026-08-07 this route was public and took the credited amount from the
-// request body of whoever was logged in — free coins for any account or any
-// `sk_` key. Nothing may put it back on the public surface: real top-ups have
-// to arrive through a verified payment callback on the internal endpoint.
-func TestPublicTopupRouteDoesNotExist(t *testing.T) {
+// This platform has no billing, and adding one back is not a small change: the
+// upstream project shipped a public topup endpoint that minted credit from a
+// request body, and it stayed that way for months.
+//
+// So the assertion is that no billing surface exists at all, rather than that
+// a particular one is authenticated. If billing ever returns it should fail
+// here first and be designed deliberately, not arrive by a copied route line.
+func TestNoBillingSurfaceExists(t *testing.T) {
 	r := newEngine(t)
 
-	w := request(t, r, http.MethodPost, "/api/v1/billing/topup",
-		`{"amount":1000000,"idempotency_key":"free-money"}`,
-		map[string]string{"X-User-ID": "11111111-2222-3333-4444-555555555555"})
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("public topup answered %d; it must not be routed at all (body %s)", w.Code, w.Body.String())
+	for _, path := range []string{
+		"/api/v1/billing",
+		"/api/v1/billing/topup",
+		"/internal/billing/topup",
+		"/internal/billing/reserve",
+		"/internal/billing/commit",
+		"/internal/billing/refund",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			w := request(t, r, method, path, `{}`, map[string]string{"X-Webhook-Secret": testSecret})
+			if w.Code != http.StatusNotFound {
+				t.Errorf("%s %s answered %d; no billing route may be registered (body %s)",
+					method, path, w.Code, w.Body.String())
+			}
+		}
 	}
 }
 
-func TestInternalTopupRequiresTheWebhookSecret(t *testing.T) {
-	r := newEngine(t)
-	body := `{"user_id":"11111111-2222-3333-4444-555555555555","amount":100,"idempotency_key":"k"}`
+// The internal group is reachable only with the shared secret. Checked on
+// /internal/users because it is the surviving internal endpoint, but the
+// middleware is registered on the group, so this covers every route under it.
+func TestInternalGroupRequiresTheWebhookSecret(t *testing.T) {
+	body := `{"id":"9a5b3f1e-0000-4000-8000-000000000000","email":"someone@example.com"}`
 
-	cases := []struct {
+	for _, tc := range []struct {
 		name    string
 		headers map[string]string
 	}{
-		{"no secret", nil},
+		{"no header at all", nil},
+		{"empty value", map[string]string{"X-Webhook-Secret": ""}},
 		{"wrong secret", map[string]string{"X-Webhook-Secret": "not-the-secret"}},
-		{"empty secret", map[string]string{"X-Webhook-Secret": ""}},
-		{"user header instead", map[string]string{"X-User-ID": "11111111-2222-3333-4444-555555555555"}},
-	}
-
-	for _, tc := range cases {
+		{"secret with trailing space", map[string]string{"X-Webhook-Secret": testSecret + " "}},
+		{"prefix of the secret", map[string]string{"X-Webhook-Secret": testSecret[:len(testSecret)-1]}},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := request(t, r, http.MethodPost, "/internal/billing/topup", body, tc.headers)
+			r := newEngine(t)
+			w := request(t, r, http.MethodPost, "/internal/users", body, tc.headers)
 			if w.Code != http.StatusUnauthorized {
-				t.Fatalf("got %d want 401 (body %s)", w.Code, w.Body.String())
+				t.Fatalf("answered %d, want 401 (body %s)", w.Code, w.Body.String())
 			}
 		})
 	}
 }
 
-// With the secret accepted, the handler must still refuse a body that does not
-// name a user — the caller credits somebody else's wallet, so the account can
-// never be implied.
-func TestInternalTopupRejectsAMissingUser(t *testing.T) {
+// Recording an account must not be reachable without the secret, and must not
+// be reachable from the public surface at all: the email it carries is the only
+// identity this database ever receives.
+func TestAccountCreateIsNotPublic(t *testing.T) {
 	r := newEngine(t)
+
+	w := request(t, r, http.MethodPost, "/api/v1/users",
+		`{"id":"9a5b3f1e-0000-4000-8000-000000000000"}`, nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("public /api/v1/users answered %d; it must not be routed (body %s)", w.Code, w.Body.String())
+	}
+}
+
+// A malformed body is rejected before the handler reaches its nil pool. If this
+// ever panics instead of answering 400, the validation moved behind the
+// database call.
+func TestAccountCreateRejectsAMalformedBody(t *testing.T) {
 	auth := map[string]string{"X-Webhook-Secret": testSecret}
 
-	cases := []struct {
+	for _, tc := range []struct {
 		name string
 		body string
 	}{
-		{"no user_id", `{"amount":100,"idempotency_key":"k"}`},
-		{"malformed user_id", `{"user_id":"not-a-uuid","amount":100,"idempotency_key":"k"}`},
-		{"no idempotency key", `{"user_id":"11111111-2222-3333-4444-555555555555","amount":100}`},
-		{"zero amount", `{"user_id":"11111111-2222-3333-4444-555555555555","amount":0,"idempotency_key":"k"}`},
-		{"negative amount", `{"user_id":"11111111-2222-3333-4444-555555555555","amount":-500,"idempotency_key":"k"}`},
-	}
-
-	for _, tc := range cases {
+		{"no id", `{"email":"someone@example.com"}`},
+		{"id is not a uuid", `{"id":"not-a-uuid","email":"someone@example.com"}`},
+		{"not json", `{`},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := request(t, r, http.MethodPost, "/internal/billing/topup", tc.body, auth)
+			r := newEngine(t)
+			w := request(t, r, http.MethodPost, "/internal/users", tc.body, auth)
 			if w.Code != http.StatusBadRequest {
-				t.Fatalf("got %d want 400 (body %s)", w.Code, w.Body.String())
+				t.Fatalf("answered %d, want 400 (body %s)", w.Code, w.Body.String())
 			}
 		})
-	}
-}
-
-// The wallet read stays public — it is the user's own balance.
-func TestBillingReadStaysPublic(t *testing.T) {
-	r := newEngine(t)
-
-	w := request(t, r, http.MethodGet, "/api/v1/billing", "", nil)
-	if w.Code == http.StatusNotFound {
-		t.Fatal("GET /api/v1/billing is no longer routed")
 	}
 }

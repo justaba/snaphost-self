@@ -37,7 +37,6 @@ type Store interface {
 	GetUser(ctx context.Context, userID uuid.UUID) (*UserDetail, error)
 	ListDeploys(ctx context.Context, f Filter) (*Page[DeployRow], error)
 	GetDeploy(ctx context.Context, deployID uuid.UUID) (*DeployDetail, error)
-	ListTransactions(ctx context.Context, f Filter) (*Page[LedgerRow], error)
 	ListDomains(ctx context.Context, f Filter) (*Page[DomainRow], error)
 	ListProjects(ctx context.Context, userID uuid.UUID) ([]ProjectRow, error)
 	ListAPIKeys(ctx context.Context, userID uuid.UUID) ([]APIKeyRow, error)
@@ -127,22 +126,6 @@ func (h *Handler) UserDeploys(c *gin.Context) {
 	c.JSON(http.StatusOK, page)
 }
 
-// UserTransactions handles GET /api/v1/admin/users/:id/transactions.
-func (h *Handler) UserTransactions(c *gin.Context) {
-	userID, ok := pathUUID(c, "id", "invalid_user_id")
-	if !ok {
-		return
-	}
-
-	f := h.filter(c)
-	f.UserID = &userID
-	page, err := h.store.ListTransactions(c.Request.Context(), f)
-	if err != nil {
-		h.fail(c, "failed to list user transactions", err)
-		return
-	}
-	c.JSON(http.StatusOK, page)
-}
 
 // UserDomains handles GET /api/v1/admin/users/:id/domains.
 func (h *Handler) UserDomains(c *gin.Context) {
@@ -220,15 +203,6 @@ func (h *Handler) GetDeploy(c *gin.Context) {
 	c.JSON(http.StatusOK, detail)
 }
 
-// ListTransactions handles GET /api/v1/admin/transactions.
-func (h *Handler) ListTransactions(c *gin.Context) {
-	page, err := h.store.ListTransactions(c.Request.Context(), h.filter(c))
-	if err != nil {
-		h.fail(c, "failed to list transactions", err)
-		return
-	}
-	c.JSON(http.StatusOK, page)
-}
 
 // ListDomains handles GET /api/v1/admin/domains.
 func (h *Handler) ListDomains(c *gin.Context) {

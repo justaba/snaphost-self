@@ -85,7 +85,6 @@ func (w *Worker) sweepOnce(ctx context.Context) {
 			DeployID:       s.DeployID,
 			UserID:         s.UserID,
 			SourceType:     s.SourceType,
-			IdempotencyKey: s.DeployID,
 			EnqueuedAt:     time.Now().UTC(),
 		}
 		if s.UploadID != nil {

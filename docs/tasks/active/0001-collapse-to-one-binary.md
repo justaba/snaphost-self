@@ -1,7 +1,7 @@
 # Task 1 — Collapse the control plane into one binary
 
-**Status:** In progress. The cloud runtime path and the dead documentation are
-removed; billing, the module merge, SQLite, and the in-process queue remain.
+**Status:** In progress. The cloud runtime path, the dead documentation, and
+billing are removed; the module merge, SQLite, and the in-process queue remain.
 **Created:** 2026-08-29
 **Updated:** 2026-08-29
 
@@ -71,7 +71,7 @@ host before it becomes a plan.
    VK runtime backends, and every config reference to them.
 2. [x] Remove documentation describing the SaaS this forked from, and archive
    the task catalog that explains code we kept ([../../inherited/](../../inherited/)).
-3. [ ] Remove billing: `wallet` and `transaction` packages, the reserve/commit/
+3. [x] Remove billing: `wallet` and `transaction` packages, the reserve/commit/
    refund steps in the saga, `cost_vibecoins` and `reservation_tx_id`, the
    `/billing` routes, and the wallet views in the admin console.
 
@@ -79,6 +79,18 @@ host before it becomes a plan.
    compensation still has to tear down a half-created runtime and mark the
    deploy failed. It stops being a payment saga and goes back to being a
    distributed-work saga, which is what it always was underneath.
+
+   Two things fell out of it that were not on this list:
+
+   - **`pending` became a state a saga can sit in.** It used to be traversed
+     instantly on the way to `reserved`; now it is the step before the first
+     external call, so an enqueue that fails transiently leaves the saga there.
+     The resume sweeper did not look for `pending` and now does — without that
+     the deploy would have been stuck until someone noticed.
+   - **The identity half of the wallet webhook had to survive.** `POST
+     /internal/users` seeded a wallet *and* recorded the email, which is the
+     only path an address ever takes into this database. It moved to a new
+     `internal/account` package with the money removed.
 4. [ ] Merge six Go modules into one, with the services becoming packages under
    `internal/`. Mechanical but wide: every import path changes.
 5. [ ] One `main` wiring those packages together. The saga's HTTP clients

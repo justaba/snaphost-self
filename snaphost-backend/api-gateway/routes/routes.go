@@ -46,7 +46,6 @@ func Register(r *gin.Engine, cfg *config.Config, logger *zap.Logger) {
 	{
 		registerProxy(api, "/auth", cfg.Services.UserBilling, logger)
 		registerProxy(api, "/profile", cfg.Services.UserBilling, logger)
-		registerProxy(api, "/billing", cfg.Services.UserBilling, logger)
 		registerProxy(api, "/keys", cfg.Services.UserBilling, logger)
 		registerProxy(api, "/deploys", cfg.Services.UserBilling, logger,
 			uploadBodyLimit(int64(cfg.MaxUploadSizeMB)*1024*1024))

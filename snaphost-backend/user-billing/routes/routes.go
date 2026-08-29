@@ -4,11 +4,11 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 
+	"snaphost/user-billing/internal/account"
 	"snaphost/user-billing/internal/admin"
 	"snaphost/user-billing/internal/apikey"
 	"snaphost/user-billing/internal/deploy"
 	"snaphost/user-billing/internal/domain"
-	"snaphost/user-billing/internal/wallet"
 )
 
 // Register sets up all public and internal routes on the Gin engine.
@@ -17,12 +17,10 @@ import (
 // webhook secret.
 // domainHandler and tlsHandler may be nil when custom domains are not
 // configured.
-func Register(r *gin.Engine, walletHandler *wallet.Handler, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, domainHandler *domain.Handler, tlsHandler *domain.TLSHandler, adminHandler *admin.Handler, webhookSecret string) {
+func Register(r *gin.Engine, accountHandler *account.Handler, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, domainHandler *domain.Handler, tlsHandler *domain.TLSHandler, adminHandler *admin.Handler, webhookSecret string) {
 	// Public routes — api-gateway sets X-User-ID after JWT verification.
 	api := r.Group("/api/v1")
 	{
-		api.GET("/billing", walletHandler.GetBilling)
-
 		// API key management for non-browser clients.
 		api.POST("/keys", apikeyHandler.CreateKey)
 		api.GET("/keys", apikeyHandler.ListKeys)
@@ -59,7 +57,6 @@ func Register(r *gin.Engine, walletHandler *wallet.Handler, deployHandler *deplo
 			adm.GET("/users", adminHandler.ListUsers)
 			adm.GET("/users/:id", adminHandler.GetUser)
 			adm.GET("/users/:id/deploys", adminHandler.UserDeploys)
-			adm.GET("/users/:id/transactions", adminHandler.UserTransactions)
 			adm.GET("/users/:id/domains", adminHandler.UserDomains)
 			adm.GET("/users/:id/projects", adminHandler.UserProjects)
 			adm.GET("/users/:id/keys", adminHandler.UserKeys)
@@ -67,22 +64,18 @@ func Register(r *gin.Engine, walletHandler *wallet.Handler, deployHandler *deplo
 			adm.GET("/deploys", adminHandler.ListDeploys)
 			adm.GET("/deploys/:id", adminHandler.GetDeploy)
 
-			adm.GET("/transactions", adminHandler.ListTransactions)
 			adm.GET("/domains", adminHandler.ListDomains)
 		}
 	}
 
 	// Internal routes — protected by webhook secret, never exposed through api-gateway.
 	internal := r.Group("/internal")
-	internal.Use(wallet.WebhookSecretMiddleware(webhookSecret))
+	internal.Use(account.WebhookSecretMiddleware(webhookSecret))
 	{
-		internal.POST("/users", walletHandler.CreateUser)
-		// Crediting a wallet is internal-only: it must be driven by a verified
-		// payment callback, never by the account being credited.
-		internal.POST("/billing/topup", walletHandler.Topup)
-		internal.POST("/billing/reserve", walletHandler.Reserve)
-		internal.POST("/billing/commit", walletHandler.Commit)
-		internal.POST("/billing/refund", walletHandler.Refund)
+		// Records the account behind a user_id. Called by the identity
+		// provider's signup webhook; it is the only path an email takes into
+		// this database.
+		internal.POST("/users", accountHandler.Create)
 
 		// API-key verification called by api-gateway to resolve a key to a user.
 		internal.POST("/keys/verify", apikeyHandler.VerifyKey)

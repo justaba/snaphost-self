@@ -24,9 +24,6 @@ import (
 // Overview is the set of platform-wide counters the admin dashboard opens on.
 type Overview struct {
 	Users          int64 `json:"users"`
-	Wallets        int64 `json:"wallets"`
-	TotalBalance   int64 `json:"total_balance"`
-	TotalReserved  int64 `json:"total_reserved"`
 	Deploys        int64 `json:"deploys"`
 	DeploysRunning int64 `json:"deploys_running"`
 	DeploysFailed  int64 `json:"deploys_failed"`
@@ -35,29 +32,16 @@ type Overview struct {
 	DomainsPending int64 `json:"domains_pending"`
 	DomainsActive  int64 `json:"domains_verified"`
 	ActiveAPIKeys  int64 `json:"active_api_keys"`
-	// CoinsToppedUp and CoinsSpent are lifetime totals over completed
-	// transactions. Reserved-but-uncommitted coins are in neither.
-	CoinsToppedUp int64 `json:"coins_topped_up"`
-	CoinsSpent    int64 `json:"coins_spent"`
-	// WalletlessUsers counts accounts the control plane knows about that have
-	// no wallet. It is normally zero; a non-zero value means the Supabase seed
-	// webhook is not firing, and those users cannot deploy at all.
-	WalletlessUsers int64 `json:"walletless_users"`
 }
 
-// UserSummary is one row of the admin user list: who they are, what they hold,
-// and what they have done, in the shape the list renders.
+// UserSummary is one row of the admin user list: who they are and what they
+// have done, in the shape the list renders.
 type UserSummary struct {
 	ID             uuid.UUID  `json:"id"`
 	Email          *string    `json:"email,omitempty"`
-	Balance        *int64     `json:"balance,omitempty"`
-	Reserved       *int64     `json:"reserved,omitempty"`
-	HasWallet      bool       `json:"has_wallet"`
 	DeploysTotal   int64      `json:"deploys_total"`
 	DeploysRunning int64      `json:"deploys_running"`
 	DeploysFailed  int64      `json:"deploys_failed"`
-	CoinsToppedUp  int64      `json:"coins_topped_up"`
-	CoinsSpent     int64      `json:"coins_spent"`
 	DomainsCount   int64      `json:"domains_count"`
 	LastDeployAt   *time.Time `json:"last_deploy_at,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -90,7 +74,6 @@ type DeployRow struct {
 	EndpointURL   *string    `json:"endpoint_url,omitempty"`
 	Subdomain     *string    `json:"subdomain,omitempty"`
 	ContainerID   *string    `json:"container_id,omitempty"`
-	CostVibecoins int64      `json:"cost_vibecoins"`
 	FailureReason *string    `json:"failure_reason,omitempty"`
 	TTLExpiresAt  *time.Time `json:"ttl_expires_at,omitempty"`
 	LastRequestAt *time.Time `json:"last_request_at,omitempty"`
@@ -105,10 +88,8 @@ type DeployRow struct {
 type SagaRow struct {
 	DeployID         uuid.UUID  `json:"deploy_id"`
 	CurrentStep      string     `json:"current_step"`
-	CoinsReserved    bool       `json:"coins_reserved"`
 	ImageBuilt       bool       `json:"image_built"`
 	ContainerRunning bool       `json:"container_running"`
-	CoinsCommitted   bool       `json:"coins_committed"`
 	RetryCount       int        `json:"retry_count"`
 	FailureReason    *string    `json:"failure_reason,omitempty"`
 	LastError        *string    `json:"last_error,omitempty"`
@@ -125,23 +106,7 @@ type DeployDetail struct {
 	DeployRow
 	Saga    *SagaRow    `json:"saga,omitempty"`
 	Domains []DomainRow `json:"domains"`
-	Ledger  []LedgerRow `json:"ledger"`
 	Project *ProjectRow `json:"project,omitempty"`
-}
-
-// LedgerRow is one transaction. The admin ledger is the same table the wallet
-// invariant is built on, so it is shown unaggregated: a reserve without its
-// matching commit or refund is the signal worth spotting.
-type LedgerRow struct {
-	ID          uuid.UUID  `json:"id"`
-	UserID      uuid.UUID  `json:"user_id"`
-	UserEmail   *string    `json:"user_email,omitempty"`
-	DeployID    *uuid.UUID `json:"deploy_id,omitempty"`
-	Type        string     `json:"type"`
-	Amount      int64      `json:"amount"`
-	Status      string     `json:"status"`
-	CreatedAt   time.Time  `json:"created_at"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 // ProjectRow is a publish target with the size of its build history.

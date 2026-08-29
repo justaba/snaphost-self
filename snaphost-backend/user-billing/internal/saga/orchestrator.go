@@ -12,7 +12,6 @@ import (
 	"go.uber.org/zap"
 
 	"snaphost/user-billing/internal/logs"
-	"snaphost/user-billing/internal/wallet"
 )
 
 // DeployRepository is the subset of the deploy repository the saga
@@ -29,7 +28,6 @@ type DeployRepository interface {
 // which is what makes Run safe to call repeatedly on the same saga.
 type Orchestrator struct {
 	Repo       *Repository
-	WalletRepo *wallet.Repository
 	DeployRepo DeployRepository
 	Builder    BuilderClient
 	Runner     RunnerClient
@@ -170,44 +168,16 @@ func (o *Orchestrator) Run(ctx context.Context, job SagaJob) error {
 func (o *Orchestrator) runStep(ctx context.Context, job SagaJob, deployID, userID uuid.UUID, state *SagaState) error {
 	switch state.CurrentStep {
 	case StepPending:
-		return o.stepReserve(ctx, job, deployID, userID)
-	case StepReserved:
 		return o.stepEnqueueBuild(ctx, job, deployID, state)
 	case StepBuilding:
 		return o.stepWaitForBuild(ctx, deployID, state)
 	case StepBuilt:
 		return o.stepRunContainer(ctx, job, deployID, state)
 	case StepProvisioning:
-		return o.stepCommit(ctx, deployID, state)
+		return o.stepFinalize(ctx, deployID, state)
 	default:
 		return fmt.Errorf("unexpected step %q", state.CurrentStep)
 	}
-}
-
-func (o *Orchestrator) stepReserve(ctx context.Context, job SagaJob, deployID, userID uuid.UUID) error {
-	o.publish(deployID, "saga", "info", fmt.Sprintf("reserving %d coins", job.CostCoins))
-	txID, err := o.WalletRepo.Reserve(ctx, wallet.ReserveRequest{
-		UserID:         userID,
-		DeployID:       deployID,
-		Amount:         job.CostCoins,
-		IdempotencyKey: job.IdempotencyKey + ":reserve",
-	})
-	if err != nil {
-		if errors.Is(err, wallet.ErrInsufficientBalance) || errors.Is(err, wallet.ErrWalletNotFound) {
-			return newTerminalError("reserve failed: %s", err.Error())
-		}
-		return fmt.Errorf("reserve: %w", err)
-	}
-	if err := o.Repo.MarkCoinsReserved(ctx, deployID, txID); err != nil {
-		return err
-	}
-	if err := o.Repo.UpdateStep(ctx, deployID, StepReserved); err != nil {
-		return err
-	}
-	if err := o.DeployRepo.UpdateStatus(ctx, deployID, "reserved", nil); err != nil {
-		return fmt.Errorf("update deploy status reserved: %w", err)
-	}
-	return nil
 }
 
 func (o *Orchestrator) stepEnqueueBuild(ctx context.Context, job SagaJob, deployID uuid.UUID, state *SagaState) error {
@@ -235,7 +205,7 @@ func (o *Orchestrator) stepEnqueueBuild(ctx context.Context, job SagaJob, deploy
 		Branch:         job.Branch,
 		UploadID:       uploadID,
 		CredentialID:   credentialID,
-		IdempotencyKey: job.IdempotencyKey + ":build",
+		IdempotencyKey: job.DeployID + ":build",
 	}); err != nil {
 		return fmt.Errorf("enqueue build: %w", err)
 	}
@@ -303,7 +273,7 @@ func (o *Orchestrator) stepRunContainer(ctx context.Context, job SagaJob, deploy
 		ImageRef:       *state.ImageRef,
 		Port:           port,
 		TTLMinutes:     o.ttlMinutes(),
-		IdempotencyKey: job.IdempotencyKey + ":run",
+		IdempotencyKey: job.DeployID + ":run",
 	})
 	if err != nil {
 		// A 4xx from runner-svc means this deploy cannot work: the image is
@@ -328,21 +298,14 @@ func (o *Orchestrator) stepRunContainer(ctx context.Context, job SagaJob, deploy
 	return nil
 }
 
-func (o *Orchestrator) stepCommit(ctx context.Context, deployID uuid.UUID, state *SagaState) error {
-	if state.ReservationTxID == nil {
-		return newTerminalError("cannot commit: reservation_tx_id missing")
-	}
-	txID, err := uuid.Parse(*state.ReservationTxID)
-	if err != nil {
-		return newTerminalError("invalid reservation_tx_id: %s", err.Error())
-	}
-	o.publish(deployID, "saga", "info", "finalizing payment")
-	if err := o.WalletRepo.Commit(ctx, txID); err != nil {
-		return fmt.Errorf("wallet commit: %w", err)
-	}
-	if err := o.Repo.MarkCoinsCommitted(ctx, deployID); err != nil {
-		return err
-	}
+// stepFinalize is the last transition: the container is up and has answered
+// its probe, so the deploy becomes user-visibly running and the project's
+// domains move onto it.
+//
+// It used to also commit the coin reservation, which is where its name came
+// from. What is left is not bookkeeping filler — this is the single point at
+// which a build becomes the live version of a project.
+func (o *Orchestrator) stepFinalize(ctx context.Context, deployID uuid.UUID, state *SagaState) error {
 	if err := o.Repo.UpdateStep(ctx, deployID, StepRunning); err != nil {
 		return err
 	}
@@ -431,6 +394,12 @@ func (o *Orchestrator) waitForBuildEvent(ctx context.Context, deployID uuid.UUID
 // compensate runs the rollback in reverse order of forward actions. It
 // uses the persisted boolean flags to know what actually happened, so
 // rerunning compensate is safe.
+//
+// It used to refund the coin reservation as well. Removing the money did not
+// make this step redundant: a failure after the container started leaves a
+// running runtime nobody will ever route to, and that is exactly what
+// compensation is for. The saga was always a distributed-work saga; billing
+// was one participant in it, not its reason to exist.
 func (o *Orchestrator) compensate(ctx context.Context, deployID uuid.UUID, reason string) error {
 	state, err := o.Repo.Get(ctx, deployID)
 	if err != nil {
@@ -443,24 +412,6 @@ func (o *Orchestrator) compensate(ctx context.Context, deployID uuid.UUID, reaso
 		if err := o.Runner.Stop(ctx, deployID.String(), *state.ContainerID); err != nil {
 			o.Log.Warn("compensation: stop container failed",
 				zap.String("deploy_id", deployID.String()), zap.Error(err))
-		}
-	}
-
-	// Refund coins if reserved but not committed.
-	if state.CoinsReserved && !state.CoinsCommitted && state.ReservationTxID != nil {
-		txID, err := uuid.Parse(*state.ReservationTxID)
-		if err != nil {
-			o.Log.Error("compensation: invalid reservation_tx_id",
-				zap.String("deploy_id", deployID.String()), zap.Error(err))
-		} else {
-			o.publish(deployID, "saga", "info", "refunding coins")
-			if err := o.WalletRepo.Refund(ctx, txID); err != nil {
-				o.Log.Error("CRITICAL: refund failed; coins stuck reserved",
-					zap.String("deploy_id", deployID.String()),
-					zap.String("tx_id", txID.String()),
-					zap.Error(err))
-				return fmt.Errorf("refund: %w", err)
-			}
 		}
 	}
 

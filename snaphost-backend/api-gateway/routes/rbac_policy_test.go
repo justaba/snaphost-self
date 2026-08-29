@@ -29,24 +29,26 @@ func mustEnforce(t *testing.T, e *casbin.Enforcer, role, path, method string) bo
 	return allowed
 }
 
-// Crediting a wallet was a `user` policy line until 2026-08-07, which let any
-// authenticated account mint itself coins. The route is internal now; the
-// policy must never admit it again.
-func TestTopupIsNotReachableByAnyRole(t *testing.T) {
+// This platform has no billing. The upstream project carried a `user` policy
+// line for a topup endpoint that minted credit from a request body, and it
+// stayed that way for months — so the policy file is asserted to admit nothing
+// billing-shaped at all, rather than to authenticate one particular path.
+func TestNoBillingPathIsReachableByAnyRole(t *testing.T) {
 	e := newEnforcer(t)
 
-	for _, role := range []string{"guest", "user", "admin"} {
-		if mustEnforce(t, e, role, "/api/v1/billing/topup", "POST") {
-			t.Errorf("role %q may POST /api/v1/billing/topup", role)
-		}
+	paths := []string{
+		"/api/v1/billing",
+		"/api/v1/billing/topup",
+		"/api/v1/billing/reserve",
 	}
-}
-
-func TestBillingReadStaysAllowed(t *testing.T) {
-	e := newEnforcer(t)
-
-	if !mustEnforce(t, e, "user", "/api/v1/billing", "GET") {
-		t.Error("a user may no longer read their own wallet")
+	for _, role := range []string{"guest", "user", "admin"} {
+		for _, path := range paths {
+			for _, method := range []string{"GET", "POST"} {
+				if mustEnforce(t, e, role, path, method) {
+					t.Errorf("role %q may %s %s", role, method, path)
+				}
+			}
+		}
 	}
 }
 
@@ -57,10 +59,8 @@ func TestAdminRoutesAreAdminOnly(t *testing.T) {
 		"/api/v1/admin/overview",
 		"/api/v1/admin/users",
 		"/api/v1/admin/users/11111111-2222-3333-4444-555555555555",
-		"/api/v1/admin/users/11111111-2222-3333-4444-555555555555/transactions",
 		"/api/v1/admin/deploys",
 		"/api/v1/admin/deploys/11111111-2222-3333-4444-555555555555",
-		"/api/v1/admin/transactions",
 		"/api/v1/admin/domains",
 	}
 

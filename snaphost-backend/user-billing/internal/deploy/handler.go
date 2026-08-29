@@ -48,40 +48,37 @@ type Projects interface {
 
 // Handler exposes HTTP endpoints for deploy operations.
 type Handler struct {
-	repo            Repo
-	projects        Projects
-	log             *zap.Logger
-	sagaQueue       *saga.Queue
-	runner          saga.RunnerClient
-	logReader       *logs.Reader
-	deployCostCoins int64
-	uploads         *upload.Store
-	maxUploadBytes  int64
-	uploadTTL       time.Duration
-	creds           *gitcred.Store
-	credTTL         time.Duration
+	repo           Repo
+	projects       Projects
+	log            *zap.Logger
+	sagaQueue      *saga.Queue
+	runner         saga.RunnerClient
+	logReader      *logs.Reader
+	uploads        *upload.Store
+	maxUploadBytes int64
+	uploadTTL      time.Duration
+	creds          *gitcred.Store
+	credTTL        time.Duration
 }
 
-// NewHandler creates a new deploy HTTP handler. sagaQueue, logReader,
-// uploads, and deployCostCoins may be zero values when the corresponding
-// subsystem is disabled (CreateDeploy returns 503 if the saga is off;
-// GetLogs returns 503 if Redis history is off; UploadArchive returns 503
-// if the upload store is off).
+// NewHandler creates a new deploy HTTP handler. sagaQueue, logReader, and
+// uploads may be zero values when the corresponding subsystem is disabled
+// (CreateDeploy returns 503 if the saga is off; GetLogs returns 503 if Redis
+// history is off; UploadArchive returns 503 if the upload store is off).
 // projects may be nil, in which case deploys are created without a project.
-func NewHandler(repo Repo, projects Projects, log *zap.Logger, sagaQueue *saga.Queue, runner saga.RunnerClient, logReader *logs.Reader, deployCostCoins int64, uploads *upload.Store, maxUploadBytes int64, uploadTTL time.Duration, creds *gitcred.Store, credTTL time.Duration) *Handler {
+func NewHandler(repo Repo, projects Projects, log *zap.Logger, sagaQueue *saga.Queue, runner saga.RunnerClient, logReader *logs.Reader, uploads *upload.Store, maxUploadBytes int64, uploadTTL time.Duration, creds *gitcred.Store, credTTL time.Duration) *Handler {
 	return &Handler{
-		repo:            repo,
-		projects:        projects,
-		log:             log,
-		sagaQueue:       sagaQueue,
-		runner:          runner,
-		logReader:       logReader,
-		deployCostCoins: deployCostCoins,
-		uploads:         uploads,
-		maxUploadBytes:  maxUploadBytes,
-		uploadTTL:       uploadTTL,
-		creds:           creds,
-		credTTL:         credTTL,
+		repo:           repo,
+		projects:       projects,
+		log:            log,
+		sagaQueue:      sagaQueue,
+		runner:         runner,
+		logReader:      logReader,
+		uploads:        uploads,
+		maxUploadBytes: maxUploadBytes,
+		uploadTTL:      uploadTTL,
+		creds:          creds,
+		credTTL:        credTTL,
 	}
 }
 
@@ -358,7 +355,6 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 	}
 
 	deployID := uuid.New()
-	cost := h.deployCostCoins
 
 	var uploadID *string
 	if req.UploadID != "" {
@@ -414,7 +410,6 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 		Branch:        req.Branch,
 		UploadID:      uploadID,
 		Status:        "pending",
-		CostVibecoins: cost,
 	}); err != nil {
 		h.log.Error("create deploy row failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to create deploy"))
@@ -427,11 +422,9 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 		SourceType:     req.SourceType,
 		RepoURL:        req.RepoURL,
 		Branch:         req.Branch,
-		UploadID:       req.UploadID,
-		CredentialID:   credentialID,
-		CostCoins:      cost,
-		IdempotencyKey: deployID.String(),
-		EnqueuedAt:     time.Now().UTC(),
+		UploadID:     req.UploadID,
+		CredentialID: credentialID,
+		EnqueuedAt:   time.Now().UTC(),
 	}); err != nil {
 		h.log.Error("enqueue saga failed", zap.String("deploy_id", deployID.String()), zap.Error(err))
 		// The deploy row exists but the saga is not running. The resume

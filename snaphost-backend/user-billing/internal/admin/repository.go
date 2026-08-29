@@ -34,9 +34,6 @@ func (r *Repository) Overview(ctx context.Context) (*Overview, error) {
 	err := r.pool.QueryRow(ctx, `
 		SELECT
 		  (SELECT count(*) FROM users),
-		  (SELECT count(*) FROM wallets),
-		  (SELECT coalesce(sum(balance), 0) FROM wallets),
-		  (SELECT coalesce(sum(reserved), 0) FROM wallets),
 		  (SELECT count(*) FROM deploys),
 		  (SELECT count(*) FROM deploys WHERE status = 'running'),
 		  (SELECT count(*) FROM deploys WHERE status = 'failed'),
@@ -44,15 +41,11 @@ func (r *Repository) Overview(ctx context.Context) (*Overview, error) {
 		  (SELECT count(*) FROM projects),
 		  (SELECT count(*) FROM custom_domains WHERE status = 'pending'),
 		  (SELECT count(*) FROM custom_domains WHERE status = 'verified'),
-		  (SELECT count(*) FROM api_keys WHERE revoked_at IS NULL),
-		  (SELECT coalesce(sum(amount), 0) FROM transactions WHERE type IN ('topup', 'bonus') AND status = 'completed'),
-		  (SELECT coalesce(sum(amount), 0) FROM transactions WHERE type = 'commit' AND status = 'completed'),
-		  (SELECT count(*) FROM users u WHERE NOT EXISTS (SELECT 1 FROM wallets w WHERE w.user_id = u.id))
+		  (SELECT count(*) FROM api_keys WHERE revoked_at IS NULL)
 	`).Scan(
-		&o.Users, &o.Wallets, &o.TotalBalance, &o.TotalReserved,
+		&o.Users,
 		&o.Deploys, &o.DeploysRunning, &o.DeploysFailed, &o.Deploys24h,
 		&o.Projects, &o.DomainsPending, &o.DomainsActive, &o.ActiveAPIKeys,
-		&o.CoinsToppedUp, &o.CoinsSpent, &o.WalletlessUsers,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("admin overview: %w", err)
@@ -60,12 +53,10 @@ func (r *Repository) Overview(ctx context.Context) (*Overview, error) {
 	return &o, nil
 }
 
-// userAggregates joins each account to its wallet and to the rollups the list
-// shows. Deploy and transaction rollups are grouped once and joined, rather
-// than run as correlated subqueries per row.
+// userAggregates joins each account to the rollups the list shows. They are
+// grouped once and joined, rather than run as correlated subqueries per row.
 const userAggregates = `
 FROM users u
-LEFT JOIN wallets w ON w.user_id = u.id
 LEFT JOIN (
     SELECT user_id,
            count(*)                                        AS total,
@@ -75,20 +66,14 @@ LEFT JOIN (
     FROM deploys GROUP BY user_id
 ) d ON d.user_id = u.id
 LEFT JOIN (
-    SELECT user_id,
-           coalesce(sum(amount) FILTER (WHERE type IN ('topup', 'bonus') AND status = 'completed'), 0) AS topped_up,
-           coalesce(sum(amount) FILTER (WHERE type = 'commit' AND status = 'completed'), 0)            AS spent
-    FROM transactions GROUP BY user_id
-) t ON t.user_id = u.id
-LEFT JOIN (
     SELECT user_id, count(*) AS domains
     FROM custom_domains WHERE status <> 'revoked' GROUP BY user_id
 ) dom ON dom.user_id = u.id`
 
 const userColumns = `
-    u.id, u.email, w.balance, w.reserved, (w.user_id IS NOT NULL) AS has_wallet,
+    u.id, u.email,
     coalesce(d.total, 0), coalesce(d.running, 0), coalesce(d.failed, 0),
-    coalesce(t.topped_up, 0), coalesce(t.spent, 0), coalesce(dom.domains, 0),
+    coalesce(dom.domains, 0),
     d.last_deploy_at, u.created_at`
 
 // userSearch matches an email substring or an exact user id. An operator
@@ -98,9 +83,9 @@ const userSearch = `($1 = '' OR u.email ILIKE '%' || $1 || '%' OR u.id::text = $
 
 func scanUser(row rowScanner) (UserSummary, error) {
 	var u UserSummary
-	err := row.Scan(&u.ID, &u.Email, &u.Balance, &u.Reserved, &u.HasWallet,
+	err := row.Scan(&u.ID, &u.Email,
 		&u.DeploysTotal, &u.DeploysRunning, &u.DeploysFailed,
-		&u.CoinsToppedUp, &u.CoinsSpent, &u.DomainsCount,
+		&u.DomainsCount,
 		&u.LastDeployAt, &u.CreatedAt)
 	return u, err
 }
@@ -178,7 +163,7 @@ func (r *Repository) GetUser(ctx context.Context, userID uuid.UUID) (*UserDetail
 const deployColumns = `
     d.id, d.user_id, u.email, d.project_id, p.slug, d.source_type,
     coalesce(d.repo_url, ''), d.branch, d.commit_sha, d.status,
-    d.image_ref, d.endpoint_url, d.subdomain, d.container_id, d.cost_vibecoins,
+    d.image_ref, d.endpoint_url, d.subdomain, d.container_id,
     d.failure_reason, d.ttl_expires_at, d.last_request_at,
     d.created_at, d.updated_at, d.stopped_at`
 
@@ -199,7 +184,7 @@ func scanDeploy(row rowScanner) (DeployRow, error) {
 	var d DeployRow
 	err := row.Scan(&d.ID, &d.UserID, &d.UserEmail, &d.ProjectID, &d.ProjectSlug, &d.SourceType,
 		&d.RepoURL, &d.Branch, &d.CommitSHA, &d.Status,
-		&d.ImageRef, &d.EndpointURL, &d.Subdomain, &d.ContainerID, &d.CostVibecoins,
+		&d.ImageRef, &d.EndpointURL, &d.Subdomain, &d.ContainerID,
 		&d.FailureReason, &d.TTLExpiresAt, &d.LastRequestAt,
 		&d.CreatedAt, &d.UpdatedAt, &d.StoppedAt)
 	return d, err
@@ -253,7 +238,7 @@ func (r *Repository) GetDeploy(ctx context.Context, deployID uuid.UUID) (*Deploy
 		return nil, fmt.Errorf("get deploy: %w", err)
 	}
 
-	detail := &DeployDetail{DeployRow: d, Domains: []DomainRow{}, Ledger: []LedgerRow{}}
+	detail := &DeployDetail{DeployRow: d, Domains: []DomainRow{}}
 
 	saga, err := r.getSaga(ctx, deployID)
 	if err != nil {
@@ -267,12 +252,6 @@ func (r *Repository) GetDeploy(ctx context.Context, deployID uuid.UUID) (*Deploy
 	}
 	detail.Domains = domains
 
-	ledger, err := r.listLedgerForDeploy(ctx, deployID)
-	if err != nil {
-		return nil, err
-	}
-	detail.Ledger = ledger
-
 	return detail, nil
 }
 
@@ -282,12 +261,12 @@ func (r *Repository) GetDeploy(ctx context.Context, deployID uuid.UUID) (*Deploy
 func (r *Repository) getSaga(ctx context.Context, deployID uuid.UUID) (*SagaRow, error) {
 	var s SagaRow
 	err := r.pool.QueryRow(ctx, `
-		SELECT deploy_id, current_step, coins_reserved, image_built, container_running,
-		       coins_committed, retry_count, failure_reason, last_error,
+		SELECT deploy_id, current_step, image_built, container_running,
+		       retry_count, failure_reason, last_error,
 		       created_at, updated_at, started_at, completed_at
 		FROM deploy_sagas WHERE deploy_id = $1`, deployID,
-	).Scan(&s.DeployID, &s.CurrentStep, &s.CoinsReserved, &s.ImageBuilt, &s.ContainerRunning,
-		&s.CoinsCommitted, &s.RetryCount, &s.FailureReason, &s.LastError,
+	).Scan(&s.DeployID, &s.CurrentStep, &s.ImageBuilt, &s.ContainerRunning,
+		&s.RetryCount, &s.FailureReason, &s.LastError,
 		&s.CreatedAt, &s.UpdatedAt, &s.StartedAt, &s.CompletedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -296,81 +275,6 @@ func (r *Repository) getSaga(ctx context.Context, deployID uuid.UUID) (*SagaRow,
 		return nil, fmt.Errorf("get saga: %w", err)
 	}
 	return &s, nil
-}
-
-const ledgerColumns = `
-    t.id, t.user_id, u.email, t.deploy_id, t.type, t.amount, t.status,
-    t.created_at, t.completed_at`
-
-const ledgerJoins = `
-FROM transactions t
-LEFT JOIN users u ON u.id = t.user_id`
-
-const ledgerFilter = `
-WHERE ($1 = '' OR t.type = $1)
-  AND ($2::uuid IS NULL OR t.user_id = $2)
-  AND ($3 = '' OR t.status = $3)`
-
-func scanLedger(row rowScanner) (LedgerRow, error) {
-	var l LedgerRow
-	err := row.Scan(&l.ID, &l.UserID, &l.UserEmail, &l.DeployID, &l.Type, &l.Amount,
-		&l.Status, &l.CreatedAt, &l.CompletedAt)
-	return l, err
-}
-
-// ListTransactions returns one page of the ledger, newest first.
-func (r *Repository) ListTransactions(ctx context.Context, f Filter) (*Page[LedgerRow], error) {
-	var total int64
-	if err := r.pool.QueryRow(ctx,
-		`SELECT count(*)`+ledgerJoins+ledgerFilter, f.Type, f.UserID, f.Status,
-	).Scan(&total); err != nil {
-		return nil, fmt.Errorf("count transactions: %w", err)
-	}
-
-	rows, err := r.pool.Query(ctx,
-		`SELECT`+ledgerColumns+ledgerJoins+ledgerFilter+`
-		 ORDER BY t.created_at DESC
-		 LIMIT $4 OFFSET $5`,
-		f.Type, f.UserID, f.Status, f.Limit, f.Offset,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list transactions: %w", err)
-	}
-	defer rows.Close()
-
-	items := []LedgerRow{}
-	for rows.Next() {
-		l, err := scanLedger(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan transaction row: %w", err)
-		}
-		items = append(items, l)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate transaction rows: %w", err)
-	}
-
-	return &Page[LedgerRow]{Items: items, Total: total, Limit: f.Limit, Offset: f.Offset}, nil
-}
-
-func (r *Repository) listLedgerForDeploy(ctx context.Context, deployID uuid.UUID) ([]LedgerRow, error) {
-	rows, err := r.pool.Query(ctx,
-		`SELECT`+ledgerColumns+ledgerJoins+`
-		 WHERE t.deploy_id = $1 ORDER BY t.created_at ASC`, deployID)
-	if err != nil {
-		return nil, fmt.Errorf("list deploy ledger: %w", err)
-	}
-	defer rows.Close()
-
-	items := []LedgerRow{}
-	for rows.Next() {
-		l, err := scanLedger(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan deploy ledger row: %w", err)
-		}
-		items = append(items, l)
-	}
-	return items, rows.Err()
 }
 
 const domainColumns = `

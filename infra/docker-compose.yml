@@ -27,10 +27,8 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
       REDIS_URL: ${REDIS_URL}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-      INITIAL_VIBECOIN_BALANCE: ${INITIAL_VIBECOIN_BALANCE}
       BUILDER_SVC_URL: ${BUILDER_SVC_URL:-http://builder-api:8082}
       RUNNER_SVC_URL: ${RUNNER_SVC_URL:-http://runner-api:8084}
-      DEPLOY_COST_COINS: ${DEPLOY_COST_COINS:-10}
       DEPLOY_DEFAULT_PORT: ${DEPLOY_DEFAULT_PORT:-3000}
       # Route lookup uses this to tell a generated subdomain from a custom
       # domain, and refuses attaches inside our own namespace.

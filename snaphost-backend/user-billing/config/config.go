@@ -20,8 +20,6 @@ type Config struct {
 	RedisURL string
 	// LogLevel controls the zap logger verbosity ("info" or "debug").
 	LogLevel string
-	// InitialBalance is the vibecoin amount granted to every new user upon registration.
-	InitialBalance int64
 	// WebhookSecret is the shared secret used by api-gateway and other
 	// internal services for authenticating webhook calls.
 	WebhookSecret string
@@ -43,9 +41,6 @@ type Config struct {
 	// SagaResumeIntervalSec controls how often the resume sweeper looks
 	// for stuck sagas and re-enqueues them.
 	SagaResumeIntervalSec int
-	// DeployCostCoins is the flat vibecoin cost per deploy (placeholder
-	// until pricing-by-resource is implemented).
-	DeployCostCoins int64
 	// DeployDefaultPort is the container port runner-svc tells Traefik
 	// to load-balance to. Should match the port the user app listens on.
 	// Most templates use 3000 (Node) or 8080 (older Node, Java, generic).
@@ -138,13 +133,6 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: WEBHOOK_SECRET is required but not set")
 	}
 
-	// Optional: INITIAL_VIBECOIN_BALANCE (default 100)
-	initialBalance, err := parseInt64Env("INITIAL_VIBECOIN_BALANCE", 100)
-	if err != nil {
-		return nil, err
-	}
-	cfg.InitialBalance = initialBalance
-
 	// Optional: RUN_MIGRATIONS (default true)
 	runMigrations, err := parseBoolEnv("RUN_MIGRATIONS", true)
 	if err != nil {
@@ -172,13 +160,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.SagaResumeIntervalSec = resumeInterval
-
-	// Optional: DEPLOY_COST_COINS (default 10)
-	cost, err := parseInt64Env("DEPLOY_COST_COINS", 10)
-	if err != nil {
-		return nil, err
-	}
-	cfg.DeployCostCoins = cost
 
 	// Optional: DEPLOY_DEFAULT_PORT (default 3000)
 	port, err := parseIntEnv("DEPLOY_DEFAULT_PORT", 3000)
