@@ -7,6 +7,7 @@
 //
 // Startup order matters and is deliberate:
 //
+//  0. the memory ceiling, before anything allocates against it;
 //  1. configuration for every area, so a missing variable fails before any
 //     connection is opened;
 //  2. the store, opened and migrated on one handle;
@@ -26,6 +27,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -46,13 +49,11 @@ import (
 	builderbuild "snaphost/internal/builder/build"
 	builderclone "snaphost/internal/builder/clone"
 	builderconfig "snaphost/internal/builder/config"
-
 	builderpipeline "snaphost/internal/builder/pipeline"
 	builderqueue "snaphost/internal/builder/queue"
 	builderregistry "snaphost/internal/builder/registry"
 	builderscan "snaphost/internal/builder/scan"
 	builderunpack "snaphost/internal/builder/unpack"
-
 	"snaphost/internal/buildevents"
 	"snaphost/internal/control/admin"
 	"snaphost/internal/control/apikey"
@@ -61,17 +62,16 @@ import (
 	controldb "snaphost/internal/control/db"
 	"snaphost/internal/control/deploy"
 	"snaphost/internal/control/domain"
-
 	"snaphost/internal/control/logs"
 	"snaphost/internal/control/project"
 	controlroutes "snaphost/internal/control/routes"
 	"snaphost/internal/control/saga"
-
 	gatewayconfig "snaphost/internal/gateway/config"
 	"snaphost/internal/gateway/middleware"
 	"snaphost/internal/gateway/wslogs"
 	"snaphost/internal/gitcreds"
 	"snaphost/internal/logbus"
+	"snaphost/internal/memlimit"
 	runtimebackend "snaphost/internal/runtime/backend"
 	runtimedocker "snaphost/internal/runtime/backend/docker"
 	runtimeconfig "snaphost/internal/runtime/config"
@@ -87,6 +87,12 @@ func main() {
 		panic("failed to create logger: " + err.Error())
 	}
 	defer log.Sync() //nolint:errcheck // flushing on exit; nothing left to report to
+
+	// 0. Tell the runtime about the ceiling, before anything allocates against
+	//    it. Nothing set GOMEMLIMIT while the production manifest did set a
+	//    container limit, so the heap grew against the machine's memory and
+	//    found out about the container's when the kernel killed the process.
+	applyMemoryLimit(log)
 
 	// 1. Configuration. Every area is loaded up front so that a missing or
 	//    malformed variable stops the process before it opens a connection,
@@ -176,11 +182,11 @@ func main() {
 	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, events, uploadsStore, credsStore, log)
 	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, events, uploadsStore, credsStore, log)
 
-	// 6. One engine. The middleware order is the gateway's, unchanged and
-	//    load-bearing: rate limiting before authentication so an IP limit
-	//    applies to unauthenticated traffic too, and Enrich last so the
-	//    identity headers downstream handlers read are written from a verified
-	//    token and deleted when there is none.
+	// 6. One engine. The middleware order is the gateway's and still
+	//    load-bearing, though for one reason rather than two now that the
+	//    sliding-window limiter is gone: Enrich runs last, so the identity
+	//    headers downstream handlers read are written from a verified
+	//    credential and deleted when there is none.
 	engine, err := buildEngine(gwCfg, ctlCfg, ctl, ai.handler, pool, bus, log)
 	if err != nil {
 		log.Fatal("failed to build HTTP engine", zap.Error(err))
@@ -624,4 +630,64 @@ func runBuildWorker(ctx context.Context, bld builderParts, cfg *builderconfig.Co
 	if err != nil && ctx.Err() == nil {
 		log.Error("build consumer exited unexpectedly", zap.Error(err))
 	}
+}
+
+// ---------------------------------------------------------------------------
+// memory
+// ---------------------------------------------------------------------------
+
+// applyMemoryLimit derives GOMEMLIMIT from the cgroup and sets it.
+//
+// It is deliberately not fatal on any path. A platform that refuses to start
+// because it could not read a limit file is worse than one running without a
+// soft ceiling, and the two interesting outcomes — no limit, or a limit too
+// small for what this container runs — are both worth saying out loud rather
+// than dying over.
+//
+// An explicit GOMEMLIMIT in the environment wins. The runtime has already
+// applied it by the time this runs, and an operator who set one by hand is
+// making a decision this should not quietly overrule.
+func applyMemoryLimit(log *zap.Logger) {
+	if os.Getenv("GOMEMLIMIT") != "" {
+		log.Info("GOMEMLIMIT set in the environment; leaving it alone",
+			zap.String("gomemlimit", os.Getenv("GOMEMLIMIT")))
+		return
+	}
+
+	reserve := int64(memlimit.DefaultReserve)
+	if raw := os.Getenv("GOMEMLIMIT_RESERVE_MB"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			log.Warn("GOMEMLIMIT_RESERVE_MB is not a non-negative integer; using the default",
+				zap.String("value", raw))
+		} else {
+			reserve = parsed << 20
+		}
+	}
+
+	cgroupLimit, err := memlimit.Detect("/sys/fs/cgroup")
+	if err != nil {
+		// Outside a container, or a container started without a limit. Not a
+		// problem in itself; it is only worth knowing when someone is trying
+		// to work out why the heap grew.
+		log.Info("no cgroup memory limit found; GOMEMLIMIT left unset", zap.Error(err))
+		return
+	}
+
+	derived, err := memlimit.Derive(cgroupLimit, reserve)
+	if err != nil {
+		log.Warn("container memory limit is too small to derive a GOMEMLIMIT from; leaving it unset",
+			zap.Int64("cgroup_limit_bytes", cgroupLimit),
+			zap.Int64("reserve_bytes", reserve),
+			zap.Error(err),
+		)
+		return
+	}
+
+	debug.SetMemoryLimit(derived)
+	log.Info("GOMEMLIMIT derived from the container limit",
+		zap.Int64("cgroup_limit_bytes", cgroupLimit),
+		zap.Int64("reserve_bytes", reserve),
+		zap.Int64("gomemlimit_bytes", derived),
+	)
 }

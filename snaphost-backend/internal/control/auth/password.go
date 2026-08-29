@@ -37,6 +37,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -80,6 +81,21 @@ func withHashSlot(fn func()) {
 	hashSlots <- struct{}{}
 	defer func() { <-hashSlots }()
 	fn()
+
+	// Hand the memory back to the operating system instead of leaving it in
+	// the heap for a next login that may be a week away.
+	//
+	// This is the textbook case for FreeOSMemory and one of very few: a large,
+	// rare, short-lived allocation. Measured on the running stack — after three
+	// logins the process sat at 28.8 MiB resident against 7.8 idle, and stayed
+	// there for five minutes, because Go sizes the heap against the peak and
+	// the scavenger is in no hurry. GOMEMLIMIT does not help: it is hundreds of
+	// megabytes away, so the collector has no reason to work harder.
+	//
+	// The cost is a stop-the-world collection on an operation that already
+	// takes tens of milliseconds and happens a few times a year. Putting this
+	// anywhere else in the codebase would be wrong.
+	debug.FreeOSMemory()
 }
 
 // MinPasswordLen is the shortest password accepted on a change. Twelve

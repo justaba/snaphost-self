@@ -48,6 +48,9 @@ services:
     environment:
       PORT: "8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # How much of the container limit is held back from the Go heap for the
+      # scanner child process and the page cache. Empty takes the default.
+      GOMEMLIMIT_RESERVE_MB: ${GOMEMLIMIT_RESERVE_MB:-}
       DATABASE_PATH: /var/snaphost/data/snaphost.db
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
 
@@ -115,6 +118,18 @@ services:
     networks:
       - snaphost-net
     restart: unless-stopped
+    # The ceiling, and the only place it is written. The process reads its own
+    # cgroup at startup and derives GOMEMLIMIT from this — so there is one
+    # number here rather than two that can drift apart, and the drift's symptom
+    # would have been an OOM kill under load rather than an error.
+    #
+    # It has to cover more than the Go heap: `trivy` is a child process with its
+    # own hundreds of megabytes, and the build workspace's page cache is charged
+    # here too. That is what the reserve inside the process is for.
+    deploy:
+      resources:
+        limits:
+          memory: ${CONTROL_PLANE_MEMORY_LIMIT:-1G}
 
   buildkitd:
     image: moby/buildkit:v0.29.0-rootless

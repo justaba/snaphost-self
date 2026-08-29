@@ -51,6 +51,15 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # The memory limit is the only place the ceiling is written. The process
+    # reads its own cgroup at startup and derives GOMEMLIMIT from it, so the two
+    # cannot drift — and the drift's symptom would have been an OOM kill under
+    # load rather than an error anyone saw.
+    #
+    # It has to cover more than the Go heap. `trivy` is a child process with its
+    # own hundreds of megabytes and its own place in this cgroup, and the build
+    # workspace's page cache is charged here too; the reserve inside the process
+    # is what leaves room for them.
     deploy:
       resources:
         limits:
@@ -59,6 +68,9 @@ services:
     environment:
       PORT: "8080"
       LOG_LEVEL: "${LOG_LEVEL}"
+      # How much of the container limit is held back from the Go heap for the
+      # scanner child process and the page cache. Empty takes the default.
+      GOMEMLIMIT_RESERVE_MB: "${GOMEMLIMIT_RESERVE_MB:-}"
       DATABASE_PATH: "/var/snaphost/data/snaphost.db"
       # The env file has always carried RUN_MIGRATIONS=false and this file has
       # never passed it, so the application migrated at startup anyway and the

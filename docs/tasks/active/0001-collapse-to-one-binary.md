@@ -2,8 +2,8 @@
 
 **Status:** In progress. The cloud runtime path, the dead documentation and
 billing are removed, the six modules are one, the platform is a single binary
-on SQLite, it issues its own identity, and Redis is gone. GOMEMLIMIT, the docs
-rewrite and the embedded panel remain.
+on SQLite, it issues its own identity, Redis is gone and the runtime knows its
+memory ceiling. The docs rewrite and the embedded panel remain.
 **Created:** 2026-08-29
 **Updated:** 2026-08-30
 
@@ -37,14 +37,18 @@ application half got smaller, because the JWKS cache and the JWT machinery went
 and only a session lookup replaced them. Traefik and BuildKit vary by a few MiB
 between runs, so the honest comparison is the application line.
 
-**A login moves it to ~69 MiB and it stays there.** Hashing a password is a
-7 MiB allocation, Go sizes the heap against it, and nothing gives it back —
-snaphost sits at 28.8 afterwards and does not climb further no matter how many
-times the operator logs in. Item 8 is what bounds this.
+**A login used to move it to ~69 MiB and leave it there.** Hashing a password
+is a 7 MiB allocation, Go sizes the heap against it, and the scavenger was in
+no hurry to give it back. Item 8 fixed it, and not with the thing it was
+supposed to: `GOMEMLIMIT` sits hundreds of megabytes away and changes nothing
+at this scale. `debug.FreeOSMemory()` after the hash does. A login now leaves
+the process at 7.8 MiB rather than 28.8.
 
 After item 7 removed Redis, on a fresh stack restarted so the bootstrap hash is
 not in the sample: **44.7 MiB across four containers** — Traefik 17.2,
-BuildKit 15.3, snaphost 8.0, registry 4.3.
+BuildKit 15.3, snaphost 8.0, registry 4.3. After item 8 the application idles
+at 6.8 and stays under 8 through a login, so that figure is now the same before
+and after someone signs in.
 
 The application did not get smaller, and that is the honest reading: 7.4 before,
 8.0 after, which is inside the noise of two measurements. Everything Redis held
@@ -101,12 +105,11 @@ Settled 2026-08-29, owner decision:
   of Postgres-specific SQL exist across all inherited migrations, so the port is
   bounded. A backup becomes copying one file.
 - **No Redis.** Its jobs move in-process — eight of them, not the five counted
-  here: the build queue becomes a channel
-  plus a durable table, log pub/sub becomes direct fan-out to WebSocket
-  subscribers, git credentials become a map with a TTL, and rate limiting stops
-  being a concept. Uploaded archives move to a temp file — today a 50 MB tarball
-  is held in RAM, which on this class of machine costs more than the entire Go
-  runtime it is trying to save.
+  here: the build queue becomes a channel plus a durable table, log pub/sub
+  becomes direct fan-out to WebSocket subscribers, git credentials become a map
+  with a TTL, and rate limiting stops being a concept. Uploaded archives move to
+  a temp file — today a 50 MB tarball is held in RAM, which on this class of
+  machine costs more than the entire Go runtime it is trying to save.
 - **No registry.** The Docker backend runs images out of the host's own image
   store. Push and pull existed only to reach a cloud runtime.
 - **Trivy off by default.** It defends against untrusted code. On a self-hosted
@@ -123,7 +126,7 @@ host before it becomes a plan.
 
 The numbers are identities, not an order — commits and other documents refer to
 "item 6a" and "item 10", so they do not move. What remains is done in the order
-**8 → 10 → 9**, which differs from the list below in one place and is argued at
+**10 → 9**, which differs from the list below in one place and is argued at
 [Order of the remaining items](#order-of-the-remaining-items).
 
 1. [x] Remove the cloud runtime path: `terraform/`, `router-svc`, the Yandex and
@@ -431,18 +434,41 @@ The numbers are identities, not an order — commits and other documents refer t
      ten failures per address per five minutes is what replaced it, on the one
      endpoint that accepts a guess at the credential which opens a panel that
      runs containers as root.
-8. [ ] Set `GOMEMLIMIT` and a container memory limit that agree with each other.
-   Neither `GOMEMLIMIT` nor `GOGC` is set anywhere in the inherited tree, while
-   the production Compose file does set container memory limits — so Go never
-   learns about the ceiling it is running under and grows its heap until the
-   kernel intervenes.
+8. [x] Set `GOMEMLIMIT` and a container memory limit that agree with each other.
 
-   Item 6a gave this a measured case rather than a principle. A login allocates
-   7 MiB for the password hash and the process goes from 7.4 MiB resident to
-   28.8 and stays there, because the heap is sized against the peak live set and
-   nothing scavenges it back. It plateaus, so it is not a leak — but a quarter
-   of the platform's idle footprint is now heap the runtime is holding on to
-   for an operation that happens a few times a week.
+   They agree by construction rather than by care: the container limit is the
+   only place the ceiling is written, and the process reads its own cgroup at
+   startup and derives `GOMEMLIMIT` from it. Two numbers in two files would
+   have drifted, and the symptom of the drift is an OOM kill under load rather
+   than an error anyone sees.
+
+   **The reserve is large, and that is the part worth getting right.**
+   `GOMEMLIMIT` bounds the Go heap, not this container, and here the difference
+   is most of the container: `trivy` is a child process with hundreds of
+   megabytes of its own in the same cgroup, the build workspace's page cache is
+   charged here too, and the runtime's non-heap memory is outside the limit by
+   definition. The usual recipe of "90% of the container limit" assumes the heap
+   is essentially the whole process; following it would leave the scanner
+   competing with the heap for the last tenth, which is the same OOM kill by a
+   different route. 320 MiB is held back, and a container limit too small to
+   leave the floor above it is refused with a message rather than clamped.
+
+   The production limit went from 512M to 768M on the same reasoning, and that
+   number is a guess that has not been measured against a real Trivy scan. The
+   thing that would make it smaller is already a recorded decision — Trivy
+   defends against untrusted code and this platform runs the operator's own —
+   but it is not behind a flag yet, so it runs on every build and has to be
+   budgeted for.
+
+   **`GOMEMLIMIT` did nothing for the case item 6a produced, and something else
+   did.** A login allocates 7 MiB for the password hash and the process went
+   from 7.8 MiB resident to 28.8 and stayed there for five minutes. The limit is
+   448 MiB away, so the collector has no reason to work harder — the two are
+   unrelated problems, and only measuring showed it. What fixed it is
+   `debug.FreeOSMemory()` after the hash: a large, rare, short-lived allocation
+   is the textbook case for it and close to the only one. Measured after:
+   6.8 MiB idle, 7.4 after three logins, 7.8 after thirteen, and a login costs
+   42 ms instead of 36.
 9. [ ] Rewrite `CLAUDE.md` and the architecture docs, which currently describe
    seven services and a cloud runtime that no longer exist.
 
@@ -489,15 +515,15 @@ The numbers are identities, not an order — commits and other documents refer t
 
 ## Order of the remaining items
 
-**8 → 10 → 9**, then [Task 7](../planned/0007-install-and-upgrade.md).
+**10 → 9**, then [Task 7](../planned/0007-install-and-upgrade.md).
 
-One of those placements is a dependency rather than preference: **9 last**,
+The one placement left is a dependency rather than preference: **9 last**,
 because its job is to describe what is there and item 10 changes what that is.
 See item 9.
 
-Item 7 came before 8 for the same kind of reason, and it landed on 2026-08-30:
-it moved a 50 MB upload out of RAM and brought two in-process queues with heaps
-of their own, so a `GOMEMLIMIT` picked before it would have been re-tuned
+Item 7 came before 8 for the same kind of reason, and both landed on 2026-08-30:
+item 7 moved a 50 MB upload out of RAM and brought two in-process queues with
+heaps of their own, so a `GOMEMLIMIT` picked before it would have been re-tuned
 straight afterwards.
 
 Item 10 moved ahead of 9, which reverses what this document said until

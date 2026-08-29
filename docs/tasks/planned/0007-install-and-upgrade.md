@@ -127,21 +127,21 @@ decides the validation, the rollback target resolution, and the CI trigger.
 
 ## Ordering
 
-**After Task 1, not before** — after its items 8, 10 and 9, in that order
+**After Task 1, not before** — after its items 10 and 9, in that order
 (see [Order of the remaining items](../active/0001-collapse-to-one-binary.md#order-of-the-remaining-items)).
-Both of them touch the same three files this task rewrites, and item 7 already
-did — it removed Redis from the manifest on 2026-08-30, taking `INFRA_SERVICES`,
-`EXPECTED_SERVICES`, the health dependencies and both test suites with it:
+Item 10 touches the same three files this task rewrites, and items 7 and 8
+already did on 2026-08-30 — one removed Redis from the manifest, taking
+`INFRA_SERVICES`, `EXPECTED_SERVICES`, the health dependencies and both test
+suites with it, and the other made the container memory limit the single place
+the ceiling is written:
 
-- item 8 sets `GOMEMLIMIT` and container memory limits, which are Compose and
-  environment changes;
 - item 10 embeds the panel, which adds a Node stage to the image build and may
   change how it is tagged.
 
 Doing this first means rewriting `docker-compose.prod.yml`, `deploy.sh` and
-`deploy_test.sh` twice more. Work plan item 4 below has the same problem
+`deploy_test.sh` once more. Work plan item 4 below has the same problem
 from the other end: shrinking the environment surface wants a settled set of
-variables, and item 8 is still adding one.
+variables, and item 10 may still move one.
 
 The argument against waiting is that the product stays uninstallable by anyone
 else for longer. It is weaker than it looks: finishing this before Task 1's
