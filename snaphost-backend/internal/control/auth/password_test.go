@@ -1,8 +1,12 @@
 package auth
 
 import (
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/argon2"
 )
 
 func TestHashAndVerifyRoundTrip(t *testing.T) {
@@ -46,12 +50,10 @@ func TestHashCarriesItsCostParameters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
 	}
-	if !strings.HasPrefix(hash, "$argon2id$v=19$m=19456,t=2,p=1$") {
+	if !strings.HasPrefix(hash, "$argon2id$v=19$m=7168,t=5,p=1$") {
 		t.Fatalf("hash = %q, want a PHC string carrying m, t and p", hash)
 	}
 
-	// A hash written under different parameters still verifies, because
-	// verification uses the ones in the string.
 	params, salt, key, err := decodeHash(hash)
 	if err != nil {
 		t.Fatalf("decodeHash: %v", err)
@@ -61,6 +63,29 @@ func TestHashCarriesItsCostParameters(t *testing.T) {
 	}
 	if len(salt) != argonSaltLen || len(key) != argonKeyLen {
 		t.Fatalf("salt/key lengths = %d/%d, want %d/%d", len(salt), len(key), argonSaltLen, argonKeyLen)
+	}
+}
+
+// A password hashed under a different point on the cost curve still verifies.
+// This is the claim that makes the parameters above changeable: they were moved
+// from m=19456,t=2 to m=7168,t=5 after measuring what the first cost in
+// resident memory, and every password already stored had to keep working.
+func TestAHashWrittenAtOtherParametersStillVerifies(t *testing.T) {
+	const password = "correct horse battery"
+
+	salt := []byte("sixteen-byte-slt")
+	key := argon2.IDKey([]byte(password), salt, 2, 19*1024, 1, argonKeyLen)
+	older := fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, 19*1024, 2, 1,
+		base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(key),
+	)
+
+	if err := VerifyPassword(older, password); err != nil {
+		t.Fatalf("a hash written at m=19456,t=2 no longer verifies: %v", err)
+	}
+	if err := VerifyPassword(older, password+"x"); err == nil {
+		t.Fatal("the older-parameter path accepted a wrong password")
 	}
 }
 

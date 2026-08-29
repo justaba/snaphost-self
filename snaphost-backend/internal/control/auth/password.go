@@ -44,18 +44,24 @@ import (
 
 // argon2id cost parameters.
 //
-// m=19 MiB is OWASP's documented floor for argon2id (m=19456 KiB, t=2, p=1),
-// and not the 64 MiB profile, because the memory a password hash reserves is
-// the memory this fork exists to leave to the sites it hosts: the whole
-// platform idles at 56 MiB. Raising t rather than m is the cheap direction on
-// a box this size, so t is 2 rather than 1.
+// OWASP publishes five configurations it considers equivalent in strength,
+// trading memory against iterations: m=47104/t=1, m=19456/t=2, m=12288/t=3,
+// m=9216/t=4 and m=7168/t=5, all at p=1. This is the last of them — the same
+// defence at 7 MiB instead of 46.
 //
-// The parameters are also written into every hash, so raising them later
+// Which one to take is not a close call for this platform. The memory a
+// password hash reserves is the memory the fork exists to leave to the sites,
+// and it was measured rather than assumed: at m=19456 three sequential logins
+// took the process from 8 MiB resident to 65, and it did not come back. Go
+// grows its heap to roughly twice what is live, so a 19 MiB transient becomes
+// tens of megabytes of retained heap on a box picked for having a gigabyte.
+//
+// The parameters are written into every hash, so moving along that list later
 // affects new passwords without invalidating old ones — verification reads the
 // cost out of the stored string rather than assuming these values.
 const (
-	argonTime    = 2
-	argonMemory  = 19 * 1024 // KiB
+	argonTime    = 5
+	argonMemory  = 7 * 1024 // KiB
 	argonThreads = 1
 	argonSaltLen = 16
 	argonKeyLen  = 32
@@ -65,9 +71,9 @@ const (
 //
 // Each one reserves argonMemory while it runs, so without a bound a burst of
 // login attempts is a memory amplifier: the IP rate limiter allows 30 requests
-// a minute by default, and 30 concurrent hashes would be more than half a
-// gigabyte on a machine chosen for having one. Two at a time caps that at
-// ~38 MiB, and logins are rare enough that queueing behind one costs nothing.
+// a minute by default, and 30 concurrent hashes would be 210 MiB at these
+// parameters. Two at a time caps it at 14 MiB, and logins are rare enough that
+// queueing behind one costs nothing.
 var hashSlots = make(chan struct{}, 2)
 
 func withHashSlot(fn func()) {

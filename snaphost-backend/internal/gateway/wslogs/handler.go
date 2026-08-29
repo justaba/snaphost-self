@@ -64,6 +64,15 @@ func Handler(
 	}
 
 	return func(c *gin.Context) {
+		// Origin first, before anything is looked up. The upgrader would check
+		// it too, but only once the handler had already answered 404 or 403 for
+		// the deploy id — which tells a cross-site page whether a deploy exists
+		// even though its socket never opens.
+		if !originAllowed(c.Request, allowedOrigins) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden", "reason": "origin_not_allowed"})
+			return
+		}
+
 		deployID, err := uuid.Parse(strings.Trim(c.Param("id"), "/"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_deploy_id"})
