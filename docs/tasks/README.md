@@ -19,20 +19,27 @@ argon2 is still holding. Bounding it is item 8.
 
 ## Planned
 
-These are scoped only as far as the ordering argument in Task 1. None has an
-acceptance criteria section yet, and none starts before Task 1 lands.
+None starts before Task 1 lands. Tasks 2 to 6 are scoped only as far as the
+ordering argument in Task 1 and have no documents yet; task 7 has one, because
+its scope came out of finding two live defects in the deployment path rather
+than out of planning.
 
-| Task | Scope |
-| --- | --- |
-| 2 — Deploys that live forever | Per-project environment variables, persistent volumes, TTL as an opt-in for previews rather than the default. Without this the platform hosts previews, not sites. |
-| 3 — Managed services | Databases **and** authentication as one subsystem: image + volume + env + health check + a connection string injected into the app. Postgres, Redis, PocketBase from templates, so a fourth is a file rather than code. |
-| 4 — The edge | Caddy terminating TLS for every attached domain, driven by the control binary. The inherited on-demand issuance and TXT verification carry over. |
-| 5 — Git webhooks | Deploy on push. |
-| 6 — Operator actions | Restart, stop, and a shell into a container. Needs the audit trail the inherited console deliberately waited for. |
+| Task | Scope | Document |
+| --- | --- | --- |
+| 2 — Deploys that live forever | Per-project environment variables, persistent volumes, TTL as an opt-in for previews rather than the default. Without this the platform hosts previews, not sites. | — |
+| 3 — Managed services | Databases **and** authentication as one subsystem: image + volume + env + health check + a connection string injected into the app. Postgres, Redis, PocketBase from templates, so a fourth is a file rather than code. | — |
+| 4 — The edge | Caddy terminating TLS for every attached domain, driven by the control binary. The inherited on-demand issuance and TXT verification carry over. | — |
+| 5 — Git webhooks | Deploy on push. | — |
+| 6 — Operator actions | Restart, stop, and a shell into a container. Needs the audit trail the inherited console deliberately waited for. | — |
+| 7 — Install and upgrade without us | Someone who is not us installs, upgrades and rolls back on their own machine. Today CI deploys one specific host over SSH, which is why the rollback path could not run for several commits without anyone noticing. Blocked on the version and registry model. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
 
 Each of tasks 2, 3 and 6 carries its own screens. Task 1 item 10 is the panel's
 first pass — the inherited pages adapted to an operator login and a product
 with no billing — not the last word on it.
+
+**Numbering.** These are task numbers. The 7, 8, 9 and 10 that appear beside
+Task 1 are items inside its work plan, not tasks — which is why the next free
+task number is 7 and not 11.
 
 ## Historical
 
