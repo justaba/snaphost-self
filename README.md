@@ -73,9 +73,18 @@ make logs           tail compose logs
 ## Relationship to upstream
 
 `git remote` is deliberately empty: this repository must never push to SnapHost.
-History is preserved because `git blame` on the build and runtime paths still
-explains real production incidents — the `PORT` liveness probe, the registry
-authentication boundary, the Dockerfile cache schema bump.
+
+**The history starts here.** Upstream's 128 commits are not carried over — they
+belong to a different product, and they are still in the SnapHost repository
+for anyone who needs them. The initial commit is the upstream tree as it stood
+at `c07c252d`, so every commit after it is a real diff showing what this fork
+removed and why.
+
+The cost is `git blame`: on the build and runtime paths it now stops at the
+initial commit rather than reaching the production incidents that shaped them —
+the `PORT` liveness probe, the registry authentication boundary, the Dockerfile
+cache schema bump. Those are documented instead, in
+[docs/inherited/](docs/inherited/), which exists for exactly this reason.
 
 Upstream fixes are not automatically relevant here. The two products diverge on
 their first premise: SnapHost runs other people's code and charges for it; this
