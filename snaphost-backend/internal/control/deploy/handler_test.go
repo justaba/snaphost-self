@@ -18,7 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	"snaphost/internal/control/saga"
-	"snaphost/internal/control/upload"
+	"snaphost/internal/uploads"
 )
 
 // fakeRepo is a minimal Repo for handler-level testing. Only methods
@@ -455,7 +455,7 @@ func newUploadRouter(t *testing.T, maxBytes int64) *gin.Engine {
 		log: zap.NewNop(),
 		// Non-nil store so the disabled-guard passes; Put is never
 		// reached because every case below fails validation first.
-		uploads:        upload.NewStore(nil),
+		uploads:        newTestUploadStore(t),
 		maxUploadBytes: maxBytes,
 		uploadTTL:      time.Minute,
 	}
@@ -564,4 +564,17 @@ func TestCreateDeployRequest_ProjectKeyIsOptional(t *testing.T) {
 	if code, msg := req.validate(); code != "" {
 		t.Fatalf("validate: got %q/%q, want ok", code, msg)
 	}
+}
+
+// newTestUploadStore backs the upload handler with a real directory under the
+// test's temp dir. The store used to be constructible over a nil Redis client
+// because nothing in these tests reached it; a file-backed one has to exist.
+func newTestUploadStore(t *testing.T) *uploads.Store {
+	t.Helper()
+
+	store, err := uploads.NewStore(t.TempDir(), time.Minute)
+	if err != nil {
+		t.Fatalf("upload store: %v", err)
+	}
+	return store
 }

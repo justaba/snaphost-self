@@ -6,6 +6,7 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -20,11 +21,11 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"snaphost/internal/control/gitcred"
 	"snaphost/internal/control/logs"
 	"snaphost/internal/control/project"
 	"snaphost/internal/control/saga"
-	"snaphost/internal/control/upload"
+	"snaphost/internal/gitcreds"
+	"snaphost/internal/uploads"
 )
 
 // Repo is the data access surface required by Handler. *Repository
@@ -55,10 +56,10 @@ type Handler struct {
 	sagaQueue      *saga.Queue
 	runner         saga.RunnerClient
 	logReader      *logs.Reader
-	uploads        *upload.Store
+	uploads        *uploads.Store
 	maxUploadBytes int64
 	uploadTTL      time.Duration
-	creds          *gitcred.Store
+	creds          *gitcreds.Store
 	credTTL        time.Duration
 }
 
@@ -67,7 +68,7 @@ type Handler struct {
 // (CreateDeploy returns 503 if the saga is off; GetLogs returns 503 if Redis
 // history is off; UploadArchive returns 503 if the upload store is off).
 // projects may be nil, in which case deploys are created without a project.
-func NewHandler(repo Repo, projects Projects, log *zap.Logger, sagaQueue *saga.Queue, runner saga.RunnerClient, logReader *logs.Reader, uploads *upload.Store, maxUploadBytes int64, uploadTTL time.Duration, creds *gitcred.Store, credTTL time.Duration) *Handler {
+func NewHandler(repo Repo, projects Projects, log *zap.Logger, sagaQueue *saga.Queue, runner saga.RunnerClient, logReader *logs.Reader, uploads *uploads.Store, maxUploadBytes int64, uploadTTL time.Duration, creds *gitcreds.Store, credTTL time.Duration) *Handler {
 	return &Handler{
 		repo:           repo,
 		projects:       projects,
@@ -336,12 +337,12 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 	// only keeps the obvious mistakes cheap.
 	if req.SourceType == SourceArchive {
 		if h.uploads == nil {
-			c.JSON(http.StatusServiceUnavailable, errResponse("uploads_disabled", "archive uploads are not available (Redis not configured)"))
+			c.JSON(http.StatusServiceUnavailable, errResponse("uploads_disabled", "archive uploads are not available"))
 			return
 		}
 		owner, err := h.uploads.Owner(c.Request.Context(), req.UploadID)
 		if err != nil {
-			if errors.Is(err, upload.ErrNotFound) {
+			if errors.Is(err, uploads.ErrNotFound) {
 				c.JSON(http.StatusNotFound, errResponse("upload_not_found", "upload_id does not exist or has expired"))
 				return
 			}
@@ -445,13 +446,13 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 }
 
 // UploadArchive handles POST /api/v1/deploys/upload — accepts a raw
-// tar.gz body (bounded), stores it in Redis under upload:<uuid> with a
-// short TTL, and returns the upload_id for a subsequent
-// POST /api/v1/deploys with source_type=archive. The blob is deleted by
-// the builder after unpack; the TTL is the backstop.
+// tar.gz body (bounded), streams it to a file with a short TTL, and returns
+// the upload_id for a subsequent POST /api/v1/deploys with
+// source_type=archive. The file is deleted by the builder after unpack; the
+// TTL is the backstop.
 func (h *Handler) UploadArchive(c *gin.Context) {
 	if h.uploads == nil {
-		c.JSON(http.StatusServiceUnavailable, errResponse("uploads_disabled", "archive uploads are not available (Redis not configured)"))
+		c.JSON(http.StatusServiceUnavailable, errResponse("uploads_disabled", "archive uploads are not available"))
 		return
 	}
 	userID, err := userIDFromHeader(c)
@@ -466,27 +467,29 @@ func (h *Handler) UploadArchive(c *gin.Context) {
 		return
 	}
 
+	// The body is streamed to disk rather than read into memory. It used to be
+	// io.ReadAll into a []byte that was then handed to Redis, so a 50 MB
+	// archive existed twice in this process before it existed anywhere useful.
 	body := http.MaxBytesReader(c.Writer, c.Request.Body, h.maxUploadBytes)
-	data, err := io.ReadAll(body)
-	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			c.JSON(http.StatusRequestEntityTooLarge, errResponse("upload_too_large",
-				"archive exceeds the maximum size of "+strconv.FormatInt(h.maxUploadBytes, 10)+" bytes"))
-			return
-		}
-		c.JSON(http.StatusBadRequest, errResponse("invalid_body", "failed to read request body"))
-		return
-	}
-	// Cheap sanity check before spending Redis memory: tar.gz starts with
-	// the gzip magic. Full validation happens at unpack time in builder.
-	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+
+	// The gzip magic is checked on the first two bytes as they go past, so a
+	// body that is not an archive is refused without writing the rest of it.
+	// Full validation happens at unpack time.
+	magic := make([]byte, 2)
+	if _, err := io.ReadFull(body, magic); err != nil || magic[0] != 0x1f || magic[1] != 0x8b {
 		c.JSON(http.StatusBadRequest, errResponse("invalid_archive", "body must be a gzip-compressed tar archive"))
 		return
 	}
 
-	uploadID, err := h.uploads.Put(c.Request.Context(), userID.String(), data, h.uploadTTL)
+	uploadID, size, err := h.uploads.Put(c.Request.Context(), userID.String(),
+		io.MultiReader(bytes.NewReader(magic), body), h.maxUploadBytes)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.Is(err, uploads.ErrTooLarge) || errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, errResponse("upload_too_large",
+				"archive exceeds the maximum size of "+strconv.FormatInt(h.maxUploadBytes, 10)+" bytes"))
+			return
+		}
 		h.log.Error("store upload failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to store upload"))
 		return
@@ -494,7 +497,7 @@ func (h *Handler) UploadArchive(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"upload_id":      uploadID,
-		"size_bytes":     len(data),
+		"size_bytes":     size,
 		"expires_in_sec": int(h.uploadTTL.Seconds()),
 	})
 }

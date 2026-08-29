@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -46,13 +47,13 @@ import (
 	builderbuild "snaphost/internal/builder/build"
 	builderclone "snaphost/internal/builder/clone"
 	builderconfig "snaphost/internal/builder/config"
-	buildergitcred "snaphost/internal/builder/gitcred"
+
 	builderpipeline "snaphost/internal/builder/pipeline"
 	builderqueue "snaphost/internal/builder/queue"
 	builderregistry "snaphost/internal/builder/registry"
 	builderscan "snaphost/internal/builder/scan"
 	builderunpack "snaphost/internal/builder/unpack"
-	builderupload "snaphost/internal/builder/upload"
+
 	"snaphost/internal/buildevents"
 	"snaphost/internal/control/admin"
 	"snaphost/internal/control/apikey"
@@ -61,21 +62,23 @@ import (
 	controldb "snaphost/internal/control/db"
 	"snaphost/internal/control/deploy"
 	"snaphost/internal/control/domain"
-	"snaphost/internal/control/gitcred"
+
 	"snaphost/internal/control/logs"
 	"snaphost/internal/control/project"
 	controlroutes "snaphost/internal/control/routes"
 	"snaphost/internal/control/saga"
-	"snaphost/internal/control/upload"
+
 	gatewayconfig "snaphost/internal/gateway/config"
 	"snaphost/internal/gateway/middleware"
 	"snaphost/internal/gateway/wslogs"
+	"snaphost/internal/gitcreds"
 	"snaphost/internal/logbus"
 	runtimebackend "snaphost/internal/runtime/backend"
 	runtimedocker "snaphost/internal/runtime/backend/docker"
 	runtimeconfig "snaphost/internal/runtime/config"
 	"snaphost/internal/runtime/runner"
 	"snaphost/internal/runtime/watchdog"
+	"snaphost/internal/uploads"
 	"snaphost/internal/wiring"
 )
 
@@ -145,6 +148,24 @@ func main() {
 	// because four processes produced it; one process produces it now.
 	bus := logbus.New(0, 0)
 
+	// Uploaded archives live in a directory beside the build workspaces, which
+	// the image already creates with the right owner. They were Redis values:
+	// a 50 MB tar.gz held in the API process, copied into Redis, and read back
+	// into the builder — four copies of the same bytes, on a box picked for
+	// having a gigabyte.
+	uploadsStore, err := uploads.NewStore(
+		filepath.Join(bldCfg.WorkdirRoot, "uploads"),
+		time.Duration(ctlCfg.UploadTTLMin)*time.Minute,
+	)
+	if err != nil {
+		log.Fatal("upload store", zap.Error(err))
+	}
+
+	// Git credentials for private clones. In memory and nowhere else: Redis
+	// held these with appendonly persistence, so every token was appended to a
+	// file on disk for no reason — nothing ever read it back.
+	credsStore := gitcreds.NewStore()
+
 	// Build outcomes. A separate bus from the log one on purpose: a log line
 	// may be dropped for a slow reader, and a build outcome is a state
 	// transition the saga acts on.
@@ -159,8 +180,8 @@ func main() {
 	// 5. Components, bottom up.
 	ai := buildAI(pool, aiCfg, log)
 	rt := buildRuntime(pool, rtCfg, bus, log)
-	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, events, rdb, log)
-	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, events, rdb, log)
+	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, events, uploadsStore, credsStore, rdb, log)
+	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, events, uploadsStore, credsStore, rdb, log)
 
 	// 6. One engine. The middleware order is the gateway's, unchanged and
 	//    load-bearing: rate limiting before authentication so an IP limit
@@ -173,7 +194,7 @@ func main() {
 	}
 
 	// 7. Background loops, after everything they touch exists.
-	startBackground(ctx, ctlCfg, rtCfg, bldCfg, ctl, bld, rt, log)
+	startBackground(ctx, ctlCfg, rtCfg, bldCfg, ctl, bld, rt, uploadsStore, credsStore, log)
 
 	srv := &http.Server{
 		Addr:              ":" + gwCfg.Port,
@@ -286,7 +307,7 @@ type builderParts struct {
 	runner   *builderpipeline.Runner
 }
 
-func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, events *buildevents.Bus, rdb *redis.Client, log *zap.Logger) builderParts {
+func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, events *buildevents.Bus, uploadsStore *uploads.Store, credsStore *gitcreds.Store, rdb *redis.Client, log *zap.Logger) builderParts {
 	_ = aiCfg
 
 	q := builderqueue.NewQueue(0, log)
@@ -326,8 +347,8 @@ func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Confi
 			Status:      &wiring.StatusReporter{Repo: deployRepo(pool, bus, nil)},
 			AIClient:    &wiring.AIClient{Service: ai.service},
 			Registry:    builderregistry.NewDockerV2Client(log),
-			Uploads:     builderupload.NewStore(rdb),
-			Credentials: buildergitcred.NewStore(rdb),
+			Uploads:     uploadsStore,
+			Credentials: credsStore,
 			UnpackLimits: builderunpack.Limits{
 				MaxFiles:      cfg.MaxArchiveFiles,
 				MaxFileBytes:  int64(cfg.MaxArchiveFileMB) * 1024 * 1024,
@@ -363,6 +384,8 @@ func buildControl(
 	runtimeSvc *runner.Service,
 	bus *logbus.Bus,
 	events *buildevents.Bus,
+	uploadsStore *uploads.Store,
+	credsStore *gitcreds.Store,
 	rdb *redis.Client,
 	log *zap.Logger,
 ) controlParts {
@@ -377,8 +400,8 @@ func buildControl(
 	sagaRepo := saga.NewRepository(pool)
 	sagaPub := &wiring.ControlLogPublisher{Bus: bus}
 	logReader := logs.NewReader(bus, dRepo)
-	uploadStore := upload.NewStore(rdb)
-	credStore := gitcred.NewStore(rdb)
+	uploadStore := uploadsStore
+	credStore := credsStore
 
 	runnerClient := &wiring.RunnerClient{Service: runtimeSvc}
 
@@ -570,9 +593,17 @@ func startBackground(
 	ctl controlParts,
 	bld builderParts,
 	rt runtimeParts,
+	uploadsStore *uploads.Store,
+	credsStore *gitcreds.Store,
 	log *zap.Logger,
 ) {
 	go ctl.verifier.Run(ctx)
+
+	// Expiry sweepers. Redis freed a key when its TTL passed; a directory and
+	// a map need someone to do it, and an expired credential sitting in memory
+	// is a secret with no reason to still be there.
+	go uploadsStore.Run(ctx, time.Minute)
+	go credsStore.Run(ctx, time.Minute)
 
 	if ctlCfg.SagaWorkerEnabled {
 		worker := &saga.Worker{

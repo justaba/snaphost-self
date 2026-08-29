@@ -69,11 +69,24 @@ type Result struct {
 	TotalBytes int64
 }
 
-// TarGz extracts a gzip-compressed tar archive into destDir, enforcing
-// the limits. destDir must exist and be empty-ish (the build workdir).
-// Any violation aborts extraction with an error; the caller is expected
-// to discard the workdir on failure.
+// TarGz extracts a gzip-compressed tar archive held in memory. It is the
+// convenient form, used by tests and by callers that already have the bytes;
+// the build pipeline uses TarGzFrom, which never materialises the archive.
 func TarGz(archive []byte, destDir string, limits Limits) (*Result, error) {
+	return TarGzFrom(bytes.NewReader(archive), int64(len(archive)), destDir, limits)
+}
+
+// TarGzFrom extracts a gzip-compressed tar archive read from r into destDir,
+// enforcing the limits. destDir must exist and be empty-ish (the build
+// workdir). Any violation aborts extraction with an error; the caller is
+// expected to discard the workdir on failure.
+//
+// compressedSize is the archive's size on the wire, and it is a parameter
+// rather than something measured here because it is needed *before* reading:
+// the expansion-ratio cap is derived from it, and that cap is what stops a
+// small archive from filling the disk. A caller that does not know the size
+// passes zero, which disables the ratio cap and leaves the absolute one.
+func TarGzFrom(r io.Reader, compressedSize int64, destDir string, limits Limits) (*Result, error) {
 	limits = limits.withDefaults()
 
 	absDest, err := filepath.Abs(destDir)
@@ -84,11 +97,11 @@ func TarGz(archive []byte, destDir string, limits Limits) (*Result, error) {
 	// Effective total cap: the configured ceiling or the ratio-derived
 	// one, whichever is smaller.
 	maxTotal := limits.MaxTotalBytes
-	if ratioCap := int64(len(archive)) * limits.MaxRatio; ratioCap > 0 && ratioCap < maxTotal {
+	if ratioCap := compressedSize * limits.MaxRatio; ratioCap > 0 && ratioCap < maxTotal {
 		maxTotal = ratioCap
 	}
 
-	gz, err := gzip.NewReader(bytes.NewReader(archive))
+	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return nil, fmt.Errorf("archive is not valid gzip: %w", err)
 	}

@@ -21,14 +21,14 @@ import (
 	"snaphost/internal/builder/config"
 	"snaphost/internal/builder/detect"
 	"snaphost/internal/builder/events"
-	"snaphost/internal/builder/gitcred"
 	"snaphost/internal/builder/logs"
 	"snaphost/internal/builder/queue"
 	"snaphost/internal/builder/registry"
 	"snaphost/internal/builder/scan"
 	"snaphost/internal/builder/unpack"
-	"snaphost/internal/builder/upload"
+	"snaphost/internal/gitcreds"
 	"snaphost/internal/shared/validator"
+	"snaphost/internal/uploads"
 )
 
 // StatusReporter is the interface for reporting deploy status back to the
@@ -73,10 +73,10 @@ type Runner struct {
 	Registry registry.Client
 	// Uploads reads archive blobs for source_type=archive jobs (14b-2).
 	// Optional; nil makes archive jobs fail permanently.
-	Uploads *upload.Store
+	Uploads *uploads.Store
 	// Credentials reads short-lived git credentials for git_private jobs
 	// (14b-3). Optional; nil makes git_private jobs fail permanently.
-	Credentials *gitcred.Store
+	Credentials *gitcreds.Store
 	// UnpackLimits bounds untrusted archive extraction. Zero fields fall
 	// back to the unpack package defaults.
 	UnpackLimits unpack.Limits
@@ -307,7 +307,7 @@ func (r *Runner) executePipeline(ctx context.Context, job queue.Job, log *zap.Lo
 			}
 			cred, err := r.Credentials.Get(ctx, job.CredentialID)
 			if err != nil {
-				if errors.Is(err, gitcred.ErrNotFound) {
+				if errors.Is(err, gitcreds.ErrNotFound) {
 					return "", "", 0, Permanent(fmt.Errorf("git_private source: credential %s not found or expired", job.CredentialID))
 				}
 				return "", "", 0, Transient(fmt.Errorf("git_private source: fetch credential: %w", err))
@@ -582,18 +582,19 @@ func (r *Runner) unpackUpload(ctx context.Context, job queue.Job, workdirPath st
 	}
 	log.Info("fetching uploaded archive", zap.String("stage", "unpack"), zap.String("upload_id", job.UploadID))
 
-	data, owner, err := r.Uploads.Get(ctx, job.UploadID)
+	archive, owner, size, err := r.Uploads.Open(ctx, job.UploadID)
 	if err != nil {
-		if errors.Is(err, upload.ErrNotFound) {
+		if errors.Is(err, uploads.ErrNotFound) {
 			return Permanent(fmt.Errorf("archive source: upload %s not found or expired", job.UploadID))
 		}
 		return Transient(fmt.Errorf("archive source: fetch upload: %w", err))
 	}
-	// The blob is single-use: delete it whether unpack succeeds or fails
-	// so failed builds don't leave user source sitting in Redis.
+	defer archive.Close()
+	// The archive is single-use: delete it whether unpack succeeds or fails,
+	// so a failed build does not leave user source on disk until the TTL.
 	defer func() {
 		if err := r.Uploads.Delete(context.WithoutCancel(ctx), job.UploadID); err != nil {
-			log.Warn("delete upload blob failed", zap.String("upload_id", job.UploadID), zap.Error(err))
+			log.Warn("delete upload failed", zap.String("upload_id", job.UploadID), zap.Error(err))
 		}
 	}()
 
@@ -601,7 +602,9 @@ func (r *Runner) unpackUpload(ctx context.Context, job queue.Job, workdirPath st
 		return Permanent(fmt.Errorf("archive source: upload %s does not belong to the requesting user", job.UploadID))
 	}
 
-	res, err := unpack.TarGz(data, workdirPath, r.UnpackLimits)
+	// Streamed from the file rather than read into memory first: this is the
+	// path a 50 MB tar.gz takes, and the point of moving it off Redis.
+	res, err := unpack.TarGzFrom(archive, size, workdirPath, r.UnpackLimits)
 	if err != nil {
 		// Every unpack failure is attacker-controllable input — permanent,
 		// never retried.
