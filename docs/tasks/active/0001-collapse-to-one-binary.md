@@ -1,9 +1,9 @@
 # Task 1 — Collapse the control plane into one binary
 
 **Status:** In progress. The cloud runtime path, the dead documentation, and
-billing are removed, the six modules are one, and the platform is a single
-binary on SQLite. Removing Supabase, the in-process queue, GOMEMLIMIT, the docs
-rewrite and the embedded panel remain.
+billing are removed, the six modules are one, the platform is a single binary
+on SQLite, and it issues its own identity. The in-process queue, GOMEMLIMIT,
+the docs rewrite and the embedded panel remain.
 **Created:** 2026-08-29
 **Updated:** 2026-08-29
 
@@ -30,6 +30,17 @@ containers. Go services idle at 3–13 MiB each, not the 20–40 MiB assumed.
 
 After item 6 removed PostgreSQL: **56.1 MiB across five containers** — snaphost
 9.6, Traefik 21.0, BuildKit 16.2, Redis 4.8, registry 4.5.
+
+After item 6a, on a fresh stack and before anyone logs in: **48.1 MiB** —
+snaphost 7.4, Traefik 17.0, BuildKit 15.5, registry 4.4, Redis 3.8. The
+application half got smaller, because the JWKS cache and the JWT machinery went
+and only a session lookup replaced them. Traefik and BuildKit vary by a few MiB
+between runs, so the honest comparison is the application line.
+
+**A login moves it to ~69 MiB and it stays there.** Hashing a password is a
+7 MiB allocation, Go sizes the heap against it, and nothing gives it back —
+snaphost sits at 28.8 afterwards and does not climb further no matter how many
+times the operator logs in. Item 8 is what bounds this.
 
 So the ~170 MB target was already met before any of this work, and the headline
 justification was overstated by roughly four times. What the measurement does
@@ -256,32 +267,68 @@ host before it becomes a plan.
    rather than merely declared, that an `updated_at` trigger fires, and that
    the timestamp format is what everything else assumes.
 
-6a. [ ] Remove Supabase, and issue identity ourselves.
+6a. [x] Remove Supabase, and issue identity ourselves.
 
-   `SUPABASE_URL` has exactly one use: fetching JWKS to verify the signature on
+   `SUPABASE_URL` had exactly one use: fetching JWKS to verify the signature on
    somebody else's JWT. That is a multi-tenant SaaS's identity provider, and
-   this platform has one operator. Keeping it means the panel cannot be logged
-   into without either an external SaaS or a ten-container self-hosted Supabase
-   sitting next to a 9 MiB binary.
+   this platform has one operator. The prefetch was fatal on failure, so an
+   external service being unreachable stopped this process starting at all.
 
-   Out: `JWKSCache`, `SupabaseClaims`, the signup webhook, and the dead
+   Out: `JWKSCache`, `SupabaseClaims`, `VerifyToken`, the JWK parsers, the
+   signup webhook and the `AccountCreator` behind it, and the dead
    `auth/register` and `auth/login` entries in `PublicRoutes` — routes that
    never existed here, because registration went straight from the browser to
    Supabase.
 
-   In: an operator row with an argon2id password hash, a login and logout
-   endpoint, a session cookie (HttpOnly, SameSite, Secure), and a password
+   In: an operator row with an argon2id password hash, login, logout, `me` and
+   password change, a session cookie (HttpOnly, SameSite=Lax, Secure derived
+   from the request unless `SESSION_COOKIE_SECURE` forces it), and a password
    generated on first start and printed once to the log rather than shipped as
    a default.
 
-   `user_id` stays on every table. The tempting move is to strip it as
-   multi-tenant residue, but a password needs a row to hang off anyway, and the
-   column is already the isolation a second operator or a service account would
-   need. It costs nothing to keep and it is a wide, risky diff to remove.
+   **Sessions are rows, not self-signed JWTs.** The decision, since it was a
+   real fork in the road: a locally signed token is fewer moving parts until
+   logout has to revoke and a password change has to invalidate every other
+   session. Neither is optional. A JWT reaches both by keeping a denylist until
+   each token expires, which is the session table with a worse name plus a
+   signing key to generate, persist and rotate. The usual argument for the
+   stateless token — saving a round trip to a session store — does not apply
+   when the store is a file this process already has open. The cost is one
+   indexed read per authenticated request, and a sliding expiry bounded to one
+   write an hour so it stays off the read path.
 
-   Ordered after item 6 on purpose: this adds a table, and item 6 is already
+   `user_id` stays on every table, as planned. Keeping it turned out to have an
+   immediate use rather than a hypothetical one: the log stream had no
+   ownership check at all, so any valid credential could subscribe to any
+   deploy's logs by id. Unreachable with one account, which is what makes it
+   the kind of authorisation that stops holding the moment there are two.
+
+   Two things the work turned up that were not on this list:
+
+   - **The WebSocket had to change more than its credential.** It read a token
+     from a query parameter; it reads the cookie now, and a handshake is not
+     subject to the same-origin policy, so `CheckOrigin` returning true
+     unconditionally became a cross-site hijack. It checks the Origin first,
+     before the deploy is looked up, so a refused origin cannot learn whether
+     an id exists.
+   - **argon2id's memory parameter is a real cost here, and the obvious value
+     was the wrong one.** At OWASP's most-quoted configuration (m=19456, t=2)
+     three sequential logins took the process from 8.2 MiB resident to 65.3,
+     and it stayed there — Go sizes its heap to about twice the live set and
+     does not give it back. OWASP publishes five configurations it treats as
+     equivalent, trading memory against iterations; the cheapest, m=7168/t=5,
+     is the same defence for a third of the memory. Measured after the change:
+     7.4 MiB idle, 28.8 after three logins, 28.8 after thirteen, 36 ms per
+     login. The ~21 MiB that remains is heap sizing rather than argon2, and it
+     is what item 8 exists to bound.
+
+   Ordered after item 6 on purpose: this adds a table, and item 6 was already
    rewriting the migration history into one baseline. Doing it in this order
-   puts the operator table in that baseline instead of a migration on top of it.
+   put the operator and session tables in that baseline instead of a migration
+   on top of it.
+
+   Verified live from an empty volume, which is the acceptance test for the
+   item: the stack starts with no `SUPABASE_URL` set anywhere.
 
 7. [ ] Replace Redis with the in-process queue, pub/sub, and credential store.
 8. [ ] Set `GOMEMLIMIT` and a container memory limit that agree with each other.
@@ -289,6 +336,13 @@ host before it becomes a plan.
    the production Compose file does set container memory limits — so Go never
    learns about the ceiling it is running under and grows its heap until the
    kernel intervenes.
+
+   Item 6a gave this a measured case rather than a principle. A login allocates
+   7 MiB for the password hash and the process goes from 7.4 MiB resident to
+   28.8 and stays there, because the heap is sized against the peak live set and
+   nothing scavenges it back. It plateaus, so it is not a leak — but a quarter
+   of the platform's idle footprint is now heap the runtime is holding on to
+   for an operation that happens a few times a week.
 9. [ ] Rewrite `CLAUDE.md` and the architecture docs, which currently describe
    seven services and a cloud runtime that no longer exist.
 

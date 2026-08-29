@@ -7,14 +7,15 @@ Updated: 2026-08-29
 
 | Task | Status | Document |
 | --- | --- | --- |
-| 1 — Collapse the control plane into one binary | In progress — the cloud runtime path, dead docs, billing and the module split are gone, the platform is one process, and the store is SQLite. Removing Supabase, the in-process queue, `GOMEMLIMIT`, the docs rewrite and the embedded panel remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
+| 1 — Collapse the control plane into one binary | In progress — the cloud runtime path, dead docs, billing and the module split are gone, the platform is one process, the store is SQLite, and identity is issued here rather than by Supabase. The in-process queue, `GOMEMLIMIT`, the docs rewrite and the embedded panel remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
 
-Remaining order inside Task 1: **6a** remove Supabase and issue operator
-identity → **7** in-process queue → **8** `GOMEMLIMIT` → **9** docs → **10** the
-panel. 10 sits last because it logs into 6a.
+Remaining order inside Task 1: **7** in-process queue → **8** `GOMEMLIMIT` →
+**9** docs → **10** the panel. 10 sits last because it logs into 6a.
 
-Measured after item 6: **56.1 MiB idle across five containers**, from 131.1 MiB
-across twelve. The application itself is 9.6 of that.
+Measured after item 6a, before anyone logs in: **48.1 MiB idle across five
+containers**, from 131.1 MiB across twelve. The application itself is 7.4 of
+that — and 28.8 after a login, which is heap Go keeps rather than anything
+argon2 is still holding. Bounding it is item 8.
 
 ## Planned
 
