@@ -43,9 +43,21 @@ update deploys      set status       = 'pending' where status       = 'reserved'
 -- ---------------------------------------------------------------------------
 -- The ledger itself
 --
--- transactions is dropped first: it references wallets, and dropping the
--- parent first would need a cascade that could take more with it than intended.
+-- The two reporting views go first, by name. Both exist only to aggregate
+-- money — wallet_totals sums balances, user_transaction_summary sums the
+-- ledger — so neither outlives the tables underneath them.
+--
+-- Dropped explicitly rather than with `drop table ... cascade`, which would
+-- also silently remove anything else that had come to depend on these tables.
+-- Naming them means a dependency nobody expected stops the migration instead
+-- of disappearing quietly.
+--
+-- transactions is dropped before wallets: it references the parent, and
+-- reversing the order would need the cascade this avoids.
 -- ---------------------------------------------------------------------------
+
+drop view if exists user_transaction_summary;
+drop view if exists wallet_totals;
 
 drop table if exists transactions;
 drop table if exists wallets;

@@ -1,3 +1,5 @@
+name: snaphost-self
+
 # Local development stack.
 #
 # One application service, because there is one process (Task 1). It replaced
@@ -20,6 +22,19 @@ services:
     # on the host.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:rw
+    # The merge collided two deliberate decisions. runner-svc ran as root
+    # because it needs this socket; builder-svc ran as uid 1000 because it
+    # clones and unpacks untrusted input. One process cannot do both.
+    #
+    # Joining the socket's group keeps the non-root uid and grants only the
+    # socket, which is the narrower of the two options — though "only the
+    # socket" is still root-equivalent on the host, so this buys defence in
+    # depth for the container filesystem rather than a real privilege boundary.
+    #
+    # 0 is the Docker Desktop default (the socket is root:root). On a Linux
+    # host it is usually the `docker` group: `stat -c %g /var/run/docker.sock`.
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
     depends_on:
       postgres:
         condition: service_healthy

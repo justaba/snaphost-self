@@ -49,6 +49,24 @@ create index if not exists idx_transactions_user_id    on transactions(user_id);
 create index if not exists idx_transactions_deploy_id  on transactions(deploy_id);
 create index if not exists idx_transactions_created_at on transactions(created_at desc);
 
+-- The two reporting views the up migration removed with their tables.
+create or replace view wallet_totals as
+select
+    count(*)      as wallet_count,
+    sum(balance)  as total_balance,
+    sum(reserved) as total_reserved
+from wallets;
+
+create or replace view user_transaction_summary as
+select
+    user_id,
+    count(*)                                                                       as transaction_count,
+    sum(case when type = 'commit' and status = 'completed' then amount else 0 end) as total_spent,
+    sum(case when type = 'topup'  and status = 'completed' then amount else 0 end) as total_topped_up,
+    max(created_at)                                                                as last_transaction_at
+from transactions
+group by user_id;
+
 alter table deploy_sagas
     add column if not exists coins_reserved    boolean not null default false,
     add column if not exists coins_committed   boolean not null default false,

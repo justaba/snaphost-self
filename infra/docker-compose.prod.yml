@@ -1,4 +1,4 @@
-name: snaphost
+name: snaphost-self
 
 # Production manifest. One application service pinned to an exact image SHA,
 # plus the three pieces of infrastructure the platform does not implement
