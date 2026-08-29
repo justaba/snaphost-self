@@ -8,19 +8,18 @@ FROM golang:1.25-alpine AS builder
 RUN apk add --no-cache git
 
 WORKDIR /build
-ARG GO_BUILD_TAGS=""
 
-COPY shared/ ../shared/
-COPY runner-svc/go.mod runner-svc/go.sum ./
+# Build context is snaphost-backend/ — the module root (Task 1 item 4).
+COPY go.mod go.sum ./
 RUN go mod download
 
-COPY runner-svc/ ./
+COPY . .
 
-# Build API binary. Output to /out/ to avoid colliding with the ./api source directory.
-RUN CGO_ENABLED=0 go build ${GO_BUILD_TAGS:+-tags "$GO_BUILD_TAGS"} -ldflags='-s -w' -o /out/api ./cmd/api
+# Build API binary. Output to /out/ to avoid colliding with the source tree.
+RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/api ./runner-svc/cmd/api
 
 # Build Watchdog binary.
-RUN CGO_ENABLED=0 go build ${GO_BUILD_TAGS:+-tags "$GO_BUILD_TAGS"} -ldflags='-s -w' -o /out/watchdog ./cmd/watchdog
+RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/watchdog ./runner-svc/cmd/watchdog
 
 # ---------------------------------------------------------------------------
 # Stage 2: Runtime (debian-slim — need ca-certificates for registry TLS)

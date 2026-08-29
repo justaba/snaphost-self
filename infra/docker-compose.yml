@@ -1,7 +1,8 @@
 services:
   api-gateway:
     build:
-      context: ../snaphost-backend/api-gateway
+      context: ../snaphost-backend
+      dockerfile: api-gateway/Dockerfile
     ports:
       - "8080:8080"
     depends_on:
@@ -15,7 +16,8 @@ services:
 
   user-billing:
     build:
-      context: ../snaphost-backend/user-billing
+      context: ../snaphost-backend
+      dockerfile: user-billing/Dockerfile
     ports:
       - "8083:8081"
     depends_on:

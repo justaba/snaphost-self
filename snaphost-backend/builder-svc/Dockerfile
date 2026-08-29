@@ -15,17 +15,19 @@ RUN sed -i \
 
 WORKDIR /build
 
-COPY shared/ ../shared/
-COPY builder-svc/go.mod builder-svc/go.sum ./
+# Build context is snaphost-backend/ — the module root. It already was, because
+# this service needed the shared package; the difference since Task 1 item 4 is
+# that there is one go.mod at the top instead of one per service plus a replace.
+COPY go.mod go.sum ./
 RUN go mod download
 
-COPY builder-svc/ ./
+COPY . .
 
-# Build API binary. Output to /out/ to avoid colliding with the ./api source directory.
-RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/api ./cmd/api
+# Build API binary. Output to /out/ to avoid colliding with the source tree.
+RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/api ./builder-svc/cmd/api
 
 # Build Worker binary.
-RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/worker ./cmd/worker
+RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/worker ./builder-svc/cmd/worker
 
 # ---------------------------------------------------------------------------
 # Stage 2: Runtime (debian-slim — need trivy binary + ca-certificates)

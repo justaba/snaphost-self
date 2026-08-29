@@ -30,29 +30,22 @@ build:
 build-frontend:
 	pnpm --dir "$(FRONTEND_DIR)" build
 
-# Every Go module under snaphost-backend/. They are separate modules, so each
-# loop below enters the directory rather than relying on one ./... walk.
-GO_MODULES := api-gateway user-billing builder-svc runner-svc ai-orchestrator shared
+# snaphost-backend/ is one Go module (Task 1 item 4), so both targets below are
+# a single ./... walk. There used to be a GO_MODULES list here that had to be
+# kept in step by hand with the CI matrix; a module missing from either was
+# silently never checked, which is the class of gap this removes.
+GO_MODULE_DIR := snaphost-backend
 
-# Runs golangci-lint for each backend module.
-# Configuration is snaphost-backend/.golangci.yml, found by walking up from
-# each module directory. Requires golangci-lint v1.64.x.
+# Configuration is snaphost-backend/.golangci.yml. Requires golangci-lint v1.64.x.
 lint:
-	@for m in $(GO_MODULES); do \
-		echo "==> lint $$m"; \
-		(cd snaphost-backend/$$m && golangci-lint run) || exit 1; \
-	done
+	@cd $(GO_MODULE_DIR) && golangci-lint run ./...
 
 # Convenience target for the standalone sibling frontend checkout.
 lint-frontend:
 	pnpm --dir "$(FRONTEND_DIR)" lint
 
-# Runs go test ./... for each backend module
 test:
-	@for m in $(GO_MODULES); do \
-		echo "==> test $$m"; \
-		(cd snaphost-backend/$$m && go test ./...) || exit 1; \
-	done
+	@cd $(GO_MODULE_DIR) && go test ./...
 
 # Stops all docker compose services
 stop:

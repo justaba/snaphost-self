@@ -1,18 +1,20 @@
-FROM golang:1.22-alpine AS builder
+# Build context is snaphost-backend/ — the module root. Every service builds
+# from there now that the six modules are one (Task 1 item 4).
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -o api-gateway .
+RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/api-gateway ./api-gateway
 
 FROM gcr.io/distroless/static-debian12
 
 WORKDIR /
-COPY --from=builder /build/api-gateway /api-gateway
-COPY rbac_model.conf /rbac_model.conf
-COPY rbac_policy.csv /rbac_policy.csv
+COPY --from=builder /out/api-gateway /api-gateway
+COPY api-gateway/rbac_model.conf /rbac_model.conf
+COPY api-gateway/rbac_policy.csv /rbac_policy.csv
 
 EXPOSE 8080
 USER nonroot:nonroot

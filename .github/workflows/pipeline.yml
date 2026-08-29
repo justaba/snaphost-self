@@ -14,56 +14,42 @@ permissions:
   packages: write
 
 jobs:
+  # One job, because snaphost-backend/ is one module (Task 1 item 4). The matrix
+  # this replaces had to be kept in step by hand with the Makefile's GO_MODULES
+  # list, and a service missing from either was silently never checked.
   go:
-    name: Go / ${{ matrix.name }}
+    name: Go
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: api-gateway, module: snaphost-backend/api-gateway }
-          - { name: user-billing, module: snaphost-backend/user-billing }
-          - { name: builder-svc, module: snaphost-backend/builder-svc }
-          - { name: runner-svc, module: snaphost-backend/runner-svc }
-          - { name: ai-orchestrator, module: snaphost-backend/ai-orchestrator }
-          - { name: shared, module: snaphost-backend/shared }
     defaults:
       run:
-        working-directory: ${{ matrix.module }}
+        working-directory: snaphost-backend
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: ${{ matrix.module }}/go.mod
-          cache-dependency-path: ${{ matrix.module }}/go.sum
+          go-version-file: snaphost-backend/go.mod
+          cache-dependency-path: snaphost-backend/go.sum
       - name: Test
-        run: go test ${{ matrix.tags && format('-tags {0}', matrix.tags) || '' }} ./...
+        run: go test ./...
       - name: Vet
-        run: go vet ${{ matrix.tags && format('-tags {0}', matrix.tags) || '' }} ./...
-      # Nothing here ran a linter until 2026-08-07, so formatting and the
-      # default checks drifted unnoticed: `make lint` covered three of the
-      # seven modules and its default set excludes gofmt. Config lives in
-      # snaphost-backend/.golangci.yml, which golangci-lint finds by walking
-      # up from the module directory. The version is pinned because the v2
-      # config schema is incompatible with the file it reads.
+        run: go vet ./...
+      # Nothing ran a linter upstream until 2026-08-07, so formatting and the
+      # default checks drifted unnoticed: golangci-lint's default set excludes
+      # gofmt. Config lives in snaphost-backend/.golangci.yml. The version is
+      # pinned because the v2 config schema is incompatible with the file it
+      # reads — moving to it means changing both in the same commit.
       #
       # Built from source rather than downloaded. golangci-lint refuses to load
       # a config for a module whose Go version is newer than the toolchain the
       # linter itself was built with, and the published v1.64.8 binary is built
-      # with go1.24 — so six of the eight modules, which target 1.25, failed
-      # before linting anything. `go install` uses this job's own toolchain,
-      # taken from the module's go.mod, so the two can never disagree again.
-      #
-      # GOTOOLCHAIN=auto is required for the two modules still on go 1.22:
-      # golangci-lint's own go.mod needs 1.23, and setup-go pins GOTOOLCHAIN to
-      # `local`, which forbids fetching one. Scoped to this step so the build
-      # and test steps keep using exactly the toolchain the module declares.
+      # with go1.24 while this module targets 1.25. `go install` uses this job's
+      # own toolchain, so the two can never disagree again.
       - name: Install golangci-lint
         env:
           GOTOOLCHAIN: auto
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
       - name: Lint
-        run: golangci-lint run ${{ matrix.tags && format('--build-tags {0}', matrix.tags) || '' }} ./...
+        run: golangci-lint run ./...
 
   shell:
     name: Deployment scripts
@@ -102,8 +88,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { image: api-gateway, context: snaphost-backend/api-gateway, dockerfile: snaphost-backend/api-gateway/Dockerfile }
-          - { image: user-billing, context: snaphost-backend/user-billing, dockerfile: snaphost-backend/user-billing/Dockerfile }
+          - { image: api-gateway, context: snaphost-backend, dockerfile: snaphost-backend/api-gateway/Dockerfile }
+          - { image: user-billing, context: snaphost-backend, dockerfile: snaphost-backend/user-billing/Dockerfile }
           - { image: builder-svc, context: snaphost-backend, dockerfile: snaphost-backend/builder-svc/Dockerfile }
           - { image: runner-svc, context: snaphost-backend, dockerfile: snaphost-backend/runner-svc/Dockerfile }
           - { image: ai-orchestrator, context: snaphost-backend, dockerfile: snaphost-backend/ai-orchestrator/Dockerfile }

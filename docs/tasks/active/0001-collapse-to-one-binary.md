@@ -1,7 +1,8 @@
 # Task 1 — Collapse the control plane into one binary
 
 **Status:** In progress. The cloud runtime path, the dead documentation, and
-billing are removed; the module merge, SQLite, and the in-process queue remain.
+billing are removed and the six modules are one; SQLite, the single binary,
+and the in-process queue remain.
 **Created:** 2026-08-29
 **Updated:** 2026-08-29
 
@@ -91,8 +92,30 @@ host before it becomes a plan.
      /internal/users` seeded a wallet *and* recorded the email, which is the
      only path an address ever takes into this database. It moved to a new
      `internal/account` package with the money removed.
-4. [ ] Merge six Go modules into one, with the services becoming packages under
-   `internal/`. Mechanical but wide: every import path changes.
+4. [x] Merge six Go modules into one.
+
+   **No import path changed**, which was not luck: the module paths were
+   `snaphost/<service>` and the directories are `<service>/` under
+   `snaphost-backend/`, so one module named `snaphost` rooted there resolves
+   every existing path identically. The merge is one `go.mod`, six deleted, and
+   the three `replace snaphost/shared => ../shared` directives gone.
+
+   Moving the services to `internal/` is deliberately **not** part of this step.
+   Renaming directories and merging modules in one commit would hide a real
+   break inside a rename diff; the rename lands with item 5, where the packages
+   are being rewired anyway.
+
+   One dependency conflict had to be resolved by hand. `go mod tidy` on an empty
+   require set went looking for `github.com/docker/docker/api/types/container`
+   and found the split-out `github.com/docker/docker/api` module, which now
+   declares itself as `github.com/moby/moby/api` and fails to resolve. Seeding
+   the file with the highest version each module already pinned — `docker`
+   at `v27.2.0+incompatible`, where those packages still live inside the main
+   module — fixes it. Worth knowing before anyone runs `go get -u` here.
+
+   Version bumps the merge forced, since MVS takes the maximum: gin 1.10 → 1.12
+   (api-gateway and user-billing were behind shared), pgx 5.7.1, and the Go
+   directive to 1.25.5. All 28 test packages pass on them.
 5. [ ] One `main` wiring those packages together. The saga's HTTP clients
    (`internal/saga/clients.go`) become interfaces satisfied by direct calls,
    which is what deletes the internal `X-Webhook-Secret` layer with them.

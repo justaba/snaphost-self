@@ -7,7 +7,7 @@ Updated: 2026-08-12
 ## Prerequisites
 
 - Docker 24+ with Compose v2
-- Go matching each module's `go.mod`
+- Go matching `snaphost-backend/go.mod`
 - Node.js compatible with the frontend lockfile
 - pnpm 11
 
