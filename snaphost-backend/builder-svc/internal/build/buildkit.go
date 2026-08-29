@@ -15,7 +15,6 @@ import (
 
 	bcfg "snaphost/builder-svc/config"
 	"snaphost/builder-svc/internal/logs"
-	"snaphost/shared/yandexauth"
 )
 
 // Builder wraps a BuildKit client for building and pushing container images.
@@ -27,10 +26,8 @@ type Builder struct {
 }
 
 // NewBuilder creates a new Builder connected to the BuildKit daemon at the
-// given host address. The registry credential source is selected by
-// cfg.RegistryAuthMode: "static" reads the docker config file; "yandex_iam"
-// signs JWTs against a Yandex authorized key and uses the resulting IAM
-// token as the registry password.
+// given host address. Registry credentials come from the docker config file
+// (cfg.RegistryAuthMode = "static"), which is now the only mode.
 func NewBuilder(buildkitHost string, dockerConfigDir string, cfg *bcfg.Config, publisher logs.Publisher, log *zap.Logger) (*Builder, error) {
 	bkClient, err := client.New(context.Background(), buildkitHost)
 	if err != nil {
@@ -50,16 +47,6 @@ func NewBuilder(buildkitHost string, dockerConfigDir string, cfg *bcfg.Config, p
 			})
 			attachables = append(attachables, ap)
 		}
-	case "yandex_iam":
-		sdk, err := yandexauth.NewSDK(context.Background(), cfg.YandexSAKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("yandex iam auth: build sdk: %w", err)
-		}
-		yi, err := newYandexIAMAuth(sdk, cfg.RegistryURL)
-		if err != nil {
-			return nil, fmt.Errorf("yandex iam auth: %w", err)
-		}
-		attachables = append(attachables, yi)
 	default:
 		return nil, fmt.Errorf("unknown REGISTRY_AUTH_MODE: %s", cfg.RegistryAuthMode)
 	}

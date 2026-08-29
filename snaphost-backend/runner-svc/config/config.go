@@ -12,7 +12,9 @@ import (
 type Config struct {
 	// Port is the HTTP listen port for the API server.
 	Port string
-	// RunnerBackend selects the execution backend ("docker" or "yandex").
+	// RunnerBackend selects the execution backend. Docker is the only one;
+	// the switch survives because backend.Backend is the seam a future
+	// runtime would land on (ADR 0004).
 	RunnerBackend string
 	// RedisURL is the connection string for the Redis instance used for log pub/sub.
 	RedisURL string
@@ -37,44 +39,10 @@ type Config struct {
 	LogLevel string
 	// RegistryAuth is an optional base64-encoded Docker auth JSON for private registries.
 	RegistryAuth string
-
-	// YandexSAKeyPath is the path to the runner authorized key JSON.
-	// Required when RUNNER_BACKEND=yandex.
-	YandexSAKeyPath string
-	// YandexFolderID is the folder where serverless containers are created.
-	// Required when RUNNER_BACKEND=yandex.
-	YandexFolderID string
-	// YandexRunnerSAID is the runner service account ID (set as service_account_id on each container).
-	// Required when RUNNER_BACKEND=yandex.
-	YandexRunnerSAID string
-	// YandexAPIGatewayID is the API Gateway whose spec runner-svc mutates per deploy.
-	// Required when RUNNER_BACKEND=yandex.
-	YandexAPIGatewayID string
-	// YandexRegistryURL is the full registry prefix (e.g. cr.yandex/crpXXX/snaphost).
-	// Required when RUNNER_BACKEND=yandex.
-	YandexRegistryURL string
-	// YandexRoutingMode controls API Gateway mutation strategy: "gateway" is
-	// the Task 10.4 legacy single-route mode, "router" uses a central router.
-	YandexRoutingMode string
-	// YandexLogGroupID is the Cloud Logging group that receives user container
-	// stdout/stderr (Task 13a). Empty means the folder's default group, which
-	// mixes user output with everything else in the folder — set it in
-	// production. This stream is operator-only and never reaches the deploy
-	// owner's log WebSocket.
-	YandexLogGroupID string
-	// YandexRuntimeLogsDisabled turns off runtime log collection entirely.
-	// A deliberate opt-out, not a default: with it on, a crashed user
-	// container leaves no evidence anywhere.
-	YandexRuntimeLogsDisabled bool
-	// YandexRuntimeLogMinLevel is the minimum severity forwarded, as a Cloud
-	// Logging level name (TRACE, DEBUG, INFO, WARN, ERROR, FATAL). Empty keeps
-	// the provider default, which forwards everything.
-	YandexRuntimeLogMinLevel string
-
 	// AllowedRegistryPrefixes lists registry URL prefixes that image_ref
 	// values are permitted to start with. Provider-agnostic: each backend
 	// contributes its own values via the REGISTRY_ALLOWED_PREFIXES env var
-	// (comma-separated, e.g. "host.docker.internal:5000/snaphost,cr.yandex/<id>/snaphost").
+	// (comma-separated, e.g. "host.docker.internal:5000/snaphost").
 	// Empty + StrictImageValidation=true is a fatal startup error.
 	AllowedRegistryPrefixes []string
 
@@ -123,48 +91,10 @@ func Load() (*Config, error) {
 
 	// Validate RunnerBackend
 	switch cfg.RunnerBackend {
-	case "docker", "yandex", "vk":
+	case "docker":
 		// valid
 	default:
-		return nil, fmt.Errorf("config: RUNNER_BACKEND must be 'docker', 'yandex', or 'vk', got %q", cfg.RunnerBackend)
-	}
-
-	// Yandex-specific config
-	cfg.YandexSAKeyPath = os.Getenv("YANDEX_SA_KEY_PATH")
-	cfg.YandexFolderID = os.Getenv("YANDEX_FOLDER_ID")
-	cfg.YandexRunnerSAID = os.Getenv("YANDEX_RUNNER_SA_ID")
-	cfg.YandexAPIGatewayID = os.Getenv("YANDEX_API_GATEWAY_ID")
-	cfg.YandexRegistryURL = os.Getenv("YANDEX_REGISTRY_URL")
-	cfg.YandexRoutingMode = envOrDefault("YANDEX_ROUTING_MODE", "gateway")
-	cfg.YandexLogGroupID = os.Getenv("YANDEX_LOG_GROUP_ID")
-	cfg.YandexRuntimeLogsDisabled = os.Getenv("YANDEX_RUNTIME_LOGS_DISABLED") == "true"
-	cfg.YandexRuntimeLogMinLevel = strings.ToUpper(strings.TrimSpace(os.Getenv("YANDEX_RUNTIME_LOG_MIN_LEVEL")))
-	if cfg.RunnerBackend == "yandex" {
-		var missing []string
-		if cfg.YandexSAKeyPath == "" {
-			missing = append(missing, "YANDEX_SA_KEY_PATH")
-		}
-		if cfg.YandexFolderID == "" {
-			missing = append(missing, "YANDEX_FOLDER_ID")
-		}
-		if cfg.YandexRunnerSAID == "" {
-			missing = append(missing, "YANDEX_RUNNER_SA_ID")
-		}
-		if cfg.YandexAPIGatewayID == "" {
-			missing = append(missing, "YANDEX_API_GATEWAY_ID")
-		}
-		if cfg.YandexRegistryURL == "" {
-			missing = append(missing, "YANDEX_REGISTRY_URL")
-		}
-		if len(missing) > 0 {
-			return nil, fmt.Errorf("config: RUNNER_BACKEND=yandex requires: %v", missing)
-		}
-		switch cfg.YandexRoutingMode {
-		case "gateway", "router":
-			// valid
-		default:
-			return nil, fmt.Errorf("config: YANDEX_ROUTING_MODE must be 'gateway' or 'router', got %q", cfg.YandexRoutingMode)
-		}
+		return nil, fmt.Errorf("config: RUNNER_BACKEND must be 'docker', got %q", cfg.RunnerBackend)
 	}
 
 	// Optional: CONTAINER_CPU_LIMIT (default 0.5)

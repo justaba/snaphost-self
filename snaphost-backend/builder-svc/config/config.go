@@ -62,12 +62,11 @@ type Config struct {
 	// An explicit REGISTRY_INSECURE env var overrides auto-detection.
 	RegistryInsecure bool
 	// RegistryAuthMode selects the credential source for registry pushes.
-	// "static" uses the docker config file; "yandex_iam" exchanges a SA key
-	// for a short-lived IAM token used as the registry password.
+	// "static" reads the docker config file, and is the only mode: the cloud
+	// IAM mode went with the cloud runtime. The switch is kept rather than
+	// removed because the registry itself is on its way out — a build and the
+	// container that runs it share a host here, so there is nothing to push to.
 	RegistryAuthMode string
-	// YandexSAKeyPath is the path to a Yandex authorized key JSON; required
-	// when RegistryAuthMode is "yandex_iam".
-	YandexSAKeyPath string
 	// MaxArchiveFiles caps entries extracted from an uploaded archive
 	// (source_type=archive, Task 14b-2).
 	MaxArchiveFiles int
@@ -204,16 +203,11 @@ func Load() (*Config, error) {
 	}
 
 	cfg.RegistryAuthMode = envOrDefault("REGISTRY_AUTH_MODE", "static")
-	cfg.YandexSAKeyPath = os.Getenv("YANDEX_SA_KEY_PATH")
 	switch cfg.RegistryAuthMode {
 	case "static":
 		// no extra requirements
-	case "yandex_iam":
-		if cfg.YandexSAKeyPath == "" {
-			return nil, fmt.Errorf("config: REGISTRY_AUTH_MODE=yandex_iam requires YANDEX_SA_KEY_PATH")
-		}
 	default:
-		return nil, fmt.Errorf("config: REGISTRY_AUTH_MODE must be 'static' or 'yandex_iam', got %q", cfg.RegistryAuthMode)
+		return nil, fmt.Errorf("config: REGISTRY_AUTH_MODE must be 'static', got %q", cfg.RegistryAuthMode)
 	}
 
 	return cfg, nil

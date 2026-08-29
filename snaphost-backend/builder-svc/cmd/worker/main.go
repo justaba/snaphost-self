@@ -31,7 +31,6 @@ import (
 	"snaphost/builder-svc/internal/scan"
 	"snaphost/builder-svc/internal/unpack"
 	"snaphost/builder-svc/internal/upload"
-	"snaphost/shared/yandexauth"
 )
 
 func main() {
@@ -92,16 +91,7 @@ func main() {
 	// Create scanner. Private-registry credentials are generated just before
 	// each scan and written to a host-scoped temporary Docker config.
 	var scanCredentials scan.CredentialsProvider
-	if cfg.RegistryAuthMode == "yandex_iam" {
-		sdk, err := yandexauth.NewSDK(context.Background(), cfg.YandexSAKeyPath)
-		if err != nil {
-			log.Fatal("failed to create scanner registry auth", zap.Error(err))
-		}
-		scanCredentials = func(ctx context.Context) (string, string, error) {
-			token, err := yandexauth.IAMToken(ctx, sdk)
-			return "iam", token, err
-		}
-	} else if cfg.RegistryUsername != "" || cfg.RegistryPassword != "" {
+	if cfg.RegistryUsername != "" || cfg.RegistryPassword != "" {
 		scanCredentials = func(context.Context) (string, string, error) {
 			return cfg.RegistryUsername, cfg.RegistryPassword, nil
 		}

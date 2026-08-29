@@ -116,6 +116,27 @@ host before it becomes a plan.
    Version bumps the merge forced, since MVS takes the maximum: gin 1.10 → 1.12
    (api-gateway and user-billing were behind shared), pgx 5.7.1, and the Go
    directive to 1.25.5. All 28 test packages pass on them.
+   The last of the cloud path went with it: `shared/yandexauth` and the
+   builder's IAM registry auth, which were missed in item 1 because they are
+   *registry* credentials rather than runtime ones. `REGISTRY_AUTH_MODE` now
+   accepts only `static`, and `RUNNER_BACKEND` only `docker` — the latter was
+   still set to `yandex` in the production Compose file, which would have
+   failed at startup rather than silently.
+
+   **The deployment scripts and the production Compose file are now internally
+   consistent but still the wrong shape.** They describe pushing GHCR images
+   pinned to a Git SHA onto someone's VDS over SSH. A self-hosted product is
+   installed by its operator, so `deploy.sh`, `deploy-remote.sh` and
+   `docker-compose.prod.yml` need rewriting rather than editing — after item 5,
+   when there is one image to ship instead of five. Until then they are kept
+   working rather than left referencing services that no longer exist.
+
+   The privilege model changed and is worth stating plainly: the builder and
+   runner service-account keys are gone, and with them Task 12's guard that
+   refused a key belonging to another environment. What replaced them is the
+   Docker socket the runner mounts, which is root on the host and has no
+   equivalent identity check.
+
 5. [ ] One `main` wiring those packages together. The saga's HTTP clients
    (`internal/saga/clients.go`) become interfaces satisfied by direct calls,
    which is what deletes the internal `X-Webhook-Secret` layer with them.

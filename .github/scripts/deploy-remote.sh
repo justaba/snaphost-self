@@ -30,7 +30,7 @@ done
 run_id=${GITHUB_RUN_ID:-manual}
 [[ "$run_id" == manual || "$run_id" =~ ^[0-9]+$ ]] || { echo "invalid workflow run ID" >&2; exit 1; }
 
-images=(api-gateway user-billing builder-svc runner-svc ai-orchestrator router-svc)
+images=(api-gateway user-billing builder-svc runner-svc ai-orchestrator)
 for image in "${images[@]}"; do
   docker manifest inspect "$GHCR_IMAGE_PREFIX/$image:$SHA" >/dev/null || {
     echo "required image is unavailable: $image:$SHA" >&2
@@ -115,8 +115,6 @@ common_env=(
   "SNAPHOST_ENV_FILE=$root/env/production.env"
   "SNAPHOST_STATE_DIR=$root/state"
   "SNAPHOST_BACKUP_DIR=$root/backups"
-  "SNAPHOST_BUILDER_KEY_FILE=$root/secrets/builder-key.json"
-  "SNAPHOST_RUNNER_KEY_FILE=$root/secrets/runner-key.json"
   "SNAPHOST_GHCR_TOKEN_FILE=$root/secrets/ghcr-token"
   "SNAPHOST_PUBLIC_SMOKE_URL=$smoke_url"
   "GHCR_USERNAME=$ghcr_username"

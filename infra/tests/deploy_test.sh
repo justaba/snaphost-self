@@ -6,9 +6,6 @@ SCRIPT="$ROOT/infra/deploy.sh"
 SHA=0123456789abcdef0123456789abcdef01234567
 OLD_SHA=89abcdef0123456789abcdef0123456789abcdef
 # Service accounts this environment's config expects its keys to belong to.
-BUILDER_SA=aje00000000000builder
-RUNNER_SA=aje000000000000runner
-OTHER_ENV_SA=aje00000000staging11
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 BIN="$TMP_ROOT/bin"
@@ -47,10 +44,10 @@ case "$op" in
   config)
     [[ ${FAIL_CONFIG:-0} != 1 ]] || exit 1
     if [[ "$*" == *'--services'* ]]; then
-      printf '%s\n' api-gateway user-billing builder-api builder-worker runner-api runner-watchdog router-svc ai-orchestrator postgres redis buildkitd
+      printf '%s\n' api-gateway user-billing builder-api builder-worker runner-api runner-watchdog ai-orchestrator postgres redis buildkitd
     elif [[ "$*" == *'--images'* ]]; then
       sha=${SNAPHOST_VERSION:?}
-      printf 'ghcr.io/acme/repo/%s:%s\n' api-gateway "$sha" user-billing "$sha" builder-svc "$sha" runner-svc "$sha" router-svc "$sha" ai-orchestrator "$sha"
+      printf 'ghcr.io/acme/repo/%s:%s\n' api-gateway "$sha" user-billing "$sha" builder-svc "$sha" runner-svc "$sha" ai-orchestrator "$sha"
     elif [[ "$*" != *'--quiet'* ]]; then
       printf 'services:\n  api-gateway:\n    ports:\n      - target: 8080\n  user-billing:\n    image: billing\n  postgres:\n    image: postgres\n  redis:\n    image: redis\n  buildkitd:\n    image: buildkit\n'
     fi
@@ -108,16 +105,12 @@ setup_case() {
   mkdir -p "$CASE_DIR/state" "$CASE_DIR/backups"
   COMPOSE="$CASE_DIR/compose.yml"
   ENV_FILE="$CASE_DIR/production.env"
-  BUILDER_KEY="$CASE_DIR/builder.json"
-  RUNNER_KEY="$CASE_DIR/runner.json"
   TOKEN_FILE="$CASE_DIR/token"
   FAKE_LOG="$CASE_DIR/commands.log"
   : >"$FAKE_LOG"
   : >"$COMPOSE"
-  printf '{"service_account_id": "%s"}\n' "$BUILDER_SA" >"$BUILDER_KEY"
-  printf '{"service_account_id": "%s"}\n' "$RUNNER_SA" >"$RUNNER_KEY"
   printf 'token\n' >"$TOKEN_FILE"
-  chmod 600 "$BUILDER_KEY" "$RUNNER_KEY" "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
   cat >"$ENV_FILE" <<EOF
 SNAPHOST_VERSION=$OLD_SHA
 GHCR_IMAGE_PREFIX=ghcr.io/acme/repo
@@ -139,9 +132,6 @@ RATE_LIMIT_IP=30
 RATE_LIMIT_USER=120
 RATE_LIMIT_DEPLOY=5
 LOG_LEVEL=info
-YANDEX_REGISTRY_PREFIX=cr.yandex/registry-id/snaphost
-BUILDER_KEY_PATH=$BUILDER_KEY
-RUNNER_KEY_PATH=$RUNNER_KEY
 MAX_REPO_SIZE_MB=500
 MAX_BUILD_TIME_MIN=15
 MAX_CONCURRENT_PER_USER=3
@@ -150,10 +140,6 @@ ALLOWED_BASE_IMAGES=alpine:
 ALLOWED_BASE_IMAGES_PERMISSIVE=alpine:
 REGISTRY_INSECURE=false
 SCAN_FAIL_ON_CRITICAL=true
-YANDEX_FOLDER_ID=folder-id
-YANDEX_RUNNER_SA_ID=$RUNNER_SA
-YANDEX_BUILDER_SA_ID=$BUILDER_SA
-YANDEX_API_GATEWAY_ID=gateway-id
 CONTAINER_CPU_LIMIT=0.5
 CONTAINER_MEMORY_MB=512
 CONTAINER_DEFAULT_TTL_MIN=1440
@@ -174,8 +160,6 @@ DOMAIN_REVERIFY_HOURS=24
 DOMAIN_VERIFY_GRACE_HOURS=24
 ALIAS_IDLE_GC_DAYS=30
 PROJECT_DEPLOY_RETENTION=3
-ROUTER_BIND_PORT=8085
-ROUTER_PROXY_TIMEOUT_SEC=60
 OPENROUTER_API_KEY=openrouter-test-key
 OPENROUTER_MODEL=openai/test
 OPENROUTER_REFERER=https://control.prod.invalid
@@ -201,7 +185,6 @@ EOF
   export SNAPHOST_COMPOSE_FILE="$COMPOSE" SNAPHOST_ENV_FILE="$ENV_FILE"
   export SNAPHOST_COMPOSE_PROJECT=snaphost-test
   export SNAPHOST_STATE_DIR="$CASE_DIR/state" SNAPHOST_BACKUP_DIR="$CASE_DIR/backups"
-  export SNAPHOST_BUILDER_KEY_FILE="$BUILDER_KEY" SNAPHOST_RUNNER_KEY_FILE="$RUNNER_KEY"
   export SNAPHOST_GHCR_TOKEN_FILE="$TOKEN_FILE" SNAPHOST_PUBLIC_SMOKE_URL=https://control.invalid
   export SNAPHOST_MIN_FREE_KB=0 SNAPHOST_READINESS_TIMEOUT=1 SNAPHOST_STABILITY_DELAY=0
   unset FAIL_CONFIG FAIL_LOGIN FAIL_PULL FAIL_BACKUP FAIL_MIGRATION FAIL_READINESS FAIL_SMOKE FAIL_AUTH_SMOKE SLOW_AUTH_SMOKE AUTH_SMOKE_STARTED FAIL_CHECKSUM_PUBLISH GHCR_USERNAME MIGRATIONS_BACKWARD_COMPATIBLE MISSING_ROLLBACK_IMAGE TMPDIR
@@ -238,9 +221,6 @@ expect_failure() { local name=$1; shift; setup_case; "$@"; run_capture preflight
 setup_case; run_capture preflight bad; [[ $RC -ne 0 ]] && pass 'invalid SHA' || fail 'invalid SHA'
 setup_case; rm "$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'missing env' || fail 'missing env'
 setup_case; echo 'PUBLIC_HOST=example.com' >>"$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'placeholder env' || fail 'placeholder env'
-setup_case; rm "$BUILDER_KEY"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'missing key' || fail 'missing key'
-setup_case; chmod 640 "$RUNNER_KEY"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0640 key permissions rejected' || fail '0640 key permissions rejected'
-setup_case; chmod 644 "$BUILDER_KEY"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0644 key permissions rejected' || fail '0644 key permissions rejected'
 setup_case; chmod 640 "$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0640 production env rejected' || fail '0640 production env rejected'
 setup_case; chmod 644 "$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0644 production env rejected' || fail '0644 production env rejected'
 setup_case; export FAIL_CONFIG=1; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'Compose validation failure' || fail 'Compose validation failure'
@@ -377,64 +357,6 @@ migration_status=not-started
 EOF
 run_capture deploy "$OLD_SHA"
 if grep -q 'Clearing safe failed-before-migrations' "$OUTPUT" && ! grep -q 'unfinished deployment state exists' "$OUTPUT"; then pass 'failed-before-migrations state auto-cleared'; else fail 'failed-before-migrations state auto-cleared'; fi
-
-# --- service-account identity (Task 12) ----------------------------------
-# Staging and production keys are interchangeable-looking JSON files against
-# different registries. Crossing them fails as a 403 on the first user build,
-# after the deployment reported success — the 2026-07-08 staging incident.
-
-setup_case
-printf '{"service_account_id": "%s"}\n' "$OTHER_ENV_SA" >"$BUILDER_KEY"
-chmod 600 "$BUILDER_KEY"
-run_capture preflight "$SHA"
-if [[ $RC -ne 0 ]] && grep -q "refusing to deploy another environment's credentials" "$OUTPUT"; then
-  pass 'a builder key from another environment is refused'
-else fail 'a builder key from another environment is refused'; fi
-
-setup_case
-printf '{"service_account_id": "%s"}\n' "$OTHER_ENV_SA" >"$RUNNER_KEY"
-chmod 600 "$RUNNER_KEY"
-run_capture preflight "$SHA"
-if [[ $RC -ne 0 ]] && grep -q "refusing to deploy another environment's credentials" "$OUTPUT"; then
-  pass 'a runner key from another environment is refused'
-else fail 'a runner key from another environment is refused'; fi
-
-setup_case
-printf '{"service_account_id": "%s"}\n' "$OTHER_ENV_SA" >"$BUILDER_KEY"
-chmod 600 "$BUILDER_KEY"
-run_capture deploy "$SHA"
-if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG" && ! grep -q 'docker login' "$FAKE_LOG"; then
-  pass 'a wrong-environment key stops before any Docker or Yandex call'
-else fail 'a wrong-environment key stops before any Docker or Yandex call'; fi
-
-setup_case
-printf '{"id": "no-service-account-here"}\n' >"$BUILDER_KEY"
-chmod 600 "$BUILDER_KEY"
-run_capture preflight "$SHA"
-if [[ $RC -ne 0 ]] && grep -q 'cannot read service_account_id' "$OUTPUT"; then
-  pass 'a key with no service_account_id is refused'
-else fail 'a key with no service_account_id is refused'; fi
-
-# A missing expectation must not silently disable the check.
-setup_case
-sed -i '/^YANDEX_BUILDER_SA_ID=/d' "$ENV_FILE"
-run_capture preflight "$SHA"
-if [[ $RC -ne 0 ]]; then
-  pass 'a missing YANDEX_BUILDER_SA_ID fails preflight rather than skipping the check'
-else fail 'a missing YANDEX_BUILDER_SA_ID fails preflight rather than skipping the check'; fi
-
-setup_case
-run_capture preflight "$SHA"
-if [[ $RC -eq 0 ]]; then pass 'matching keys pass preflight'; else fail 'matching keys pass preflight'; fi
-
-# Whitespace variations in the key JSON must not defeat the comparison.
-setup_case
-printf '{\n  "id": "abc",\n  "service_account_id"   :   "%s",\n  "key_algorithm": "RSA_2048"\n}\n' "$BUILDER_SA" >"$BUILDER_KEY"
-chmod 600 "$BUILDER_KEY"
-run_capture preflight "$SHA"
-if [[ $RC -eq 0 ]]; then
-  pass 'the identity is read from realistically formatted key JSON'
-else fail 'the identity is read from realistically formatted key JSON'; fi
 
 # --- stdin consumption ---------------------------------------------------
 # CD runs this script as `ssh host bash -s <<EOF`, so the deployment commands

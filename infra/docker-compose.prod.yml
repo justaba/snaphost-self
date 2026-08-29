@@ -109,7 +109,7 @@ services:
     environment:
       PORT: "8082"
       REDIS_URL: "redis://redis:6379"
-      REGISTRY_URL: "${YANDEX_REGISTRY_PREFIX}"
+      REGISTRY_URL: "${REGISTRY_PREFIX}"
       WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
       ALLOWED_GIT_HOSTS: "${ALLOWED_GIT_HOSTS}"
       MAX_CONCURRENT_PER_USER: "${MAX_CONCURRENT_PER_USER}"
@@ -135,10 +135,9 @@ services:
     environment:
       REDIS_URL: "redis://redis:6379"
       BUILDKIT_HOST: "tcp://buildkitd:1234"
-      REGISTRY_URL: "${YANDEX_REGISTRY_PREFIX}"
-      REGISTRY_AUTH_MODE: "yandex_iam"
+      REGISTRY_URL: "${REGISTRY_PREFIX}"
+      REGISTRY_AUTH_MODE: "static"
       REGISTRY_INSECURE: "false"
-      YANDEX_SA_KEY_PATH: "/secrets/builder-key.json"
       WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
       WORKDIR_ROOT: "/var/snaphost/builds"
       MAX_REPO_SIZE_MB: "${MAX_REPO_SIZE_MB}"
@@ -150,11 +149,6 @@ services:
       SCAN_FAIL_ON_CRITICAL: "true"
       USER_BILLING_URL: "http://user-billing:8081"
       AI_ORCHESTRATOR_URL: "http://ai-orchestrator:8083"
-    volumes:
-      - type: bind
-        source: "${BUILDER_KEY_PATH}"
-        target: /secrets/builder-key.json
-        read_only: true
 
   runner-api:
     <<: [*service-defaults, *runtime-limits]
@@ -170,8 +164,7 @@ services:
         condition: service_started
     environment: &runner-environment
       PORT: "8084"
-      RUNNER_BACKEND: "yandex"
-      YANDEX_ROUTING_MODE: "router"
+      RUNNER_BACKEND: "docker"
       REDIS_URL: "redis://redis:6379"
       USER_BILLING_URL: "http://user-billing:8081"
       WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
@@ -183,23 +176,14 @@ services:
       RUNTIME_PROBE_TIMEOUT_SEC: "${RUNTIME_PROBE_TIMEOUT_SEC}"
       WATCHDOG_INTERVAL_SEC: "${WATCHDOG_INTERVAL_SEC}"
       STRICT_IMAGE_VALIDATION: "true"
-      REGISTRY_ALLOWED_PREFIXES: "${YANDEX_REGISTRY_PREFIX}"
-      YANDEX_SA_KEY_PATH: "/secrets/runner-key.json"
-      YANDEX_FOLDER_ID: "${YANDEX_FOLDER_ID}"
-      YANDEX_RUNNER_SA_ID: "${YANDEX_RUNNER_SA_ID}"
-      YANDEX_API_GATEWAY_ID: "${YANDEX_API_GATEWAY_ID}"
-      YANDEX_REGISTRY_URL: "${YANDEX_REGISTRY_PREFIX}"
-      # Where a user container's stdout/stderr is collected (Task 13a).
-      # Operator-only; never reaches the deploy owner's log stream.
-      YANDEX_LOG_GROUP_ID: "${YANDEX_LOG_GROUP_ID}"
-      YANDEX_RUNTIME_LOGS_DISABLED: "${YANDEX_RUNTIME_LOGS_DISABLED}"
-      YANDEX_RUNTIME_LOG_MIN_LEVEL: "${YANDEX_RUNTIME_LOG_MIN_LEVEL}"
+      REGISTRY_ALLOWED_PREFIXES: "${REGISTRY_PREFIX}"
       LOG_LEVEL: "${LOG_LEVEL}"
+    # The Docker backend starts user containers through the daemon's socket.
+    # This is the privilege that replaced a cloud service account: anything
+    # that can reach it is root on the host. It is why the runner is the one
+    # service that must not also be a public entry point.
     volumes: &runner-volumes
-      - type: bind
-        source: "${RUNNER_KEY_PATH}"
-        target: /secrets/runner-key.json
-        read_only: true
+      - /var/run/docker.sock:/var/run/docker.sock:rw
 
   runner-watchdog:
     <<: [*service-defaults, *runtime-limits]

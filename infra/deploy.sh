@@ -6,8 +6,6 @@ COMPOSE_PROJECT=${SNAPHOST_COMPOSE_PROJECT:-snaphost}
 ENV_FILE=${SNAPHOST_ENV_FILE:-/opt/snaphost/env/production.env}
 STATE_DIR=${SNAPHOST_STATE_DIR:-/opt/snaphost/state}
 BACKUP_DIR=${SNAPHOST_BACKUP_DIR:-/opt/snaphost/backups}
-BUILDER_KEY_FILE=${SNAPHOST_BUILDER_KEY_FILE:-}
-RUNNER_KEY_FILE=${SNAPHOST_RUNNER_KEY_FILE:-}
 GHCR_TOKEN_FILE=${SNAPHOST_GHCR_TOKEN_FILE:-/opt/snaphost/secrets/ghcr-token}
 GHCR_USERNAME=${GHCR_USERNAME:-}
 PUBLIC_SMOKE_URL=${SNAPHOST_PUBLIC_SMOKE_URL:-}
@@ -18,8 +16,8 @@ MIN_FREE_KB=${SNAPHOST_MIN_FREE_KB:-5242880}
 READINESS_TIMEOUT=${SNAPHOST_READINESS_TIMEOUT:-180}
 STABILITY_DELAY=${SNAPHOST_STABILITY_DELAY:-5}
 
-EXPECTED_SERVICES=(api-gateway user-billing builder-api builder-worker runner-api runner-watchdog router-svc ai-orchestrator postgres redis buildkitd)
-SNAPHOST_IMAGES=(api-gateway user-billing builder-svc runner-svc router-svc ai-orchestrator)
+EXPECTED_SERVICES=(api-gateway user-billing builder-api builder-worker runner-api runner-watchdog ai-orchestrator postgres redis buildkitd)
+SNAPHOST_IMAGES=(api-gateway user-billing builder-svc runner-svc ai-orchestrator)
 PHASE=preflight
 TARGET_SHA=
 PREVIOUS_SHA=
@@ -65,29 +63,6 @@ require_env() {
   local key=$1 value
   value=$(env_value "$key") || die "required variable $key is missing from env file"
   [[ -n "$value" ]] || die "required variable $key is empty in env file"
-}
-
-# A Yandex authorized key names the service account it acts as. Reading it does
-# not need a JSON parser, and must not need one: this runs before any tooling
-# beyond coreutils is assumed.
-key_service_account() {
-  local path=$1 id
-  id=$(grep -o '"service_account_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$path" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
-  [[ -n "$id" ]] || die "cannot read service_account_id from key file: $path"
-  printf '%s' "$id"
-}
-
-# Staging and production use different service accounts against different
-# registries and folders, so crossing them fails — but it fails late, as a
-# `403 Forbidden` on the first user build, long after the deployment reported
-# success. That is what happened during the 2026-07-08 staging rebuild. Compare
-# the mounted key against the identity this environment's config expects, and
-# refuse before anything is started.
-check_key_identity() {
-  local label=$1 path=$2 expected=$3 actual
-  actual=$(key_service_account "$path") || return 1
-  [[ "$actual" == "$expected" ]] || die \
-    "$label key belongs to service account $actual, but this environment expects $expected: refusing to deploy another environment's credentials"
 }
 
 check_protected_file() {
@@ -166,12 +141,10 @@ preflight() {
     POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD WEBHOOK_SECRET SUPABASE_URL SUPABASE_WEBHOOK_SECRET CORS_ALLOW_ORIGINS \
     SAGA_WORKER_ENABLED SAGA_BUILD_TIMEOUT_MIN SAGA_RESUME_INTERVAL_SEC \
     DEPLOY_DEFAULT_PORT RATE_LIMIT_IP RATE_LIMIT_USER RATE_LIMIT_DEPLOY LOG_LEVEL \
-    YANDEX_REGISTRY_PREFIX BUILDER_KEY_PATH MAX_REPO_SIZE_MB MAX_BUILD_TIME_MIN MAX_CONCURRENT_PER_USER \
+    REGISTRY_PREFIX MAX_REPO_SIZE_MB MAX_BUILD_TIME_MIN MAX_CONCURRENT_PER_USER \
     ALLOWED_GIT_HOSTS ALLOWED_BASE_IMAGES ALLOWED_BASE_IMAGES_PERMISSIVE REGISTRY_INSECURE SCAN_FAIL_ON_CRITICAL \
-    RUNNER_KEY_PATH YANDEX_FOLDER_ID YANDEX_RUNNER_SA_ID YANDEX_BUILDER_SA_ID YANDEX_API_GATEWAY_ID \
     CONTAINER_CPU_LIMIT CONTAINER_MEMORY_MB CONTAINER_DEFAULT_TTL_MIN WATCHDOG_INTERVAL_SEC STRICT_IMAGE_VALIDATION \
     RUNTIME_PROBE_ENABLED RUNTIME_PROBE_TIMEOUT_SEC RESERVED_DOMAINS \
-    ROUTER_BIND_PORT ROUTER_PROXY_TIMEOUT_SEC \
     DEPLOY_TTL_MIN DEPLOY_TTL_MAX_MIN MAX_DOMAINS_PER_USER DOMAIN_ATTACH_REQUIRE_IDENTITY DOMAIN_ATTACH_PER_HOUR \
     DOMAIN_VERIFY_INTERVAL_SEC DOMAIN_REVERIFY_HOURS DOMAIN_VERIFY_GRACE_HOURS ALIAS_IDLE_GC_DAYS PROJECT_DEPLOY_RETENTION \
     LLM_BASE_URL LLM_JSON_MODE OPENROUTER_API_KEY OPENROUTER_MODEL OPENROUTER_REFERER OPENROUTER_APP_NAME LLM_TIMEOUT LLM_MAX_RETRIES \
@@ -179,15 +152,11 @@ preflight() {
     POSTGRES_CPU_LIMIT POSTGRES_MEMORY_LIMIT REDIS_CPU_LIMIT REDIS_MEMORY_LIMIT BUILDKIT_CPU_LIMIT BUILDKIT_MEMORY_LIMIT; do
     require_env "$key"
   done
-  BUILDER_KEY_FILE=${BUILDER_KEY_FILE:-$(env_value BUILDER_KEY_PATH)}
-  RUNNER_KEY_FILE=${RUNNER_KEY_FILE:-$(env_value RUNNER_KEY_PATH)}
-  check_protected_file "builder key" "$BUILDER_KEY_FILE"
-  check_protected_file "runner key" "$RUNNER_KEY_FILE"
-  # YANDEX_RUNNER_SA_ID is not a new setting invented for this check: it is the
-  # identity runner-svc already runs containers as, so a key that disagrees
-  # with it is broken either way.
-  check_key_identity "builder" "$BUILDER_KEY_FILE" "$(env_value YANDEX_BUILDER_SA_ID)"
-  check_key_identity "runner" "$RUNNER_KEY_FILE" "$(env_value YANDEX_RUNNER_SA_ID)"
+  # The builder and runner service-account keys, and the guard that checked a
+  # key belonged to this environment, went with the cloud runtime. The
+  # privilege they represented did not disappear — it moved to the Docker
+  # socket the runner now mounts, which is a larger one and has no equivalent
+  # identity check.
   if [[ -n "$GHCR_USERNAME" ]]; then
     check_protected_file "GHCR token" "$GHCR_TOKEN_FILE"
   fi
@@ -374,7 +343,7 @@ rollout() {
   PHASE=migrations-applied
   write_progress rolling-out applied pending
 
-  for service in user-billing ai-orchestrator builder-api builder-worker runner-api runner-watchdog router-svc; do
+  for service in user-billing ai-orchestrator builder-api builder-worker runner-api runner-watchdog; do
     action "update $service" compose up -d --no-deps "$service"
     wait_health "$service"
   done
@@ -412,7 +381,7 @@ rollback_to() {
   local sha=$1 service
   validate_sha "$sha" || return 1
   TARGET_SHA=$sha
-  for service in postgres redis buildkitd user-billing ai-orchestrator builder-api builder-worker runner-api runner-watchdog router-svc api-gateway; do
+  for service in postgres redis buildkitd user-billing ai-orchestrator builder-api builder-worker runner-api runner-watchdog api-gateway; do
     action "rollback $service" compose up -d --no-deps "$service" || return 1
     wait_health "$service" || return 1
   done
