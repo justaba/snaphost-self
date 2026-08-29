@@ -34,6 +34,7 @@ require (
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/sashabaranov/go-openai v1.23.1
 	go.uber.org/zap v1.27.0
+	golang.org/x/crypto v0.48.0
 	google.golang.org/grpc v1.79.3
 	modernc.org/sqlite v1.57.0
 )
@@ -145,7 +146,6 @@ require (
 	go.uber.org/multierr v1.10.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/arch v0.22.0 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

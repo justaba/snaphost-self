@@ -29,22 +29,62 @@
 -- Kept, and every other table keeps its user_id, even though this platform has
 -- exactly one operator. A password needs a row to hang off, and the column is
 -- already the isolation a second operator or a service account would need.
+--
+-- password_hash is where identity stopped being somebody else's problem. It
+-- used to live in Supabase, and the platform could not be logged into without
+-- an external SaaS or ten more containers. It is an argon2id PHC string, and
+-- it is nullable: a row that never logs in with a password — a service account
+-- reaching the API with an sk_ key — has none rather than an unusable one.
+--
+-- role replaces the `snaphost_role` JWT claim, which a hand-configured
+-- Supabase Postgres hook wrote. It is a column now, so the authorisation the
+-- admin console depends on is in the same file as everything else it reads.
 -- ---------------------------------------------------------------------------
 
 create table users (
-    id         text primary key,
-    email      text,
-    created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    id            text primary key,
+    email         text,
+    password_hash text,
+    role          text not null default 'user' check (role in ('user', 'admin')),
+    created_at    text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-create index idx_users_created_at  on users (created_at desc);
-create index idx_users_email_lower on users (lower(email));
+create index idx_users_created_at on users (created_at desc);
+-- Unique rather than merely indexed: login resolves an account by address, and
+-- two rows sharing one would make which account answers a question of row
+-- order. Partial, because a row without an address is allowed.
+create unique index uq_users_email_lower on users (lower(email)) where email is not null;
 
 create trigger users_updated_at after update on users for each row
 begin
     update users set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = new.id;
 end;
+
+-- ---------------------------------------------------------------------------
+-- sessions — what a browser presents instead of a password
+--
+-- Only the SHA-256 of the token is stored, the same bargain api_keys makes: a
+-- copied database file — a backup, a dump, a stolen volume — hands over no live
+-- session. SHA-256 rather than argon2id because the token is 256 bits from
+-- crypto/rand and there is nothing in it to guess; the password below it is the
+-- only value with entropy low enough to need a slow hash.
+--
+-- Server-side rather than a self-signed JWT, and that is the whole reason this
+-- table exists: logout has to revoke, and changing the password has to revoke
+-- every other session. A stateless token would need a denylist to do either,
+-- which is this table with a worse name.
+-- ---------------------------------------------------------------------------
+
+create table sessions (
+    token_hash text primary key,
+    user_id    text not null references users (id) on delete cascade,
+    expires_at text not null,
+    created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+create index idx_sessions_user    on sessions (user_id);
+create index idx_sessions_expires on sessions (expires_at);
 
 -- ---------------------------------------------------------------------------
 -- projects — the permanent, owner-scoped publish target

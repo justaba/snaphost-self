@@ -61,7 +61,8 @@ func TestBaselineApplies(t *testing.T) {
 	// schema_migrations is golang-migrate's own bookkeeping table.
 	want := []string{
 		"ai_dockerfile_cache", "ai_usage_log", "api_keys", "custom_domains",
-		"deploy_sagas", "deploys", "projects", "schema_migrations", "users",
+		"deploy_sagas", "deploys", "projects", "schema_migrations", "sessions",
+		"users",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tables = %v, want %v", got, want)

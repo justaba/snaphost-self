@@ -7,7 +7,7 @@
 -- schema back is a useful operation.
 --
 -- Tables go in reverse dependency order: custom_domains references projects
--- and deploys, deploys references projects.
+-- and deploys, deploys references projects, sessions references users.
 -- =============================================================================
 
 drop table if exists ai_usage_log;
@@ -17,4 +17,5 @@ drop table if exists custom_domains;
 drop table if exists deploy_sagas;
 drop table if exists deploys;
 drop table if exists projects;
+drop table if exists sessions;
 drop table if exists users;
