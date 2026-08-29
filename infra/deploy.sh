@@ -16,8 +16,8 @@ MIN_FREE_KB=${SNAPHOST_MIN_FREE_KB:-5242880}
 READINESS_TIMEOUT=${SNAPHOST_READINESS_TIMEOUT:-180}
 STABILITY_DELAY=${SNAPHOST_STABILITY_DELAY:-5}
 
-EXPECTED_SERVICES=(api-gateway user-billing builder-api builder-worker runner-api runner-watchdog ai-orchestrator postgres redis buildkitd)
-SNAPHOST_IMAGES=(api-gateway user-billing builder-svc runner-svc ai-orchestrator)
+EXPECTED_SERVICES=(snaphost postgres redis buildkitd)
+SNAPHOST_IMAGES=(snaphost)
 PHASE=preflight
 TARGET_SHA=
 PREVIOUS_SHA=
@@ -116,7 +116,7 @@ validate_rendered_compose() {
   rendered=$(mktemp)
   chmod 600 "$rendered"
   compose config >"$rendered" || { rm -f "$rendered"; die "cannot inspect rendered Compose"; }
-  for service in postgres redis buildkitd user-billing; do
+  for service in postgres redis buildkitd; do
     if sed -n "/^  $service:/,/^  [a-zA-Z0-9_-]*:/p" "$rendered" | grep -q '^    ports:'; then
       rm -f "$rendered"
       die "$service must not publish host ports"
@@ -303,13 +303,13 @@ probe_internal() {
   local service=$1 url=$2 deadline=$((SECONDS + READINESS_TIMEOUT))
   [[ "$DRY_RUN" == true ]] && { log "DRY-RUN: probe $service"; return; }
   # Retry until the readiness deadline: a container can report healthy
-  # before its HTTP listener is up (api-gateway prefetches JWKS from
+  # before its HTTP listener is up (the gateway prefetches JWKS from
   # Supabase at startup), and a single-shot probe turned that into a
   # false deployment failure on 2026-07-12.
   while (( SECONDS < deadline )); do
     # </dev/null for the same reason as backup_postgres: `compose run` attaches
     # our stdin to the container.
-    if compose run --rm --no-deps builder-api curl --fail --silent --max-time 10 "$url" >/dev/null </dev/null; then
+    if compose run --rm --no-deps --entrypoint curl snaphost --fail --silent --max-time 10 "$url" >/dev/null </dev/null; then
       return
     fi
     sleep 3
@@ -338,25 +338,18 @@ rollout() {
   PHASE=migrations-started
   write_progress migrations-running started pending
   # </dev/null: `compose run` attaches stdin, see backup_postgres.
-  action "run user-billing migrations" compose --profile migration run --rm --no-deps user-billing-migrate </dev/null
-  action "run ai-orchestrator migrations" compose --profile migration run --rm --no-deps ai-orchestrator-migrate </dev/null
+  action "run control migrations" compose --profile migration run --rm --no-deps snaphost-migrate </dev/null
+  action "run ai migrations" compose --profile migration run --rm --no-deps snaphost-ai-migrate </dev/null
   PHASE=migrations-applied
   write_progress rolling-out applied pending
 
-  for service in user-billing ai-orchestrator builder-api builder-worker runner-api runner-watchdog; do
-    action "update $service" compose up -d --no-deps "$service"
-    wait_health "$service"
-  done
-  probe_internal user-billing http://user-billing:8081/health
-  probe_internal ai-orchestrator http://ai-orchestrator:8083/health
-  probe_internal builder-api http://builder-api:8082/health
-  probe_internal runner-api http://runner-api:8084/health
-  check_stable_container builder-worker
-  check_stable_container runner-watchdog
-
-  action "update api-gateway" compose up -d --no-deps api-gateway
-  wait_health api-gateway
-  probe_internal api-gateway http://api-gateway:8080/health
+  # One service, so the dependency-ordered rollout that used to publish the
+  # gateway last collapses into a single step. What it cost to have seven was
+  # a partially-updated control plane on any failure between them; what it
+  # costs to have one is that the whole thing restarts at once.
+  action "update snaphost" compose up -d --no-deps snaphost
+  check_stable_container snaphost
+  probe_internal snaphost http://snaphost:8080/health
 }
 
 smoke() {

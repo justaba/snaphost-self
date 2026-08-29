@@ -1,39 +1,54 @@
+# Local development stack.
+#
+# One application service, because there is one process (Task 1). It replaced
+# seven: api-gateway, user-billing, builder-api, builder-worker, runner-api,
+# runner-watchdog and ai-orchestrator.
+#
+# What is left beside it is infrastructure the platform genuinely does not
+# implement itself — PostgreSQL, Redis, BuildKit, a registry, and Traefik.
+# Items 6 and 7 of Task 1 remove Redis and the registry as well.
+
 services:
-  api-gateway:
+  snaphost:
     build:
       context: ../snaphost-backend
-      dockerfile: docker/Dockerfile.gateway
+      dockerfile: docker/Dockerfile
     ports:
       - "8080:8080"
-    depends_on:
-      - postgres
-      - redis
-    networks:
-      - snaphost-net
-    env_file:
-      - .env
-    restart: unless-stopped
-
-  user-billing:
-    build:
-      context: ../snaphost-backend
-      dockerfile: docker/Dockerfile.control
-    ports:
-      - "8083:8081"
+    # The runtime backend starts user containers through the host daemon, so
+    # this is the one mount that matters: anything that can reach it is root
+    # on the host.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_started
+      buildkitd:
+        condition: service_started
+      registry:
+        condition: service_started
     environment:
+      PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
       REDIS_URL: ${REDIS_URL}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-      BUILDER_SVC_URL: ${BUILDER_SVC_URL:-http://builder-api:8082}
-      RUNNER_SVC_URL: ${RUNNER_SVC_URL:-http://runner-api:8084}
+
+      # Identity. The gateway half verifies Supabase RS256 tokens against this
+      # issuer's JWKS and refuses to start if the prefetch fails.
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_WEBHOOK_SECRET: ${SUPABASE_WEBHOOK_SECRET}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
+
+      RATE_LIMIT_IP: ${RATE_LIMIT_IP:-30}
+      RATE_LIMIT_USER: ${RATE_LIMIT_USER:-120}
+      RATE_LIMIT_DEPLOY: ${RATE_LIMIT_DEPLOY:-5}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
+
+      # Deploys, projects and domains.
       DEPLOY_DEFAULT_PORT: ${DEPLOY_DEFAULT_PORT:-3000}
-      # Route lookup uses this to tell a generated subdomain from a custom
-      # domain, and refuses attaches inside our own namespace.
       DOMAIN_SUFFIX: ${DOMAIN_SUFFIX:-localhost}
       RESERVED_DOMAINS: ${RESERVED_DOMAINS:-}
       DEPLOY_TTL_MIN: ${DEPLOY_TTL_MIN:-30}
@@ -45,9 +60,41 @@ services:
       DOMAIN_ATTACH_PER_HOUR: ${DOMAIN_ATTACH_PER_HOUR:-5}
       DOMAIN_VERIFY_INTERVAL_SEC: ${DOMAIN_VERIFY_INTERVAL_SEC:-60}
       DOMAIN_REVERIFY_HOURS: ${DOMAIN_REVERIFY_HOURS:-24}
+      DOMAIN_VERIFY_GRACE_HOURS: ${DOMAIN_VERIFY_GRACE_HOURS:-24}
       ALIAS_IDLE_GC_DAYS: ${ALIAS_IDLE_GC_DAYS:-30}
       PROJECT_DEPLOY_RETENTION: ${PROJECT_DEPLOY_RETENTION:-3}
-      LOG_LEVEL: info
+
+      # Build pipeline.
+      BUILDKIT_HOST: ${BUILDKIT_HOST:-tcp://buildkitd:1234}
+      REGISTRY_URL: ${REGISTRY_URL:-registry:5000/snaphost}
+      WORKDIR_ROOT: /var/snaphost/builds
+      MAX_REPO_SIZE_MB: ${MAX_REPO_SIZE_MB:-500}
+      MAX_BUILD_TIME_MIN: ${MAX_BUILD_TIME_MIN:-15}
+      MAX_CONCURRENT_PER_USER: ${MAX_CONCURRENT_PER_USER:-3}
+      ALLOWED_GIT_HOSTS: ${ALLOWED_GIT_HOSTS:-github.com,gitlab.com,bitbucket.org}
+      ALLOWED_BASE_IMAGES: ${ALLOWED_BASE_IMAGES:-node:,python:,golang:,ruby:,nginx:,alpine:,debian:,ubuntu:,gcr.io/distroless/,oven/bun:,denoland/deno:}
+      ALLOWED_BASE_IMAGES_PERMISSIVE: ${ALLOWED_BASE_IMAGES_PERMISSIVE:-}
+      SCAN_FAIL_ON_CRITICAL: ${SCAN_FAIL_ON_CRITICAL:-true}
+
+      # Runtime.
+      RUNNER_BACKEND: docker
+      CONTAINER_CPU_LIMIT: ${CONTAINER_CPU_LIMIT:-0.5}
+      CONTAINER_MEMORY_MB: ${CONTAINER_MEMORY_MB:-512}
+      CONTAINER_DEFAULT_TTL_MIN: ${CONTAINER_DEFAULT_TTL_MIN:-30}
+      RUNTIME_PROBE_ENABLED: ${RUNTIME_PROBE_ENABLED:-true}
+      RUNTIME_PROBE_TIMEOUT_SEC: ${RUNTIME_PROBE_TIMEOUT_SEC:-30}
+      WATCHDOG_INTERVAL_SEC: ${WATCHDOG_INTERVAL_SEC:-30}
+      REGISTRY_AUTH: ${REGISTRY_AUTH:-}
+      STRICT_IMAGE_VALIDATION: ${STRICT_IMAGE_VALIDATION:-false}
+      REGISTRY_ALLOWED_PREFIXES: ${REGISTRY_ALLOWED_PREFIXES:-registry:5000/snaphost}
+
+      # Dockerfile generation.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      OPENROUTER_REFERER: ${OPENROUTER_REFERER:-http://localhost:5173}
+      OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-SnapHost}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-30s}
+      CACHE_TTL_DAYS: ${CACHE_TTL_DAYS:-7}
     networks:
       - snaphost-net
     restart: unless-stopped
@@ -82,121 +129,6 @@ services:
       - snaphost-net
     restart: unless-stopped
 
-  builder-api:
-    build:
-      context: ../snaphost-backend
-      dockerfile: docker/Dockerfile.builder
-    command: ["/api"]
-    ports:
-      - "8082:8082"
-    depends_on:
-      redis:
-        condition: service_started
-    environment:
-      PORT: "8082"
-      REDIS_URL: ${REDIS_URL}
-      REGISTRY_URL: ${REGISTRY_URL:-registry:5000/snaphost}
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-      ALLOWED_GIT_HOSTS: ${ALLOWED_GIT_HOSTS:-github.com,gitlab.com,bitbucket.org}
-      MAX_CONCURRENT_PER_USER: ${MAX_CONCURRENT_PER_USER:-3}
-    networks:
-      - snaphost-net
-    restart: unless-stopped
-
-  builder-worker:
-    build:
-      context: ../snaphost-backend
-      dockerfile: docker/Dockerfile.builder
-    command: ["/worker"]
-    depends_on:
-      - buildkitd
-      - redis
-      - registry
-    environment:
-      REDIS_URL: ${REDIS_URL}
-      BUILDKIT_HOST: ${BUILDKIT_HOST:-tcp://buildkitd:1234}
-      REGISTRY_URL: ${REGISTRY_URL:-registry:5000/snaphost}
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-      WORKDIR_ROOT: /var/snaphost/builds
-      MAX_REPO_SIZE_MB: ${MAX_REPO_SIZE_MB:-500}
-      MAX_BUILD_TIME_MIN: ${MAX_BUILD_TIME_MIN:-15}
-      MAX_CONCURRENT_PER_USER: ${MAX_CONCURRENT_PER_USER:-3}
-      ALLOWED_GIT_HOSTS: ${ALLOWED_GIT_HOSTS:-github.com,gitlab.com,bitbucket.org}
-      ALLOWED_BASE_IMAGES: ${ALLOWED_BASE_IMAGES:-node:,python:,golang:,ruby:,nginx:,alpine:,debian:,ubuntu:,gcr.io/distroless/,oven/bun:,denoland/deno:}
-      ALLOWED_BASE_IMAGES_PERMISSIVE: ${ALLOWED_BASE_IMAGES_PERMISSIVE:-}
-      SCAN_FAIL_ON_CRITICAL: ${SCAN_FAIL_ON_CRITICAL:-true}
-      USER_BILLING_URL: http://user-billing:8081
-      AI_ORCHESTRATOR_URL: http://ai-orchestrator:8087
-    networks:
-      - snaphost-net
-    restart: unless-stopped
-
-  runner-api:
-    build:
-      context: ../snaphost-backend
-      dockerfile: docker/Dockerfile.runtime
-    command: ["/api"]
-    ports:
-      - "8084:8084"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:rw
-    depends_on:
-      redis:
-        condition: service_started
-      user-billing:
-        condition: service_started
-    environment:
-      PORT: "8084"
-      RUNNER_BACKEND: docker
-      REDIS_URL: ${REDIS_URL}
-      USER_BILLING_URL: http://user-billing:8081
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-      DOMAIN_SUFFIX: ${DOMAIN_SUFFIX:-localhost}
-      CONTAINER_CPU_LIMIT: ${CONTAINER_CPU_LIMIT:-0.5}
-      CONTAINER_MEMORY_MB: ${CONTAINER_MEMORY_MB:-512}
-      CONTAINER_DEFAULT_TTL_MIN: ${CONTAINER_DEFAULT_TTL_MIN:-30}
-      RUNTIME_PROBE_ENABLED: ${RUNTIME_PROBE_ENABLED:-true}
-      RUNTIME_PROBE_TIMEOUT_SEC: ${RUNTIME_PROBE_TIMEOUT_SEC:-30}
-      WATCHDOG_INTERVAL_SEC: ${WATCHDOG_INTERVAL_SEC:-30}
-      REGISTRY_AUTH: ${REGISTRY_AUTH:-}
-      STRICT_IMAGE_VALIDATION: ${STRICT_IMAGE_VALIDATION:-true}
-      REGISTRY_ALLOWED_PREFIXES: ${REGISTRY_ALLOWED_PREFIXES:-}
-      LOG_LEVEL: info
-    networks:
-      - snaphost-net
-    restart: unless-stopped
-
-  runner-watchdog:
-    build:
-      context: ../snaphost-backend
-      dockerfile: docker/Dockerfile.runtime
-    command: ["/watchdog"]
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:rw
-    depends_on:
-      - user-billing
-      - runner-api
-    environment:
-      PORT: "8084"
-      RUNNER_BACKEND: docker
-      REDIS_URL: ${REDIS_URL}
-      USER_BILLING_URL: http://user-billing:8081
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-      DOMAIN_SUFFIX: ${DOMAIN_SUFFIX:-localhost}
-      CONTAINER_CPU_LIMIT: ${CONTAINER_CPU_LIMIT:-0.5}
-      CONTAINER_MEMORY_MB: ${CONTAINER_MEMORY_MB:-512}
-      CONTAINER_DEFAULT_TTL_MIN: ${CONTAINER_DEFAULT_TTL_MIN:-30}
-      RUNTIME_PROBE_ENABLED: ${RUNTIME_PROBE_ENABLED:-true}
-      RUNTIME_PROBE_TIMEOUT_SEC: ${RUNTIME_PROBE_TIMEOUT_SEC:-30}
-      WATCHDOG_INTERVAL_SEC: ${WATCHDOG_INTERVAL_SEC:-30}
-      REGISTRY_AUTH: ${REGISTRY_AUTH:-}
-      STRICT_IMAGE_VALIDATION: ${STRICT_IMAGE_VALIDATION:-true}
-      REGISTRY_ALLOWED_PREFIXES: ${REGISTRY_ALLOWED_PREFIXES:-}
-      LOG_LEVEL: info
-    networks:
-      - snaphost-net
-    restart: unless-stopped
-
   traefik:
     image: traefik:v2.11
     ports:
@@ -212,31 +144,6 @@ services:
       - "--providers.docker.network=snaphost-net"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
-    networks:
-      - snaphost-net
-    restart: unless-stopped
-
-  ai-orchestrator:
-    build:
-      context: ../snaphost-backend
-      dockerfile: docker/Dockerfile.ai
-    ports:
-      - "8087:8087"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      - PORT=8087
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
-      - LOG_LEVEL=${LOG_LEVEL}
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
-      - ALLOWED_BASE_IMAGES=${ALLOWED_BASE_IMAGES:-}
-      - LLM_TIMEOUT=30s
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openai/gpt-4o-mini}
-      - OPENROUTER_REFERER=${OPENROUTER_REFERER:-https://snaphost.app}
-      - OPENROUTER_APP_NAME=${OPENROUTER_APP_NAME:-SnapHost}
-      - CACHE_TTL_DAYS=7
     networks:
       - snaphost-net
     restart: unless-stopped
@@ -279,8 +186,8 @@ volumes:
 
 networks:
   snaphost-net:
-    # Pin the actual Docker network name (no project prefix) so runner-svc,
-    # which runs containers via the host docker daemon, can attach them to
+    # Pin the actual Docker network name (no project prefix) so the runtime,
+    # which starts containers via the host docker daemon, can attach them to
     # this network by its bare name. Without `name:`, compose creates
     # "<project>_snaphost-net" and the host daemon doesn't see "snaphost-net".
     name: snaphost-net

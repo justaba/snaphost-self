@@ -38,15 +38,15 @@ on the injected port.
 ```
 snaphost-self/
 ├── snaphost-backend/      one Go module
-│   ├── cmd/               entry points — nine today, one after Task 1
+│   ├── cmd/               snaphost, plus two migrators
 │   ├── internal/
-│   │   ├── gateway/       JWT auth, RBAC, proxying
+│   │   ├── gateway/       JWT auth, RBAC, rate limiting
 │   │   ├── control/       deploys, projects, domains, saga orchestration
 │   │   ├── builder/       clone/unpack → Dockerfile → BuildKit → image
 │   │   ├── runtime/       starts containers on Docker, probes them, enforces TTL
 │   │   ├── ai/            generates a Dockerfile when the repo has none
 │   │   └── shared/        webhook auth and Dockerfile validation
-│   └── docker/            one Dockerfile per image
+│   └── docker/            the image
 ├── infra/                 Compose manifests, Caddy, deploy and backup scripts
 └── docs/
     ├── architecture/      how the system works
@@ -56,17 +56,17 @@ snaphost-self/
     └── inherited/         the SaaS task catalog this forked from
 ```
 
-Nine entry points under `cmd/` is the shape being removed, not the target: the
-whole point of [Task 1](docs/tasks/active/0001-collapse-to-one-binary.md) is
-one process. They are separate for now so the collapse can be done and
-verified one seam at a time.
+The platform is one process. What is left beside it in Compose is
+infrastructure it does not implement itself — PostgreSQL, Redis, BuildKit and
+a registry. [Task 1](docs/tasks/active/0001-collapse-to-one-binary.md) removes
+Redis and the registry too.
 
 ## Commands
 
 ```
 make dev-backend    bring the stack up locally
-make test           go test ./... in every module
-make lint           golangci-lint in every module (needs v1.64.x)
+make test           go test ./... across the module
+make lint           golangci-lint (needs v1.64.x)
 make logs           tail compose logs
 ```
 

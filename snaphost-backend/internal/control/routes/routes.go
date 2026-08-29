@@ -11,14 +11,13 @@ import (
 	"snaphost/internal/control/domain"
 )
 
-// Register sets up all public and internal routes on the Gin engine.
-// Public routes sit behind api-gateway which handles JWT authentication
-// and forwards X-User-ID. Internal routes are protected by the shared
-// webhook secret.
-// domainHandler and tlsHandler may be nil when custom domains are not
-// configured.
-func Register(r *gin.Engine, accountHandler *account.Handler, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, domainHandler *domain.Handler, tlsHandler *domain.TLSHandler, adminHandler *admin.Handler, webhookSecret string) {
-	// Public routes — api-gateway sets X-User-ID after JWT verification.
+// Register sets up the public API surface. Handlers read the identity from
+// the X-User-ID header the gateway middleware writes from a verified token.
+//
+// domainHandler may be nil when custom domains are not configured.
+func Register(r *gin.Engine, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, domainHandler *domain.Handler, adminHandler *admin.Handler) {
+	// The identity headers are written by Enrich, which runs last in the
+	// middleware chain and deletes them when the request is unauthenticated.
 	api := r.Group("/api/v1")
 	{
 		// API key management for non-browser clients.
@@ -67,7 +66,16 @@ func Register(r *gin.Engine, accountHandler *account.Handler, deployHandler *dep
 			adm.GET("/domains", adminHandler.ListDomains)
 		}
 	}
+}
 
+// RegisterInternal sets up the routes authenticated by the shared webhook
+// secret rather than a user token.
+//
+// It is registered separately from the public surface, and before the JWT and
+// Casbin middleware, because these callers present a secret rather than a
+// token — running them through user authentication would reject every one.
+// The split used to be enforced by them living in a different process.
+func RegisterInternal(r *gin.Engine, accountHandler *account.Handler, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, tlsHandler *domain.TLSHandler, webhookSecret string) {
 	// Internal routes — protected by webhook secret, never exposed through api-gateway.
 	internal := r.Group("/internal")
 	internal.Use(account.WebhookSecretMiddleware(webhookSecret))

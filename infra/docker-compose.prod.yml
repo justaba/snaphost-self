@@ -1,78 +1,77 @@
 name: snaphost
 
-x-service-defaults: &service-defaults
-  restart: unless-stopped
-  networks:
-    - control
-  logging:
-    driver: json-file
-    options:
-      max-size: "10m"
-      max-file: "3"
-
-x-runtime-limits: &runtime-limits
-  deploy:
-    resources:
-      limits:
-        cpus: "${CONTROL_PLANE_CPU_LIMIT}"
-        memory: "${CONTROL_PLANE_MEMORY_LIMIT}"
+# Production manifest. One application service pinned to an exact image SHA,
+# plus the three pieces of infrastructure the platform does not implement
+# itself.
+#
+# It used to be ten services and five images, and a deployment had to verify
+# every one of those manifests existed at the same SHA before it could start.
+# There is one now (Task 1).
+#
+# Still the wrong shape for a self-hosted product: this describes pushing a
+# GHCR image onto a VDS over SSH, and a self-hosted platform is installed by
+# its own operator. Rewriting the deployment story is its own task; this file
+# is kept correct in the meantime rather than left referencing services that
+# no longer exist.
 
 services:
-  api-gateway:
-    <<: [*service-defaults, *runtime-limits]
-    image: "${GHCR_IMAGE_PREFIX}/api-gateway:${SNAPHOST_VERSION}"
+  snaphost:
+    image: "${GHCR_IMAGE_PREFIX}/snaphost:${SNAPHOST_VERSION}"
+    restart: unless-stopped
     networks:
       - control
       - data
+    # The only published port. Everything else answers on an internal network,
+    # and `data` is marked internal so PostgreSQL and Redis have no route out.
     ports:
       - "${API_GATEWAY_BIND_ADDRESS}:${API_GATEWAY_PORT}:8080"
-    depends_on:
-      redis:
-        condition: service_healthy
-      user-billing:
-        condition: service_started
-    environment:
-      PORT: "8080"
-      REDIS_URL: "redis://redis:6379"
-      SUPABASE_URL: "${SUPABASE_URL}"
-      SUPABASE_WEBHOOK_SECRET: "${SUPABASE_WEBHOOK_SECRET}"
-      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
-      CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS}"
-      USER_BILLING_URL: "http://user-billing:8081"
-      AI_ORCHESTRATOR_URL: "http://ai-orchestrator:8083"
-      RATE_LIMIT_IP: "${RATE_LIMIT_IP}"
-      RATE_LIMIT_USER: "${RATE_LIMIT_USER}"
-      RATE_LIMIT_DEPLOY: "${RATE_LIMIT_DEPLOY}"
-
-  user-billing:
-    <<: [*service-defaults, *runtime-limits]
-    image: "${GHCR_IMAGE_PREFIX}/user-billing:${SNAPHOST_VERSION}"
-    networks:
-      - control
-      - data
+    # The runtime backend starts user containers through the host daemon.
+    # This is the largest privilege in the file: anything that can reach this
+    # socket is root on the host. It replaced a cloud service-account key, and
+    # unlike that key it has no per-environment identity to check.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      buildkitd:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "${CONTROL_PLANE_CPU_LIMIT}"
+          memory: "${CONTROL_PLANE_MEMORY_LIMIT}"
     environment:
-      PORT: "8081"
+      PORT: "8080"
+      LOG_LEVEL: "${LOG_LEVEL}"
       DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
       REDIS_URL: "redis://redis:6379"
       WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
-      BUILDER_SVC_URL: "http://builder-api:8082"
-      RUNNER_SVC_URL: "http://runner-api:8084"
-      RUN_MIGRATIONS: "false"
+
+      SUPABASE_URL: "${SUPABASE_URL}"
+      SUPABASE_WEBHOOK_SECRET: "${SUPABASE_WEBHOOK_SECRET}"
+      CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS}"
+
+      RATE_LIMIT_IP: "${RATE_LIMIT_IP}"
+      RATE_LIMIT_USER: "${RATE_LIMIT_USER}"
+      RATE_LIMIT_DEPLOY: "${RATE_LIMIT_DEPLOY}"
+
       SAGA_WORKER_ENABLED: "${SAGA_WORKER_ENABLED}"
       SAGA_BUILD_TIMEOUT_MIN: "${SAGA_BUILD_TIMEOUT_MIN}"
       SAGA_RESUME_INTERVAL_SEC: "${SAGA_RESUME_INTERVAL_SEC}"
       DEPLOY_DEFAULT_PORT: "${DEPLOY_DEFAULT_PORT}"
+
       DOMAIN_SUFFIX: "${DOMAIN_SUFFIX}"
       RESERVED_DOMAINS: "${RESERVED_DOMAINS}"
       DEPLOY_TTL_MIN: "${DEPLOY_TTL_MIN}"
       DEPLOY_TTL_MAX_MIN: "${DEPLOY_TTL_MAX_MIN}"
-      DOMAIN_CNAME_TARGET: "${DOMAIN_CNAME_TARGET}"
-      DOMAIN_A_RECORD_TARGET: "${DOMAIN_A_RECORD_TARGET}"
       MAX_DOMAINS_PER_USER: "${MAX_DOMAINS_PER_USER}"
       DOMAIN_ATTACH_REQUIRE_IDENTITY: "${DOMAIN_ATTACH_REQUIRE_IDENTITY}"
       DOMAIN_ATTACH_PER_HOUR: "${DOMAIN_ATTACH_PER_HOUR}"
@@ -81,64 +80,10 @@ services:
       DOMAIN_VERIFY_GRACE_HOURS: "${DOMAIN_VERIFY_GRACE_HOURS}"
       ALIAS_IDLE_GC_DAYS: "${ALIAS_IDLE_GC_DAYS}"
       PROJECT_DEPLOY_RETENTION: "${PROJECT_DEPLOY_RETENTION}"
-      LOG_LEVEL: "${LOG_LEVEL}"
 
-  user-billing-migrate:
-    image: "${GHCR_IMAGE_PREFIX}/user-billing:${SNAPHOST_VERSION}"
-    profiles: ["migration"]
-    entrypoint: ["/migrate"]
-    restart: "no"
-    networks:
-      - data
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
-
-  builder-api:
-    <<: [*service-defaults, *runtime-limits]
-    image: "${GHCR_IMAGE_PREFIX}/builder-svc:${SNAPHOST_VERSION}"
-    command: ["/api"]
-    networks:
-      - control
-      - data
-    depends_on:
-      redis:
-        condition: service_healthy
-    environment:
-      PORT: "8082"
-      REDIS_URL: "redis://redis:6379"
-      REGISTRY_URL: "${REGISTRY_PREFIX}"
-      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
-      ALLOWED_GIT_HOSTS: "${ALLOWED_GIT_HOSTS}"
-      MAX_CONCURRENT_PER_USER: "${MAX_CONCURRENT_PER_USER}"
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8082/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  builder-worker:
-    <<: [*service-defaults, *runtime-limits]
-    image: "${GHCR_IMAGE_PREFIX}/builder-svc:${SNAPHOST_VERSION}"
-    command: ["/worker"]
-    networks:
-      - control
-      - data
-    depends_on:
-      buildkitd:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      REDIS_URL: "redis://redis:6379"
       BUILDKIT_HOST: "tcp://buildkitd:1234"
       REGISTRY_URL: "${REGISTRY_PREFIX}"
-      REGISTRY_AUTH_MODE: "static"
-      REGISTRY_INSECURE: "false"
-      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
+      REGISTRY_INSECURE: "${REGISTRY_INSECURE}"
       WORKDIR_ROOT: "/var/snaphost/builds"
       MAX_REPO_SIZE_MB: "${MAX_REPO_SIZE_MB}"
       MAX_BUILD_TIME_MIN: "${MAX_BUILD_TIME_MIN}"
@@ -146,92 +91,37 @@ services:
       ALLOWED_GIT_HOSTS: "${ALLOWED_GIT_HOSTS}"
       ALLOWED_BASE_IMAGES: "${ALLOWED_BASE_IMAGES}"
       ALLOWED_BASE_IMAGES_PERMISSIVE: "${ALLOWED_BASE_IMAGES_PERMISSIVE}"
-      SCAN_FAIL_ON_CRITICAL: "true"
-      USER_BILLING_URL: "http://user-billing:8081"
-      AI_ORCHESTRATOR_URL: "http://ai-orchestrator:8083"
+      SCAN_FAIL_ON_CRITICAL: "${SCAN_FAIL_ON_CRITICAL}"
 
-  runner-api:
-    <<: [*service-defaults, *runtime-limits]
-    image: "${GHCR_IMAGE_PREFIX}/runner-svc:${SNAPHOST_VERSION}"
-    command: ["/api"]
-    networks:
-      - control
-      - data
-    depends_on:
-      redis:
-        condition: service_healthy
-      user-billing:
-        condition: service_started
-    environment: &runner-environment
-      PORT: "8084"
       RUNNER_BACKEND: "docker"
-      REDIS_URL: "redis://redis:6379"
-      USER_BILLING_URL: "http://user-billing:8081"
-      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
-      DOMAIN_SUFFIX: "${DOMAIN_SUFFIX}"
       CONTAINER_CPU_LIMIT: "${CONTAINER_CPU_LIMIT}"
       CONTAINER_MEMORY_MB: "${CONTAINER_MEMORY_MB}"
       CONTAINER_DEFAULT_TTL_MIN: "${CONTAINER_DEFAULT_TTL_MIN}"
       RUNTIME_PROBE_ENABLED: "${RUNTIME_PROBE_ENABLED}"
       RUNTIME_PROBE_TIMEOUT_SEC: "${RUNTIME_PROBE_TIMEOUT_SEC}"
       WATCHDOG_INTERVAL_SEC: "${WATCHDOG_INTERVAL_SEC}"
-      STRICT_IMAGE_VALIDATION: "true"
+      STRICT_IMAGE_VALIDATION: "${STRICT_IMAGE_VALIDATION}"
       REGISTRY_ALLOWED_PREFIXES: "${REGISTRY_PREFIX}"
-      LOG_LEVEL: "${LOG_LEVEL}"
-    # The Docker backend starts user containers through the daemon's socket.
-    # This is the privilege that replaced a cloud service account: anything
-    # that can reach it is root on the host. It is why the runner is the one
-    # service that must not also be a public entry point.
-    volumes: &runner-volumes
-      - /var/run/docker.sock:/var/run/docker.sock:rw
 
-  runner-watchdog:
-    <<: [*service-defaults, *runtime-limits]
-    image: "${GHCR_IMAGE_PREFIX}/runner-svc:${SNAPHOST_VERSION}"
-    command: ["/watchdog"]
-    networks:
-      - control
-      - data
-    depends_on:
-      redis:
-        condition: service_healthy
-      user-billing:
-        condition: service_started
-    environment: *runner-environment
-    volumes: *runner-volumes
-
-  ai-orchestrator:
-    <<: [*service-defaults, *runtime-limits]
-    image: "${GHCR_IMAGE_PREFIX}/ai-orchestrator:${SNAPHOST_VERSION}"
-    networks:
-      - control
-      - data
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PORT: "8083"
-      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
-      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
-      ALLOWED_BASE_IMAGES: "${ALLOWED_BASE_IMAGES}"
       LLM_BASE_URL: "${LLM_BASE_URL}"
       LLM_JSON_MODE: "${LLM_JSON_MODE}"
+      LLM_TIMEOUT: "${LLM_TIMEOUT}"
+      LLM_MAX_RETRIES: "${LLM_MAX_RETRIES}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
       OPENROUTER_MODEL: "${OPENROUTER_MODEL}"
       OPENROUTER_REFERER: "${OPENROUTER_REFERER}"
       OPENROUTER_APP_NAME: "${OPENROUTER_APP_NAME}"
-      LLM_TIMEOUT: "${LLM_TIMEOUT}"
-      LLM_MAX_RETRIES: "${LLM_MAX_RETRIES}"
       CACHE_TTL_DAYS: "${CACHE_TTL_DAYS}"
       MAX_FILE_SIZE_KB: "${MAX_FILE_SIZE_KB}"
       MAX_FILES_PER_REQUEST: "${MAX_FILES_PER_REQUEST}"
-      RUN_MIGRATIONS: "false"
-      LOG_LEVEL: "${LOG_LEVEL}"
 
-  ai-orchestrator-migrate:
-    image: "${GHCR_IMAGE_PREFIX}/ai-orchestrator:${SNAPHOST_VERSION}"
+  # One-shot migrators under a profile, so a deployment can apply the schema as
+  # its own step before the service that would otherwise do it at startup is
+  # allowed to run.
+  snaphost-migrate:
+    image: "${GHCR_IMAGE_PREFIX}/snaphost:${SNAPHOST_VERSION}"
     profiles: ["migration"]
-    entrypoint: ["/migrate"]
+    entrypoint: ["/control-migrate"]
     restart: "no"
     networks:
       - data
@@ -240,6 +130,21 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      LOG_LEVEL: "${LOG_LEVEL}"
+
+  snaphost-ai-migrate:
+    image: "${GHCR_IMAGE_PREFIX}/snaphost:${SNAPHOST_VERSION}"
+    profiles: ["migration"]
+    entrypoint: ["/ai-migrate"]
+    restart: "no"
+    networks:
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      LOG_LEVEL: "${LOG_LEVEL}"
 
   postgres:
     image: "postgres:16.4-alpine3.20"

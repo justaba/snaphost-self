@@ -27,7 +27,11 @@ func newEngine(t *testing.T) *gin.Engine {
 	apikeyHandler := apikey.NewHandler(apikey.NewRepository(nil), log)
 
 	r := gin.New()
-	Register(r, accountHandler, nil, apikeyHandler, nil, nil, nil, testSecret)
+	// Both halves, because the assertions below span them: that no billing
+	// path is routable anywhere, and that the internal group refuses a wrong
+	// secret. Registering only one would make the first pass vacuously.
+	Register(r, nil, apikeyHandler, nil, nil)
+	RegisterInternal(r, accountHandler, nil, apikeyHandler, nil, testSecret)
 	return r
 }
 

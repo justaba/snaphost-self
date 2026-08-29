@@ -25,16 +25,21 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"go.uber.org/zap"
 
 	aillm "snaphost/internal/ai/llm"
 	aiservice "snaphost/internal/ai/service"
 	builderai "snaphost/internal/builder/ai"
 	builderapi "snaphost/internal/builder/api"
+	"snaphost/internal/control/account"
+	"snaphost/internal/control/apikey"
 	"snaphost/internal/control/deploy"
 	"snaphost/internal/control/saga"
+	"snaphost/internal/gateway/webhooks"
 	"snaphost/internal/runtime/billing"
 	"snaphost/internal/runtime/runner"
 )
@@ -295,4 +300,57 @@ func (c *BillingClient) ListExpiredDeploys(ctx context.Context, limit int) ([]bi
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// identity webhook → control
+// ---------------------------------------------------------------------------
+
+// AccountCreator satisfies webhooks.BillingClient by recording the account
+// directly. The gateway used to POST this to itself over the loopback with a
+// shared secret; the caller and the callee are now the same process.
+type AccountCreator struct {
+	Repo *account.Repository
+}
+
+func (a *AccountCreator) CreateUser(ctx context.Context, req webhooks.CreateUserRequest) error {
+	id, err := uuid.Parse(req.ID)
+	if err != nil {
+		return fmt.Errorf("invalid user id %q: %w", req.ID, err)
+	}
+	return a.Repo.Upsert(ctx, id, req.Email)
+}
+
+// ---------------------------------------------------------------------------
+// gateway → control
+// ---------------------------------------------------------------------------
+
+// KeyVerifier satisfies middleware.KeyVerifier by hashing the presented key
+// and looking it up directly.
+//
+// This is the path every non-browser client authenticates on — the MCP server,
+// the editor extension, any `sk_` bearer — so it must behave exactly as the
+// HTTP verify endpoint did: an unknown or revoked key is an error, and the
+// last-used timestamp is best-effort and never blocks the request.
+type KeyVerifier struct {
+	Repo *apikey.Repository
+	Log  *zap.Logger
+}
+
+func (v *KeyVerifier) Verify(ctx context.Context, key string) (string, error) {
+	if !apikey.HasKeyPrefix(key) {
+		return "", errors.New("not an api key")
+	}
+	userID, keyID, err := v.Repo.VerifyByHash(ctx, apikey.Hash(key))
+	if err != nil {
+		return "", err
+	}
+	go func(id uuid.UUID) {
+		touchCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := v.Repo.TouchLastUsed(touchCtx, id); err != nil {
+			v.Log.Warn("failed to record api key use", zap.Error(err))
+		}
+	}(keyID)
+	return userID.String(), nil
 }

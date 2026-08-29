@@ -276,7 +276,7 @@ func VerifyToken(ctx context.Context, jwks *JWKSCache, tokenString string) (*Sup
 }
 
 // JWT middleware for validating authentication tokens.
-func JWT(cfg *config.Config, jwks *JWKSCache, apiKeys *APIKeyVerifier) gin.HandlerFunc {
+func JWT(cfg *config.Config, jwks *JWKSCache, apiKeys KeyVerifier) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		lookupKey := c.Request.Method + ":" + c.FullPath()
 		if PublicRoutes[lookupKey] {

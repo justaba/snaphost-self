@@ -1,8 +1,8 @@
 # Task 1 — Collapse the control plane into one binary
 
 **Status:** In progress. The cloud runtime path, the dead documentation, and
-billing are removed and the six modules are one; SQLite, the single binary,
-and the in-process queue remain.
+billing are removed, the six modules are one, and the platform is a single
+binary; SQLite, the in-process queue and GOMEMLIMIT remain.
 **Created:** 2026-08-29
 **Updated:** 2026-08-29
 
@@ -153,10 +153,41 @@ host before it becomes a plan.
    this module at all: it is built with go1.24 and refuses a module targeting
    1.25, exactly as the CI comment predicts.
 
-   **5b — wiring, not started.** The saga's HTTP clients
-   (`internal/control/saga/clients.go`) become interfaces satisfied by direct
-   calls, which is what deletes the internal `X-Webhook-Secret` layer with
-   them, and the nine `cmd/` entry points collapse into one.
+   **5b — wiring, done.** `cmd/snaphost` is the whole platform. Seven entry
+   points are gone; the two migrators stay, because a deployment may need to
+   apply a schema change before the service that would otherwise do it at
+   startup is allowed to run.
+
+   Every cross-service HTTP client is now a direct call
+   (`internal/wiring`), and the gateway no longer proxies — `internal/gateway/proxy`
+   and its route table are deleted, and the control and generator handlers
+   register on the same engine as the middleware chain.
+
+   One ordering bug was found and fixed while assembling it. Registering the
+   control routes after the middleware chain put the `/internal` group behind
+   JWT and Casbin, so every secret-authenticated caller would have been
+   rejected before reaching its secret check. `routes.Register` is now split
+   from `routes.RegisterInternal`, and the internal half is registered before
+   the chain. The separation used to be free, because those routes lived in a
+   different process.
+
+   The API-key path needed the same care: `middleware.JWT` took a concrete
+   HTTP verifier, and passing `nil` would have made every `sk_` bearer fail
+   with `api_key_unsupported` — silently breaking every non-browser client. It
+   takes a `KeyVerifier` interface now, satisfied by a direct repository
+   lookup.
+
+   Costs worth stating rather than discovering later:
+
+   - **The image got fatter, not thinner.** Four of the five could have been
+     distroless; the build pipeline shells out to `git` and `trivy`, so the
+     single image inherits the fattest base of the set.
+   - **The rollout is no longer ordered.** `deploy.sh` used to update six
+     services in dependency order and publish the gateway last, so a failure
+     in between left the previous gateway serving. There is one container now:
+     it restarts as a unit.
+   - **A panic takes everything.** Recovery middleware covers the request
+     path; the background loops do not have an equivalent yet.
 6. [ ] Port the store to SQLite and squash twelve migrations into one baseline.
    There is no data to migrate — a fork starts empty — so the inherited
    migration history buys nothing and carries vibecoin columns forward.

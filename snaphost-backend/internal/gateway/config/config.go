@@ -26,6 +26,12 @@ type Config struct {
 	// MaxUploadSizeMB bounds POST /api/v1/deploys/upload bodies at the
 	// gateway; keep in sync with user-billing's MAX_UPLOAD_SIZE_MB.
 	MaxUploadSizeMB int
+	// RBACModelPath and RBACPolicyPath locate the Casbin files. They used to be
+	// bare relative names resolved against the working directory, which worked
+	// only because the image copies them next to the binary. Configuration
+	// instead, so running the binary from anywhere behaves the same.
+	RBACModelPath  string
+	RBACPolicyPath string
 }
 
 // Load reads configuration from environment variables and applies defaults
@@ -44,6 +50,8 @@ func Load() (*Config, error) {
 		RateLimitUser:   getEnvAsInt("RATE_LIMIT_USER", 120),
 		RateLimitDeploy: getEnvAsInt("RATE_LIMIT_DEPLOY", 5),
 		MaxUploadSizeMB: getEnvAsInt("MAX_UPLOAD_SIZE_MB", 50),
+		RBACModelPath:   getEnv("RBAC_MODEL_PATH", "rbac_model.conf"),
+		RBACPolicyPath:  getEnv("RBAC_POLICY_PATH", "rbac_policy.csv"),
 	}
 
 	if cfg.SupabaseURL == "" {

@@ -44,12 +44,14 @@ case "$op" in
   config)
     [[ ${FAIL_CONFIG:-0} != 1 ]] || exit 1
     if [[ "$*" == *'--services'* ]]; then
-      printf '%s\n' api-gateway user-billing builder-api builder-worker runner-api runner-watchdog ai-orchestrator postgres redis buildkitd
+      printf '%s\n' snaphost postgres redis buildkitd
     elif [[ "$*" == *'--images'* ]]; then
       sha=${SNAPHOST_VERSION:?}
-      printf 'ghcr.io/acme/repo/%s:%s\n' api-gateway "$sha" user-billing "$sha" builder-svc "$sha" runner-svc "$sha" ai-orchestrator "$sha"
+      printf 'ghcr.io/acme/repo/%s:%s\n' snaphost "$sha"
     elif [[ "$*" != *'--quiet'* ]]; then
-      printf 'services:\n  api-gateway:\n    ports:\n      - target: 8080\n  user-billing:\n    image: billing\n  postgres:\n    image: postgres\n  redis:\n    image: redis\n  buildkitd:\n    image: buildkit\n'
+      # snaphost publishes a port; the three infrastructure services must not.
+      # The rendered-compose check greps exactly this shape.
+      printf 'services:\n  snaphost:\n    ports:\n      - target: 8080\n  postgres:\n    image: postgres\n  redis:\n    image: redis\n  buildkitd:\n    image: buildkit\n'
     fi
     ;;
   pull) [[ ${FAIL_PULL:-0} != 1 ]] ;;

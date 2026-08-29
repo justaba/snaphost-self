@@ -80,19 +80,13 @@ jobs:
           # syntax errors are fatal here.
           ! grep -qiE 'invalid|unknown (lvalue|section)' /tmp/verify.log
 
-  images:
-    name: Image / ${{ matrix.image }}
+  # One image, because there is one process. The matrix this replaces built
+  # five, and a deployment had to verify all five manifests existed at the same
+  # SHA before it could start.
+  image:
+    name: Image
     needs: [go, shell]
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { image: api-gateway, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.gateway }
-          - { image: user-billing, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.control }
-          - { image: builder-svc, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.builder }
-          - { image: runner-svc, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.runtime }
-          - { image: ai-orchestrator, context: snaphost-backend, dockerfile: snaphost-backend/docker/Dockerfile.ai }
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
@@ -106,13 +100,12 @@ jobs:
       - name: Build and optionally publish
         uses: docker/build-push-action@v7
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          build-args: ${{ matrix.build_args }}
+          context: snaphost-backend
+          file: snaphost-backend/docker/Dockerfile
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          tags: ghcr.io/${{ github.repository }}/${{ matrix.image }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          tags: ghcr.io/${{ github.repository }}/snaphost:${{ github.sha }}
+          cache-from: type=gha,scope=snaphost
+          cache-to: type=gha,mode=max,scope=snaphost
 
   # Staging has no host at the moment: the temporary VDS was released and
   # production now runs on its own machine. The job is kept rather than deleted
@@ -125,7 +118,7 @@ jobs:
   # STAGING_DEPLOY_ENABLED=true. Nothing else has to change.
   deploy-staging:
     name: Deploy staging
-    needs: [images]
+    needs: [image]
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main'
       && vars.STAGING_DEPLOY_ENABLED == 'true'

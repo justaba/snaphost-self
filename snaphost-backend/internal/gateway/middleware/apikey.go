@@ -19,6 +19,15 @@ func IsAPIKey(cred string) bool {
 	return strings.HasPrefix(cred, apiKeyPrefix)
 }
 
+// KeyVerifier resolves an API key to its owning user id.
+//
+// An interface because there are two implementations and the difference is
+// only how far the lookup travels: over HTTP when the control plane was a
+// separate process, and straight to the repository now that it is not.
+type KeyVerifier interface {
+	Verify(ctx context.Context, key string) (string, error)
+}
+
 // APIKeyVerifier resolves an API key to its owning user by calling
 // user-billing's internal verify endpoint with the shared webhook secret.
 type APIKeyVerifier struct {
