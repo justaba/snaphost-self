@@ -162,13 +162,45 @@ host before it becomes a plan.
    still set to `yandex` in the production Compose file, which would have
    failed at startup rather than silently.
 
-   **The deployment scripts and the production Compose file are now internally
-   consistent but still the wrong shape.** They describe pushing GHCR images
-   pinned to a Git SHA onto someone's VDS over SSH. A self-hosted product is
-   installed by its operator, so `deploy.sh`, `deploy-remote.sh` and
-   `docker-compose.prod.yml` need rewriting rather than editing — after item 5,
-   when there is one image to ship instead of five. Until then they are kept
-   working rather than left referencing services that no longer exist.
+   **The deployment scripts and the production Compose file are still the wrong
+   shape.** They describe pushing GHCR images pinned to a Git SHA onto
+   someone's VDS over SSH. A self-hosted product is installed by its operator,
+   so `deploy.sh`, `deploy-remote.sh` and `docker-compose.prod.yml` want
+   rewriting rather than editing. That rewrite is deferred, deliberately: it
+   changes CI, the release model and the rollback story at once, and none of
+   those is what Task 1 is about.
+
+   What they were *not* was "kept working". Two defects were found on
+   2026-08-29 by reading them after item 6a, and both had been live for
+   several commits with a green test suite:
+
+   - **Rollback could not run.** `rollback_to` iterated the seven services
+     deleted in item 5, so it failed on its first `compose up`. The tests
+     missed it because they fake `docker`, and a fake does not object to a
+     service the manifest never had. The fake refuses unknown services now,
+     and restoring the old list fails four tests.
+   - **Every backup would have been refused.** `REQUIRED_TABLES` still named
+     `wallets` and `transactions`, dropped with billing in item 3, so
+     `verify_archive` looked for table data that could not exist. That test
+     passed because its fixture was generated from the same list — a check and
+     its fixture derived from one another agree with each other and nothing
+     else.
+
+   Both are fixed, along with the PostgreSQL-to-SQLite port those files never
+   got: no `postgres` service, no `DATABASE_URL`, no credentials, and the dump
+   is `sqlite3 .dump` inside the application container. Copying the volume is
+   the obvious alternative and it is wrong under WAL. A third thing surfaced on
+   the way: `RUN_MIGRATIONS=false` had been in the production env example since
+   it was written and the Compose file never passed it, so the application
+   migrated at startup anyway and the profile-only migrate service was
+   decoration.
+
+   Verified against the running stack rather than only against fakes: a dump
+   taken from the live container, verified, checksummed, pruned and listed;
+   restored into a fresh database with `integrity_check` ok and the operator
+   row present; a dry run that changes no file; a stopped application refused;
+   and `deploy.sh preflight` passing against the real production manifest and
+   env example, then failing when one required variable is removed.
 
    The privilege model changed and is worth stating plainly: the builder and
    runner service-account keys are gone, and with them Task 12's guard that
