@@ -10,23 +10,23 @@ package account
 import (
 	"context"
 	"crypto/subtle"
+	"database/sql"
 	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
 // Repository persists accounts.
 type Repository struct {
-	pool *pgxpool.Pool
+	db *sql.DB
 }
 
 // NewRepository creates an account repository.
-func NewRepository(pool *pgxpool.Pool) *Repository {
-	return &Repository{pool: pool}
+func NewRepository(db *sql.DB) *Repository {
+	return &Repository{db: db}
 }
 
 // Upsert records the account behind a user_id. It is idempotent because the
@@ -35,11 +35,14 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 // overwrites a stored value, since losing an address to a retry carrying less
 // information would be silent.
 func (r *Repository) Upsert(ctx context.Context, userID uuid.UUID, email string) error {
-	_, err := r.pool.Exec(ctx,
-		`INSERT INTO users (id, email) VALUES ($1, nullif($2, ''))
+	// The email is bound twice rather than once: SQLite's placeholders are
+	// positional, so the ON CONFLICT clause cannot reuse the parameter the
+	// VALUES clause consumed the way $2 did.
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO users (id, email) VALUES (?, nullif(?, ''))
 		 ON CONFLICT (id) DO UPDATE
-		 SET email = coalesce(nullif($2, ''), users.email)`,
-		userID, email,
+		 SET email = coalesce(nullif(?, ''), users.email)`,
+		userID.String(), email, email,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert user: %w", err)

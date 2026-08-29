@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"database/sql"
+
+	controldb "snaphost/internal/control/db"
 
 	"snaphost/internal/ai/llm"
 )
@@ -25,11 +27,11 @@ type CachedDockerfile struct {
 }
 
 type Repository struct {
-	pool *pgxpool.Pool
+	db *sql.DB
 }
 
-func NewRepository(pool *pgxpool.Pool) *Repository {
-	return &Repository{pool: pool}
+func NewRepository(handle *sql.DB) *Repository {
+	return &Repository{db: handle}
 }
 
 func (r *Repository) ComputeSignature(req llm.GenerateRequest) string {
@@ -63,13 +65,13 @@ func (r *Repository) ComputeSignature(req llm.GenerateRequest) string {
 
 func (r *Repository) Get(ctx context.Context, signature string) (*CachedDockerfile, error) {
 	var c CachedDockerfile
-	err := r.pool.QueryRow(ctx, `
+	err := r.db.QueryRowContext(ctx, `
 		SELECT signature, project_type, dockerfile, expose_port, source
 		FROM ai_dockerfile_cache
-		WHERE signature = $1
+		WHERE signature = ?
 	`, signature).Scan(&c.Signature, &c.ProjectType, &c.Dockerfile, &c.ExposePort, &c.Source)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrCacheMiss
 	}
 	if err != nil {
@@ -79,31 +81,36 @@ func (r *Repository) Get(ctx context.Context, signature string) (*CachedDockerfi
 }
 
 func (r *Repository) Store(ctx context.Context, signature string, dockerfile string, exposePort int, projectType string, source string) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO ai_dockerfile_cache (signature, project_type, dockerfile, expose_port, source, used_count, last_used_at)
-		VALUES ($1, $2, $3, $4, $5, 1, now())
+		VALUES (?, ?, ?, ?, ?, 1, ?)
 		ON CONFLICT (signature) DO UPDATE SET
 			dockerfile = excluded.dockerfile,
 			expose_port = excluded.expose_port,
 			source = excluded.source,
-			last_used_at = now()
-	`, signature, projectType, dockerfile, exposePort, source)
+			last_used_at = ?
+	`, signature, projectType, dockerfile, exposePort, source, controldb.Now(), controldb.Now())
 	return err
 }
 
 func (r *Repository) IncrementUsage(ctx context.Context, signature string) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE ai_dockerfile_cache 
-		SET used_count = used_count + 1, last_used_at = now() 
-		WHERE signature = $1
-	`, signature)
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE ai_dockerfile_cache
+		SET used_count = used_count + 1, last_used_at = ?
+		WHERE signature = ?
+	`, controldb.Now(), signature)
 	return err
 }
 
 func (r *Repository) DeleteExpired(ctx context.Context, ttlDays int) error {
-	_, err := r.pool.Exec(ctx, `
+	// The cutoff is computed in Go rather than in SQL. SQLite's date functions
+	// produce 'YYYY-MM-DD HH:MM:SS', which does not compare correctly against
+	// the RFC 3339 text these columns hold — the space where the T belongs
+	// sorts before every digit, so every row would look expired.
+	cutoff := controldb.FormatTime(time.Now().AddDate(0, 0, -ttlDays))
+	_, err := r.db.ExecContext(ctx, `
 		DELETE FROM ai_dockerfile_cache
-		WHERE last_used_at < now() - interval '1 day' * $1
-	`, ttlDays)
+		WHERE last_used_at < ?
+	`, cutoff)
 	return err
 }

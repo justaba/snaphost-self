@@ -338,8 +338,7 @@ rollout() {
   PHASE=migrations-started
   write_progress migrations-running started pending
   # </dev/null: `compose run` attaches stdin, see backup_postgres.
-  action "run control migrations" compose --profile migration run --rm --no-deps snaphost-migrate </dev/null
-  action "run ai migrations" compose --profile migration run --rm --no-deps snaphost-ai-migrate </dev/null
+  action "run migrations" compose --profile migration run --rm --no-deps snaphost-migrate </dev/null
   PHASE=migrations-applied
   write_progress rolling-out applied pending
 

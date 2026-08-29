@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"database/sql"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	controldb "snaphost/internal/control/db"
 )
 
 // Deploy source types. The source abstraction (Task 14b) decides how the
@@ -78,7 +80,7 @@ type GCPolicy struct {
 // Repository provides CRUD data access for the deploys table.
 // Called by repo-handler and runner-svc, not by frontend directly.
 type Repository struct {
-	pool *pgxpool.Pool
+	db *sql.DB
 	// domainSuffix is the platform's own runtime suffix. Hosts under it
 	// resolve through deploys.subdomain; anything else is a custom domain
 	// and resolves through the alias table.
@@ -101,8 +103,8 @@ func WithGCPolicy(p GCPolicy) Option {
 }
 
 // NewRepository creates a new deploy repository.
-func NewRepository(pool *pgxpool.Pool, opts ...Option) *Repository {
-	r := &Repository{pool: pool}
+func NewRepository(handle *sql.DB, opts ...Option) *Repository {
+	r := &Repository{db: handle}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -115,10 +117,10 @@ func (r *Repository) Create(ctx context.Context, d Deploy) error {
 	if d.SourceType == "" {
 		d.SourceType = SourceGitPublic
 	}
-	_, err := r.pool.Exec(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO deploys (id, user_id, project_id, source_type, repo_url, branch, upload_id, commit_sha, status, metadata)
-		 VALUES ($1, $2, $3, $4, nullif($5, ''), $6, $7, $8, $9, '{}'::jsonb)`,
-		d.ID, d.UserID, d.ProjectID, d.SourceType, d.RepoURL, d.Branch, d.UploadID, d.CommitSHA, d.Status,
+		 VALUES (?, ?, ?, ?, nullif(?, ''), ?, ?, ?, ?, '{}')`,
+		d.ID.String(), d.UserID.String(), uuidPtr(d.ProjectID), d.SourceType, d.RepoURL, d.Branch, d.UploadID, d.CommitSHA, d.Status,
 	)
 	if err != nil {
 		return fmt.Errorf("create deploy: %w", err)
@@ -132,7 +134,7 @@ const deployColumns = `id, user_id, project_id, source_type, coalesce(repo_url, 
 	        image_ref, endpoint_url, subdomain, container_id, ttl_expires_at,
 	        failure_reason, created_at, updated_at, stopped_at`
 
-// rowScanner is satisfied by both pgx.Row and pgx.Rows.
+// rowScanner is satisfied by both sql.Row and sql.Rows.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -141,21 +143,21 @@ func scanDeploy(row rowScanner) (Deploy, error) {
 	var d Deploy
 	err := row.Scan(&d.ID, &d.UserID, &d.ProjectID, &d.SourceType, &d.RepoURL, &d.Branch, &d.UploadID, &d.CommitSHA, &d.Status,
 		&d.ImageRef, &d.EndpointURL, &d.Subdomain, &d.ContainerID,
-		&d.TTLExpiresAt, &d.FailureReason,
-		&d.CreatedAt, &d.UpdatedAt, &d.StoppedAt)
+		controldb.IntoNull(&d.TTLExpiresAt), &d.FailureReason,
+		controldb.Into(&d.CreatedAt), controldb.Into(&d.UpdatedAt), controldb.IntoNull(&d.StoppedAt))
 	return d, err
 }
 
 // Get retrieves a single deploy by ID.
 func (r *Repository) Get(ctx context.Context, deployID uuid.UUID) (*Deploy, error) {
-	d, err := scanDeploy(r.pool.QueryRow(ctx,
+	d, err := scanDeploy(r.db.QueryRowContext(ctx,
 		`SELECT `+deployColumns+`
 		 FROM deploys
-		 WHERE id = $1`,
-		deployID,
+		 WHERE id = ?`,
+		deployID.String(),
 	))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("deploy not found: %w", err)
 		}
 		return nil, fmt.Errorf("get deploy: %w", err)
@@ -165,13 +167,13 @@ func (r *Repository) Get(ctx context.Context, deployID uuid.UUID) (*Deploy, erro
 
 // ListByUser returns paginated deploys for a user, ordered by creation time descending.
 func (r *Repository) ListByUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Deploy, error) {
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db.QueryContext(ctx,
 		`SELECT `+deployColumns+`
 		 FROM deploys
-		 WHERE user_id = $1
+		 WHERE user_id = ?
 		 ORDER BY created_at DESC
-		 LIMIT $2 OFFSET $3`,
-		userID, limit, offset,
+		 LIMIT ? OFFSET ?`,
+		userID.String(), limit, offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list deploys by user: %w", err)
@@ -182,13 +184,13 @@ func (r *Repository) ListByUser(ctx context.Context, userID uuid.UUID, limit, of
 // ListByProject returns a project's deploys newest first — the rollback
 // candidates for an alias, each still addressable at its own subdomain.
 func (r *Repository) ListByProject(ctx context.Context, projectID uuid.UUID, limit int) ([]Deploy, error) {
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db.QueryContext(ctx,
 		`SELECT `+deployColumns+`
 		 FROM deploys
-		 WHERE project_id = $1
+		 WHERE project_id = ?
 		 ORDER BY created_at DESC
-		 LIMIT $2`,
-		projectID, limit,
+		 LIMIT ?`,
+		projectID.String(), limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list deploys by project: %w", err)
@@ -196,7 +198,7 @@ func (r *Repository) ListByProject(ctx context.Context, projectID uuid.UUID, lim
 	return collectDeploys(rows)
 }
 
-func collectDeploys(rows pgx.Rows) ([]Deploy, error) {
+func collectDeploys(rows *sql.Rows) ([]Deploy, error) {
 	defer rows.Close()
 
 	var deploys []Deploy
@@ -216,42 +218,46 @@ func collectDeploys(rows pgx.Rows) ([]Deploy, error) {
 
 // UpdateStatus transitions a deploy to a new status with an optional failure reason.
 func (r *Repository) UpdateStatus(ctx context.Context, deployID uuid.UUID, status string, failureReason *string) error {
-	tag, err := r.pool.Exec(ctx,
+	now := controldb.Now()
+	result, err := r.db.ExecContext(ctx,
 		updateStatusSQL,
-		status, failureReason, deployID,
+		status, failureReason, status, now, now, deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("update deploy status: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if rowsAffected(result) == 0 {
 		return fmt.Errorf("deploy not found: %s", deployID)
 	}
 	return nil
 }
 
+// The status is bound twice and the timestamp twice: SQLite's placeholders are
+// positional, so each use needs its own.
 const updateStatusSQL = `UPDATE deploys
- SET status = $1,
-     failure_reason = $2,
+ SET status = ?,
+     failure_reason = ?,
      stopped_at = CASE
-         WHEN $1 = 'stopped' THEN COALESCE(stopped_at, now())
+         WHEN ? = 'stopped' THEN COALESCE(stopped_at, ?)
          ELSE stopped_at
      END,
-     updated_at = now()
- WHERE id = $3`
+     updated_at = ?
+ WHERE id = ?`
 
 // SetRunning transitions a deploy to running status with its runtime details.
 func (r *Repository) SetRunning(ctx context.Context, deployID uuid.UUID, imageRef, endpointURL, subdomain, containerID string, ttlExpiresAt time.Time) error {
-	tag, err := r.pool.Exec(ctx,
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE deploys
-		 SET status = 'running', image_ref = $1, endpoint_url = $2, subdomain = $3,
-		     container_id = $4, ttl_expires_at = $5, updated_at = now()
-		 WHERE id = $6`,
-		imageRef, endpointURL, subdomain, containerID, ttlExpiresAt, deployID,
+		 SET status = 'running', image_ref = ?, endpoint_url = ?, subdomain = ?,
+		     container_id = ?, ttl_expires_at = ?, updated_at = ?
+		 WHERE id = ?`,
+		imageRef, endpointURL, subdomain, containerID,
+		controldb.NullTime(ttlExpiresAt), controldb.Now(), deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("set deploy running: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if rowsAffected(result) == 0 {
 		return fmt.Errorf("deploy not found: %s", deployID)
 	}
 	return nil
@@ -259,16 +265,17 @@ func (r *Repository) SetRunning(ctx context.Context, deployID uuid.UUID, imageRe
 
 // MarkDeleted transitions a deploy to deleted and records when it stopped.
 func (r *Repository) MarkDeleted(ctx context.Context, deployID uuid.UUID) error {
-	tag, err := r.pool.Exec(ctx,
+	now := controldb.Now()
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE deploys
-		 SET status = 'deleted', stopped_at = now(), updated_at = now()
-		 WHERE id = $1`,
-		deployID,
+		 SET status = 'deleted', stopped_at = ?, updated_at = ?
+		 WHERE id = ?`,
+		now, now, deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("mark deploy deleted: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if rowsAffected(result) == 0 {
 		return fmt.Errorf("deploy not found: %s", deployID)
 	}
 	return nil
@@ -284,11 +291,11 @@ const aliasPinned = `EXISTS (
 
 // FindExpired returns IDs of running, un-aliased deploys whose TTL has expired.
 func (r *Repository) FindExpired(ctx context.Context, limit int) ([]uuid.UUID, error) {
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db.QueryContext(ctx,
 		`SELECT id FROM deploys
-		 WHERE status = 'running' AND ttl_expires_at < now() AND NOT `+aliasPinned+`
-		 LIMIT $1`,
-		limit,
+		 WHERE status = 'running' AND ttl_expires_at < ? AND NOT `+aliasPinned+`
+		 LIMIT ?`,
+		controldb.Now(), limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("find expired deploys: %w", err)
@@ -338,11 +345,11 @@ FROM deploys
 WHERE status = 'running'
   AND NOT ` + aliasPinned + `
   AND (
-        ttl_expires_at < now()
-        OR ($2 > 0 AND id IN (SELECT id FROM ranked WHERE rank > $2))
+        ttl_expires_at < ?
+        OR (? > 0 AND id IN (SELECT id FROM ranked WHERE rank > ?))
       )
-ORDER BY ttl_expires_at NULLS LAST
-LIMIT $1`
+ORDER BY ttl_expires_at IS NULL, ttl_expires_at
+LIMIT ?`
 
 // unpinIdleAliasesSQL releases an alias whose target has served no request
 // for the configured window. The domain stays verified — the user still owns
@@ -353,23 +360,23 @@ const unpinIdleAliasesSQL = `
 UPDATE custom_domains cd
 SET target_deploy_id = NULL,
     last_error = 'unpinned_idle',
-    updated_at = now()
+    updated_at = ?
 FROM deploys d
 WHERE cd.target_deploy_id = d.id
   AND cd.status = 'verified'
-  AND coalesce(d.last_request_at, d.updated_at) < now() - make_interval(days => $1::int)`
+  AND coalesce(d.last_request_at, d.updated_at) < ?`
 
 // FindExpiredWithDetails returns the deploys the watchdog should stop: TTL
 // expiry plus the alias-aware reclaim cases. Idle aliases are unpinned first,
 // in the same sweep, so a released deploy is picked up on this pass.
 func (r *Repository) FindExpiredWithDetails(ctx context.Context, limit int) ([]ExpiredDeploy, error) {
 	if r.gc.AliasIdleDays > 0 {
-		if _, err := r.pool.Exec(ctx, unpinIdleAliasesSQL, r.gc.AliasIdleDays); err != nil {
+		if _, err := r.db.ExecContext(ctx, unpinIdleAliasesSQL, r.gc.AliasIdleDays); err != nil {
 			return nil, fmt.Errorf("unpin idle aliases: %w", err)
 		}
 	}
 
-	rows, err := r.pool.Query(ctx, reclaimableSQL, limit, r.gc.KeepPerProject)
+	rows, err := r.db.QueryContext(ctx, reclaimableSQL, limit, r.gc.KeepPerProject)
 	if err != nil {
 		return nil, fmt.Errorf("find expired deploys with details: %w", err)
 	}
@@ -403,7 +410,7 @@ type RouteInfo struct {
 const subdomainRouteSQL = `
 SELECT id, container_id, status
 FROM deploys
-WHERE subdomain = $1
+WHERE subdomain = ?
   AND status = 'running'
   AND container_id IS NOT NULL
   AND container_id <> ''
@@ -417,7 +424,7 @@ const customDomainRouteSQL = `
 SELECT d.id, d.container_id, d.status
 FROM custom_domains cd
 JOIN deploys d ON d.id = cd.target_deploy_id
-WHERE cd.domain = $1
+WHERE cd.domain = ?
   AND cd.status = 'verified'
   AND d.status = 'running'
   AND d.container_id IS NOT NULL
@@ -442,9 +449,9 @@ func (r *Repository) FindRouteByHost(ctx context.Context, host string) (*RouteIn
 	var deployID uuid.UUID
 	var containerID string
 	var status string
-	err = r.pool.QueryRow(ctx, query, arg).Scan(&deployID, &containerID, &status)
+	err = r.db.QueryRowContext(ctx, query, arg).Scan(&deployID, &containerID, &status)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrRouteNotFound
 		}
 		return nil, fmt.Errorf("find route by host: %w", err)
@@ -494,12 +501,13 @@ func (r *Repository) isPlatformHost(host string) bool {
 // failed write must never fail the request. The throttle is what keeps this
 // from being one UPDATE per HTTP request.
 func (r *Repository) touchLastRequest(ctx context.Context, deployID uuid.UUID) {
-	_, _ = r.pool.Exec(ctx,
+	_, _ = r.db.ExecContext(ctx,
 		`UPDATE deploys
-		 SET last_request_at = now()
-		 WHERE id = $1
-		   AND (last_request_at IS NULL OR last_request_at < now() - make_interval(mins => $2::int))`,
-		deployID, touchIntervalMinutes,
+		 SET last_request_at = ?
+		 WHERE id = ?
+		   AND (last_request_at IS NULL OR last_request_at < ?)`,
+		controldb.Now(), deployID.String(),
+		controldb.FormatTime(time.Now().Add(-touchIntervalMinutes*time.Minute)),
 	)
 }
 

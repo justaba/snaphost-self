@@ -26,11 +26,10 @@ RUN go mod download
 COPY . .
 
 RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/snaphost ./cmd/snaphost
-# The two migrators stay separate binaries: a deployment may need to apply a
+# The migrator stays a separate binary: a deployment may need to apply a
 # schema change as its own step, before the service that would otherwise do it
 # at startup is allowed to start.
 RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/control-migrate ./cmd/control-migrate
-RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/ai-migrate ./cmd/ai-migrate
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
@@ -53,11 +52,13 @@ RUN apt-get update && \
 RUN groupadd --gid 1000 snaphost && \
     useradd --uid 1000 --gid 1000 --create-home --home-dir /home/snaphost snaphost
 
-RUN mkdir -p /var/snaphost/builds && chown snaphost:snaphost /var/snaphost/builds
+# Both directories are created here, with the right owner, because Docker
+# seeds a fresh named volume from the image — a mount point it creates itself
+# is owned by root, and this container is not.
+RUN mkdir -p /var/snaphost/builds /var/snaphost/data \n && chown -R snaphost:snaphost /var/snaphost
 
 COPY --from=builder /out/snaphost /snaphost
 COPY --from=builder /out/control-migrate /control-migrate
-COPY --from=builder /out/ai-migrate /ai-migrate
 COPY internal/gateway/rbac_model.conf /etc/snaphost/rbac_model.conf
 COPY internal/gateway/rbac_policy.csv /etc/snaphost/rbac_policy.csv
 

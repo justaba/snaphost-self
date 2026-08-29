@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
+	"database/sql"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	controldb "snaphost/internal/control/db"
 )
 
 // ErrSagaNotFound is returned when no row exists in deploy_sagas for the
@@ -18,12 +21,12 @@ var ErrSagaNotFound = errors.New("saga not found")
 // mutation is expressed as a small focused method so callers can read
 // the saga code as a sequence of intent-level actions.
 type Repository struct {
-	pool *pgxpool.Pool
+	db *sql.DB
 }
 
 // NewRepository constructs a Repository over the given connection pool.
-func NewRepository(pool *pgxpool.Pool) *Repository {
-	return &Repository{pool: pool}
+func NewRepository(handle *sql.DB) *Repository {
+	return &Repository{db: handle}
 }
 
 // Create inserts a new saga row in the pending step. Idempotent: if a
@@ -34,11 +37,11 @@ func (r *Repository) Create(ctx context.Context, deployID, userID uuid.UUID, sou
 	if sourceType == "" {
 		sourceType = "git_public"
 	}
-	_, err := r.pool.Exec(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO deploy_sagas (deploy_id, user_id, current_step, source_type, upload_id, credential_id)
-		 VALUES ($1, $2, 'pending', $3, nullif($4, ''), nullif($5, ''))
+		 VALUES (?, ?, 'pending', ?, nullif(?, ''), nullif(?, ''))
 		 ON CONFLICT (deploy_id) DO NOTHING`,
-		deployID, userID, sourceType, uploadID, credentialID,
+		deployID.String(), userID.String(), sourceType, uploadID, credentialID,
 	)
 	if err != nil {
 		return fmt.Errorf("create saga: %w", err)
@@ -59,14 +62,14 @@ func (r *Repository) Get(ctx context.Context, deployID uuid.UUID) (*SagaState, e
 		endpointURL   *string
 		failureReason *string
 	)
-	err := r.pool.QueryRow(ctx,
-		`SELECT deploy_id::text, user_id::text, current_step, source_type, upload_id, credential_id,
+	err := r.db.QueryRowContext(ctx,
+		`SELECT deploy_id, user_id, current_step, source_type, upload_id, credential_id,
 		        image_built, container_running,
 		        image_ref, commit_sha, app_port,
 		        container_id, endpoint_url,
 		        failure_reason, retry_count
-		 FROM deploy_sagas WHERE deploy_id = $1`,
-		deployID,
+		 FROM deploy_sagas WHERE deploy_id = ?`,
+		deployID.String(),
 	).Scan(
 		&s.DeployID, &s.UserID, &stepStr, &s.SourceType, &s.UploadID, &s.CredentialID,
 		&s.ImageBuilt, &s.ContainerRunning,
@@ -75,7 +78,7 @@ func (r *Repository) Get(ctx context.Context, deployID uuid.UUID) (*SagaState, e
 		&failureReason, &s.RetryCount,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrSagaNotFound
 		}
 		return nil, fmt.Errorf("get saga: %w", err)
@@ -93,18 +96,25 @@ func (r *Repository) Get(ctx context.Context, deployID uuid.UUID) (*SagaState, e
 // UpdateStep advances the state machine. The trigger on deploy_sagas
 // keeps updated_at fresh; started_at and completed_at are managed here.
 func (r *Repository) UpdateStep(ctx context.Context, deployID uuid.UUID, step Step) error {
-	tag, err := r.pool.Exec(ctx,
+	// The step is bound three times and the timestamp twice: SQLite's
+	// placeholders are positional, so each use needs its own.
+	now := controldb.Now()
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE deploy_sagas
-		 SET current_step = $1,
-		     started_at  = COALESCE(started_at, CASE WHEN $1 <> 'pending' THEN now() END),
-		     completed_at = CASE WHEN $1 IN ('running','failed','compensated') THEN now() ELSE completed_at END
-		 WHERE deploy_id = $2`,
-		string(step), deployID,
+		 SET current_step = ?,
+		     started_at   = COALESCE(started_at, CASE WHEN ? <> 'pending' THEN ? END),
+		     completed_at = CASE WHEN ? IN ('running','failed','compensated') THEN ? ELSE completed_at END
+		 WHERE deploy_id = ?`,
+		string(step), string(step), now, string(step), now, deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("update saga step: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update saga step: %w", err)
+	}
+	if affected == 0 {
 		return ErrSagaNotFound
 	}
 	return nil
@@ -118,14 +128,14 @@ func (r *Repository) MarkImageBuilt(ctx context.Context, deployID uuid.UUID, ima
 	if port > 0 {
 		portArg = port
 	}
-	_, err := r.pool.Exec(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`UPDATE deploy_sagas
-		    SET image_built = true,
-		        image_ref   = $1,
-		        commit_sha  = $2,
-		        app_port    = COALESCE($3, app_port)
-		  WHERE deploy_id = $4`,
-		imageRef, commitSHA, portArg, deployID,
+		    SET image_built = 1,
+		        image_ref   = ?,
+		        commit_sha  = ?,
+		        app_port    = COALESCE(?, app_port)
+		  WHERE deploy_id = ?`,
+		imageRef, commitSHA, portArg, deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("mark image built: %w", err)
@@ -135,9 +145,9 @@ func (r *Repository) MarkImageBuilt(ctx context.Context, deployID uuid.UUID, ima
 
 // MarkContainerRunning records the runtime details from runner-svc.
 func (r *Repository) MarkContainerRunning(ctx context.Context, deployID uuid.UUID, containerID, endpointURL string) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE deploy_sagas SET container_running = true, container_id = $1, endpoint_url = $2 WHERE deploy_id = $3`,
-		containerID, endpointURL, deployID,
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE deploy_sagas SET container_running = 1, container_id = ?, endpoint_url = ? WHERE deploy_id = ?`,
+		containerID, endpointURL, deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("mark container running: %w", err)
@@ -148,11 +158,11 @@ func (r *Repository) MarkContainerRunning(ctx context.Context, deployID uuid.UUI
 // MarkFailed transitions the saga into the failed terminal state and
 // records the user-visible reason.
 func (r *Repository) MarkFailed(ctx context.Context, deployID uuid.UUID, reason string) error {
-	_, err := r.pool.Exec(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`UPDATE deploy_sagas
-		 SET current_step = 'failed', failure_reason = $1, completed_at = now()
-		 WHERE deploy_id = $2`,
-		reason, deployID,
+		 SET current_step = 'failed', failure_reason = ?, completed_at = ?
+		 WHERE deploy_id = ?`,
+		reason, controldb.Now(), deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("mark saga failed: %w", err)
@@ -162,11 +172,11 @@ func (r *Repository) MarkFailed(ctx context.Context, deployID uuid.UUID, reason 
 
 // MarkCompensated transitions the saga into the compensated terminal state.
 func (r *Repository) MarkCompensated(ctx context.Context, deployID uuid.UUID) error {
-	_, err := r.pool.Exec(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`UPDATE deploy_sagas
-		 SET current_step = 'compensated', completed_at = now()
-		 WHERE deploy_id = $1`,
-		deployID,
+		 SET current_step = 'compensated', completed_at = ?
+		 WHERE deploy_id = ?`,
+		controldb.Now(), deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("mark saga compensated: %w", err)
@@ -177,9 +187,9 @@ func (r *Repository) MarkCompensated(ctx context.Context, deployID uuid.UUID) er
 // IncrementRetry bumps retry_count and stores the most recent transient
 // error for operator visibility. Does not move the state machine.
 func (r *Repository) IncrementRetry(ctx context.Context, deployID uuid.UUID, lastError string) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE deploy_sagas SET retry_count = retry_count + 1, last_error = $1 WHERE deploy_id = $2`,
-		lastError, deployID,
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE deploy_sagas SET retry_count = retry_count + 1, last_error = ? WHERE deploy_id = ?`,
+		lastError, deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("increment saga retry: %w", err)
@@ -191,18 +201,21 @@ func (r *Repository) IncrementRetry(ctx context.Context, deployID uuid.UUID, las
 // state for at least 5 minutes. The resume sweeper enqueues synthetic
 // jobs for each one so the orchestrator can pick up where it left off.
 func (r *Repository) ListInFlight(ctx context.Context, limit int) ([]SagaState, error) {
-	rows, err := r.pool.Query(ctx,
-		`SELECT s.deploy_id::text, s.user_id::text, s.current_step, s.source_type, s.upload_id, s.credential_id,
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT s.deploy_id, s.user_id, s.current_step, s.source_type, s.upload_id, s.credential_id,
 		        s.image_built, s.container_running,
 		        s.image_ref, s.commit_sha, s.app_port,
 		        s.container_id, s.endpoint_url,
 		        s.failure_reason, s.retry_count
 		 FROM deploy_sagas s
 		 WHERE s.current_step IN ('pending','building','built','provisioning','compensating')
-		   AND s.updated_at < now() - interval '5 minutes'
+		   AND s.updated_at < ?
 		 ORDER BY s.updated_at
-		 LIMIT $1`,
-		limit,
+		 LIMIT ?`,
+		// The cutoff is computed here rather than in SQL: SQLite's datetime()
+		// produces 'YYYY-MM-DD HH:MM:SS', which does not compare correctly
+		// against the RFC 3339 text this column holds.
+		controldb.FormatTime(time.Now().Add(-5*time.Minute)), limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list in-flight sagas: %w", err)

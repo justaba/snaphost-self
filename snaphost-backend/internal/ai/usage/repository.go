@@ -2,8 +2,9 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/google/uuid"
 )
 
 type UsageEntry struct {
@@ -22,21 +23,23 @@ type UsageEntry struct {
 }
 
 type Repository struct {
-	pool *pgxpool.Pool
+	db *sql.DB
 }
 
-func NewRepository(pool *pgxpool.Pool) *Repository {
-	return &Repository{pool: pool}
+func NewRepository(handle *sql.DB) *Repository {
+	return &Repository{db: handle}
 }
 
 func (r *Repository) Record(ctx context.Context, entry UsageEntry) error {
-	_, err := r.pool.Exec(ctx, `
+	// The id is generated here: SQLite has no gen_random_uuid(), and created_at
+	// comes from the column default.
+	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO ai_usage_log (
-			deploy_id, user_id, provider, model, operation, 
-			input_tokens, output_tokens, cost_usd_micro, duration_ms, 
+			id, deploy_id, user_id, provider, model, operation,
+			input_tokens, output_tokens, cost_usd_micro, duration_ms,
 			success, error_class, cache_hit
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, entry.DeployID, entry.UserID, entry.Provider, entry.Model,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, uuid.NewString(), entry.DeployID, entry.UserID, entry.Provider, entry.Model,
 		entry.Operation, entry.InputTokens, entry.OutputTokens, entry.CostUSDMicro,
 		entry.DurationMs, entry.Success, entry.ErrorClass, entry.CacheHit)
 	return err

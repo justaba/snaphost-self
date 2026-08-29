@@ -12,8 +12,9 @@ import (
 type Config struct {
 	// Port is the HTTP listen port for the service.
 	Port string
-	// DatabaseURL is the full PostgreSQL connection string (e.g. postgres://user:pass@host:5432/db).
-	DatabaseURL string
+	// DatabasePath is where the SQLite file lives. A directory that does not
+	// exist yet is created — a fresh install points this at an empty volume.
+	DatabasePath string
 	// RedisURL is the Redis connection string used by the saga queue and
 	// the build-events subscription. Optional — if empty, the saga
 	// worker is disabled regardless of SagaWorkerEnabled.
@@ -116,16 +117,11 @@ func Load() (*Config, error) {
 		Port:     envOrDefault("PORT", "8081"),
 		LogLevel: envOrDefault("LOG_LEVEL", "info"),
 		RedisURL: envOrDefault("REDIS_URL", ""),
-
-		BuilderSvcURL: envOrDefault("BUILDER_SVC_URL", "http://builder-api:8082"),
-		RunnerSvcURL:  envOrDefault("RUNNER_SVC_URL", "http://runner-api:8084"),
 	}
 
-	// Required: DATABASE_URL
-	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
-	if cfg.DatabaseURL == "" {
-		return nil, fmt.Errorf("config: DATABASE_URL is required but not set")
-	}
+	// Optional: DATABASE_PATH. The default sits under a directory a container
+	// can own, so the common case needs no configuration at all.
+	cfg.DatabasePath = envOrDefault("DATABASE_PATH", "/var/snaphost/data/snaphost.db")
 
 	// Required: WEBHOOK_SECRET
 	cfg.WebhookSecret = os.Getenv("WEBHOOK_SECRET")

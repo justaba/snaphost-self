@@ -9,8 +9,10 @@
 //
 //  1. configuration for every area, so a missing variable fails before any
 //     connection is opened;
-//  2. migrations, before the pool — a schema change must not race a reader;
-//  3. one PostgreSQL pool and one Redis client, shared by everything;
+//  1. configuration for every area, so a missing variable fails before any
+//     connection is opened;
+//  2. the store, opened and migrated on one handle;
+//  3. one Redis client, shared by everything;
 //  4. components, then the adapters that join them;
 //  5. one HTTP engine;
 //  6. background loops last, so nothing starts working before the thing it
@@ -26,9 +28,10 @@ import (
 	"syscall"
 	"time"
 
+	"database/sql"
+
 	"github.com/casbin/casbin/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -36,7 +39,6 @@ import (
 	aiapi "snaphost/internal/ai/api"
 	aicache "snaphost/internal/ai/cache"
 	aiconfig "snaphost/internal/ai/config"
-	aidb "snaphost/internal/ai/db"
 	aillm "snaphost/internal/ai/llm"
 	aiservice "snaphost/internal/ai/service"
 	aiusage "snaphost/internal/ai/usage"
@@ -113,27 +115,25 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// 2. Migrations before the pool. Both schemas live in the same database
-	//    and are applied by their own migrator, in the order they were always
-	//    applied in.
-	if ctlCfg.RunMigrations {
-		if err := controldb.RunMigrations(ctlCfg.DatabaseURL, log); err != nil {
-			log.Fatal("control migrations failed", zap.Error(err))
-		}
-	}
-	if aiCfg.RunMigrations {
-		if err := aidb.Migrate(aiCfg.DatabaseURL); err != nil {
-			log.Fatal("ai migrations failed", zap.Error(err))
-		}
-	}
-
-	// 3. One pool and one Redis client for everything. Two pools against the
-	//    same database was an artefact of two processes.
-	pool, err := controldb.NewPool(ctx, ctlCfg.DatabaseURL)
+	// 2. One store, opened before anything reads it, then migrated on the same
+	//    handle. Migrating through a connection of its own would apply the
+	//    schema with foreign keys off, since SQLite's pragmas are per
+	//    connection — the constraints would be created and not enforced.
+	//
+	//    The generator's two tables live here too. They were a separate
+	//    migration history against the same database only because the
+	//    generator was a separate service.
+	pool, err := controldb.Open(ctx, ctlCfg.DatabasePath)
 	if err != nil {
-		log.Fatal("database connection failed", zap.Error(err))
+		log.Fatal("database open failed", zap.Error(err))
 	}
 	defer pool.Close()
+
+	if ctlCfg.RunMigrations {
+		if err := controldb.RunMigrations(pool, log); err != nil {
+			log.Fatal("migrations failed", zap.Error(err))
+		}
+	}
 
 	rdb, err := newRedis(ctx, ctlCfg.RedisURL)
 	if err != nil {
@@ -215,7 +215,7 @@ type aiParts struct {
 	handler *aiapi.Handler
 }
 
-func buildAI(pool *pgxpool.Pool, cfg *aiconfig.Config, log *zap.Logger) aiParts {
+func buildAI(pool *sql.DB, cfg *aiconfig.Config, log *zap.Logger) aiParts {
 	inner := aillm.NewClient(aillm.Config{
 		APIKey:   cfg.OpenRouterAPIKey,
 		BaseURL:  cfg.LLMBaseURL,
@@ -235,7 +235,7 @@ type runtimeParts struct {
 	billing *wiring.BillingClient
 }
 
-func buildRuntime(pool *pgxpool.Pool, cfg *runtimeconfig.Config, rdb *redis.Client, log *zap.Logger) runtimeParts {
+func buildRuntime(pool *sql.DB, cfg *runtimeconfig.Config, rdb *redis.Client, log *zap.Logger) runtimeParts {
 	publisher := runtimelogs.NewRedisPublisher(rdb, log)
 
 	// The runtime used to reach the control plane over HTTP to check
@@ -271,7 +271,7 @@ type builderParts struct {
 	runner   *builderpipeline.Runner
 }
 
-func buildBuilder(pool *pgxpool.Pool, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, rdb *redis.Client, log *zap.Logger) builderParts {
+func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, rdb *redis.Client, log *zap.Logger) builderParts {
 	_ = aiCfg
 
 	q := builderqueue.NewQueue(rdb, log)
@@ -346,7 +346,7 @@ type controlParts struct {
 }
 
 func buildControl(
-	pool *pgxpool.Pool,
+	pool *sql.DB,
 	cfg *controlconfig.Config,
 	enqueuer *builderapi.Enqueuer,
 	runtimeSvc *runner.Service,
@@ -424,7 +424,7 @@ func buildControl(
 // deployRepo builds the deploy repository. cfg may be nil for the runtime and
 // builder sides, which only read and write rows by id and never consult the
 // GC policy or the domain suffix.
-func deployRepo(pool *pgxpool.Pool, cfg *controlconfig.Config) *deploy.Repository {
+func deployRepo(pool *sql.DB, cfg *controlconfig.Config) *deploy.Repository {
 	if cfg == nil {
 		return deploy.NewRepository(pool)
 	}

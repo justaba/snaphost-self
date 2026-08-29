@@ -132,19 +132,6 @@ services:
       DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
       LOG_LEVEL: "${LOG_LEVEL}"
 
-  snaphost-ai-migrate:
-    image: "${GHCR_IMAGE_PREFIX}/snaphost:${SNAPHOST_VERSION}"
-    profiles: ["migration"]
-    entrypoint: ["/ai-migrate"]
-    restart: "no"
-    networks:
-      - data
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
-      LOG_LEVEL: "${LOG_LEVEL}"
 
   postgres:
     image: "postgres:16.4-alpine3.20"

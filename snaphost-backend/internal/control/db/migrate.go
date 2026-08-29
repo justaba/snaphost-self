@@ -1,13 +1,14 @@
-// Package db provides database connection pooling and embedded migration support.
+// Package db provides the SQLite store and embedded migration support.
 package db
 
 import (
+	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
 
 	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
+	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"go.uber.org/zap"
 )
@@ -15,28 +16,31 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// RunMigrations applies all pending database migrations embedded in the binary.
-// It logs the current and target versions and returns an error if the database
-// is in a dirty state or if migration application fails.
-func RunMigrations(databaseURL string, log *zap.Logger) error {
+// RunMigrations applies all pending migrations on the given handle.
+//
+// It takes an open *sql.DB rather than a URL for two reasons. The obvious one
+// is that golang-migrate's sqlite:// URL is parsed with net/url, and a Windows
+// path puts a colon after the drive letter, which that parser reads as a port.
+// The better one is that a URL makes the migrator open a second connection of
+// its own — without the pragmas Open sets, so foreign keys would be off while
+// the schema that declares them was being created.
+func RunMigrations(handle *sql.DB, log *zap.Logger) error {
 	sourceDriver, err := iofs.New(migrationsFS, "migrations")
 	if err != nil {
 		return fmt.Errorf("create migration source: %w", err)
 	}
 
-	m, err := migrate.NewWithSourceInstance("iofs", sourceDriver, databaseURL)
+	dbDriver, err := migratesqlite.WithInstance(handle, &migratesqlite.Config{})
+	if err != nil {
+		return fmt.Errorf("create migration driver: %w", err)
+	}
+
+	m, err := migrate.NewWithInstance("iofs", sourceDriver, "sqlite", dbDriver)
 	if err != nil {
 		return fmt.Errorf("create migrator: %w", err)
 	}
-	defer func() {
-		sourceErr, dbErr := m.Close()
-		if sourceErr != nil {
-			log.Warn("failed to close migration source", zap.Error(sourceErr))
-		}
-		if dbErr != nil {
-			log.Warn("failed to close migration db connection", zap.Error(dbErr))
-		}
-	}()
+	// Deliberately not m.Close(): that would close the handle the caller owns
+	// and is about to serve every request from.
 
 	version, dirty, err := m.Version()
 	if err != nil && !errors.Is(err, migrate.ErrNilVersion) {

@@ -7,12 +7,14 @@ Updated: 2026-08-29
 
 | Task | Status | Document |
 | --- | --- | --- |
-| 1 — Collapse the control plane into one binary | In progress — the cloud runtime path, dead docs, billing and the module split are gone, and the platform is one process. SQLite, removing Supabase, the in-process queue, `GOMEMLIMIT`, the docs rewrite and the embedded panel remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
+| 1 — Collapse the control plane into one binary | In progress — the cloud runtime path, dead docs, billing and the module split are gone, the platform is one process, and the store is SQLite. Removing Supabase, the in-process queue, `GOMEMLIMIT`, the docs rewrite and the embedded panel remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
 
-Remaining order inside Task 1: **6** SQLite → **6a** remove Supabase and issue
-operator identity → **7** in-process queue → **8** `GOMEMLIMIT` → **9** docs →
-**10** the panel. 6a sits after 6 because it adds a table and 6 is already
-squashing the migration history; 10 sits last because it logs into 6a.
+Remaining order inside Task 1: **6a** remove Supabase and issue operator
+identity → **7** in-process queue → **8** `GOMEMLIMIT` → **9** docs → **10** the
+panel. 10 sits last because it logs into 6a.
+
+Measured after item 6: **56.1 MiB idle across five containers**, from 131.1 MiB
+across twelve. The application itself is 9.6 of that.
 
 ## Planned
 

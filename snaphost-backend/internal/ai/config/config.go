@@ -15,8 +15,8 @@ import (
 type Config struct {
 	// Port is the HTTP listen port (env PORT, default 8083).
 	Port string
-	// DatabaseURL is the Postgres connection string (env DATABASE_URL, required).
-	DatabaseURL string
+	// RunMigrations is kept only so the generator half can be told not to
+	// migrate; the schema itself lives with the control plane now.
 	// LogLevel controls zap log verbosity (env LOG_LEVEL, default "info").
 	LogLevel string
 	// WebhookSecret is the shared secret for internal service-to-service auth
@@ -84,7 +84,6 @@ type Config struct {
 func Load() (*Config, error) {
 	c := &Config{
 		Port:               getEnv("PORT", "8083"),
-		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		LogLevel:           getEnv("LOG_LEVEL", "info"),
 		WebhookSecret:      os.Getenv("WEBHOOK_SECRET"),
 		LLMTimeout:         getEnvDuration("LLM_TIMEOUT", 30*time.Second),
@@ -111,9 +110,6 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: ALLOWED_BASE_IMAGES resolved to empty list")
 	}
 
-	if c.DatabaseURL == "" {
-		return nil, errors.New("DATABASE_URL is required")
-	}
 	if c.WebhookSecret == "" {
 		return nil, errors.New("WEBHOOK_SECRET is required")
 	}

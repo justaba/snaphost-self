@@ -27,8 +27,9 @@ import (
 	"net/http"
 	"time"
 
+	"database/sql"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 
 	aillm "snaphost/internal/ai/llm"
@@ -262,9 +263,9 @@ func (c *BillingClient) GetDeploy(ctx context.Context, deployID string) (*billin
 	}
 	d, err := c.Repo.Get(ctx, id)
 	if err != nil {
-		// The repository wraps pgx.ErrNoRows rather than exporting a sentinel
+		// The repository wraps sql.ErrNoRows rather than exporting a sentinel
 		// of its own, so that is what "no such deploy" looks like here.
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, billing.ErrDeployNotFound
 		}
 		return nil, err

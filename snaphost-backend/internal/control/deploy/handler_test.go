@@ -11,9 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"database/sql"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 
 	"snaphost/internal/control/saga"
@@ -172,7 +173,7 @@ func TestGetDeployInternal_EmptyImageRefIsSerialized(t *testing.T) {
 func TestGetDeployInternal_NotFound(t *testing.T) {
 	repo := &fakeRepo{
 		getFn: func(_ context.Context, _ uuid.UUID) (*Deploy, error) {
-			return nil, fmt.Errorf("deploy not found: %w", pgx.ErrNoRows)
+			return nil, fmt.Errorf("deploy not found: %w", sql.ErrNoRows)
 		},
 	}
 	h := newTestHandler(repo)

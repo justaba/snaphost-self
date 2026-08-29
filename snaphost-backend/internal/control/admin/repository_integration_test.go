@@ -2,46 +2,41 @@ package admin
 
 import (
 	"context"
-	"os"
+
 	"testing"
 
+	"database/sql"
+	"path/filepath"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"go.uber.org/zap"
+
+	controldb "snaphost/internal/control/db"
 )
 
-// These tests run the real queries against a real PostgreSQL, because that is
+// These tests run the real queries against a real database, because that is
 // the only thing that can catch a wrong column name, a scan order that drifted
 // from its SELECT list, or a join that silently drops rows — none of which the
 // handler tests can see.
 //
-// Skipped unless ADMIN_TEST_DATABASE_URL points at a database with the
-// user-billing migrations applied:
-//
-//	docker run -d --rm --name ub-test -e POSTGRES_PASSWORD=throwaway \
-//	  -e POSTGRES_DB=snaphost -p 55432:5432 postgres:16
-//	for f in db/migrations/*.up.sql; do
-//	  docker exec -i ub-test psql -U postgres -d snaphost -v ON_ERROR_STOP=1 -q < "$f"
-//	done
-//	ADMIN_TEST_DATABASE_URL=postgres://postgres:throwaway@localhost:55432/snaphost \
-//	  go test ./internal/admin/ -run Integration -v
-func testPool(t *testing.T) *pgxpool.Pool {
+// They used to need a PostgreSQL container and an ADMIN_TEST_DATABASE_URL, so
+// in practice they ran when someone remembered and never in CI. On SQLite the
+// database is a file in a temp directory, so they run like any other test —
+// which is the point of the engine change as much as the memory is.
+func testPool(t *testing.T) *sql.DB {
 	t.Helper()
 
-	dsn := os.Getenv("ADMIN_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("ADMIN_TEST_DATABASE_URL not set; skipping database-backed admin tests")
-	}
-
-	pool, err := pgxpool.New(context.Background(), dsn)
+	handle, err := controldb.Open(context.Background(), filepath.Join(t.TempDir(), "admin.db"))
 	if err != nil {
-		t.Fatalf("connect: %v", err)
+		t.Fatalf("open database: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() { handle.Close() })
 
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Fatalf("ping: %v", err)
+	if err := controldb.RunMigrations(handle, zap.NewNop()); err != nil {
+		t.Fatalf("apply baseline: %v", err)
 	}
-	return pool
+	return handle
 }
 
 // seed inserts one account with a wallet, a project, two deploys, a saga, the
@@ -57,7 +52,7 @@ type seeded struct {
 	domain   uuid.UUID
 }
 
-func seed(t *testing.T, pool *pgxpool.Pool) seeded {
+func seed(t *testing.T, pool *sql.DB) seeded {
 	t.Helper()
 	ctx := context.Background()
 
@@ -72,36 +67,37 @@ func seed(t *testing.T, pool *pgxpool.Pool) seeded {
 
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.ExecContext(ctx, sql, args...); err != nil {
 			t.Fatalf("seed %q: %v", sql, err)
 		}
 	}
 
-	exec(`INSERT INTO users (id, email) VALUES ($1, $2)`, s.userID, s.email)
-	exec(`INSERT INTO projects (id, user_id, slug, source_key) VALUES ($1, $2, $3, $4)`,
-		s.project, s.userID, "demo-app", "git:github.com/acme/demo#main")
+	exec(`INSERT INTO users (id, email) VALUES (?, ?)`, s.userID.String(), s.email)
+	exec(`INSERT INTO projects (id, user_id, slug, source_key) VALUES (?, ?, ?, ?)`,
+		s.project.String(), s.userID.String(), "demo-app", "git:github.com/acme/demo#main")
 
 	exec(`INSERT INTO deploys (id, user_id, project_id, source_type, repo_url, branch, status,
 	          subdomain, endpoint_url, container_id)
 	      VALUES ($1, $2, $3, 'git_public', 'https://github.com/acme/demo', 'main', 'running',
 	              $4, 'https://proj.example.test', 'container-1')`,
-		s.deployOK, s.userID, s.project, "proj-"+s.deployOK.String()[:12])
+		s.deployOK.String(), s.userID.String(), s.project.String(), "proj-"+s.deployOK.String()[:12])
 
 	exec(`INSERT INTO deploys (id, user_id, project_id, source_type, status,
 	          failure_reason, upload_id)
 	      VALUES ($1, $2, $3, 'archive', 'failed',
 	              'the container started but nothing answered on PORT', 'upload-1')`,
-		s.deployKO, s.userID, s.project)
+		s.deployKO.String(), s.userID.String(), s.project.String())
 
 	exec(`INSERT INTO deploy_sagas (deploy_id, user_id, current_step, image_built,
 	          container_running, retry_count, failure_reason)
 	      VALUES ($1, $2, 'failed', true, false, 2, 'probe_failed')`,
-		s.deployKO, s.userID)
+		s.deployKO.String(), s.userID.String())
 
 	exec(`INSERT INTO custom_domains (id, user_id, project_id, target_deploy_id, domain,
 	          verification_token, status, verified_at)
-	      VALUES ($1, $2, $3, $4, $5, 'token', 'verified', now())`,
-		s.domain, s.userID, s.project, s.deployOK, "app-"+s.userID.String()[:8]+".example.test")
+	      VALUES (?, ?, ?, ?, ?, 'token', 'verified', ?)`,
+		s.domain.String(), s.userID.String(), s.project.String(), s.deployOK.String(),
+		"app-"+s.userID.String()[:8]+".example.test", controldb.Now())
 
 	exec(`INSERT INTO api_keys (user_id, key_hash, key_prefix, name)
 	      VALUES ($1, $2, 'sk_live_abcd', 'mcp')`, s.userID, "hash-"+s.userID.String())
@@ -334,7 +330,7 @@ func TestIntegration_AccountWithNoActivityIsListed(t *testing.T) {
 
 	orphan := uuid.New()
 	email := "orphan-" + orphan.String()[:8] + "@example.test"
-	if _, err := pool.Exec(ctx, `INSERT INTO users (id, email) VALUES ($1, $2)`, orphan, email); err != nil {
+	if _, err := pool.ExecContext(ctx, `INSERT INTO users (id, email) VALUES (?, ?)`, orphan.String(), email); err != nil {
 		t.Fatalf("seed orphan: %v", err)
 	}
 

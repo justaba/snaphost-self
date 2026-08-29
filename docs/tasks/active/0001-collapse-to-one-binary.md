@@ -2,7 +2,7 @@
 
 **Status:** In progress. The cloud runtime path, the dead documentation, and
 billing are removed, the six modules are one, and the platform is a single
-binary. SQLite, removing Supabase, the in-process queue, GOMEMLIMIT, the docs
+binary on SQLite. Removing Supabase, the in-process queue, GOMEMLIMIT, the docs
 rewrite and the embedded panel remain.
 **Created:** 2026-08-29
 **Updated:** 2026-08-29
@@ -28,18 +28,22 @@ containers. Go services idle at 3–13 MiB each, not the 20–40 MiB assumed.
 | registry | 5.2 | 5.2 |
 | **total idle** | **131.1 MiB** | **96.8 MiB** |
 
+After item 6 removed PostgreSQL: **56.1 MiB across five containers** — snaphost
+9.6, Traefik 21.0, BuildKit 16.2, Redis 4.8, registry 4.5.
+
 So the ~170 MB target was already met before any of this work, and the headline
 justification was overstated by roughly four times. What the measurement does
 support is narrower and still real: the application side went from 40.5 MiB
 across seven processes to 8.9 MiB in one, and six containers stopped existing.
 
-Items 6 and 7 are where the rest is: PostgreSQL (25.7) and Redis (17.8) are
-together more than four times the whole application, and the registry (5.2)
-goes with them. That projects to roughly **50 MiB** — the binary, BuildKit and
-an edge — which is the number worth aiming at now.
+Item 7 and the edge are what is left: Redis at 4.8 and the registry at 4.5 are
+now small beside Traefik at 21.0, which Caddy replaces in Task 4. The floor is
+BuildKit at 16.2, and it only exists while something is being built.
+
 
 The figure that matters is still what is left over rather than what the
-platform uses: on a 1 GB box, 50 MiB of platform leaves 950 MiB for the sites.
+platform uses: on a 1 GB box, 56 MiB of platform leaves nearly 970 MiB for the
+sites.
 
 ## Why this is deletion, not optimisation
 
@@ -212,14 +216,45 @@ host before it becomes a plan.
      it restarts as a unit.
    - **A panic takes everything.** Recovery middleware covers the request
      path; the background loops do not have an equivalent yet.
-6. [ ] Port the store to SQLite and squash thirteen migrations into one baseline.
+6. [x] Port the store to SQLite and squash thirteen migrations into one baseline.
    There is no data to migrate — a fork starts empty — so the inherited
    migration history buys nothing and carries vibecoin columns forward.
 
-   The data model itself is not the work here and does not change: `projects`,
-   `deploys`, `deploy_sagas`, `custom_domains`, `api_keys` and `users` already
-   hold everything a project and its sites need. Only the engine underneath
-   them moves.
+   The data model itself did not change: `projects`, `deploys`, `deploy_sagas`,
+   `custom_domains`, `api_keys` and `users` already held everything a project
+   and its sites need. Only the engine underneath them moved.
+
+   The driver is `modernc.org/sqlite`, pure Go. The cgo one is faster and
+   unusable: every image builds with `CGO_ENABLED=0`, and the static binary is
+   most of what keeps the runtime image small.
+
+   Three translations were the whole difficulty, and each is a silent failure
+   rather than an error:
+
+   - **Timestamps are TEXT, so every comparison is string ordering.** It is
+     correct only because the format is fixed-width RFC 3339 in UTC. SQLite's
+     own `datetime('now')` returns `YYYY-MM-DD HH:MM:SS` — the space where the
+     `T` belongs sorts before every digit, so `last_used_at < datetime(…)`
+     would have marked *every* row expired. Column defaults use `strftime`;
+     every comparison is a value computed in Go.
+   - **Placeholders are positional.** PostgreSQL reused `$1` three times in one
+     `UPDATE`; SQLite needs a `?` and an argument per mention. Four statements
+     changed shape, and `admin`'s filters gained argument builders so the
+     repetition is defined next to the SQL rather than counted at the call site.
+   - **`time.Time` does not scan.** `google/uuid` implements `sql.Scanner`, so
+     ids were free; timestamps needed `db.Into` and `db.IntoNull`, which write
+     into an existing struct field so the models kept their types.
+
+   The admin integration tests are the visible win. They needed a PostgreSQL
+   container and an `ADMIN_TEST_DATABASE_URL`, so they ran when someone
+   remembered and never in CI. The database is now a file in a temp directory
+   and they run like any other test — which is how three scan errors in this
+   port were caught.
+
+   Five new tests cover the schema itself: that the baseline applies, that its
+   down migration is a real reversal, that foreign keys are actually enforced
+   rather than merely declared, that an `updated_at` trigger fires, and that
+   the timestamp format is what everything else assumes.
 
 6a. [ ] Remove Supabase, and issue identity ourselves.
 

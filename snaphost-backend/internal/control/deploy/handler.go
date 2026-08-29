@@ -14,9 +14,10 @@ import (
 	"strconv"
 	"time"
 
+	"database/sql"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 
 	"snaphost/internal/control/gitcred"
@@ -702,7 +703,7 @@ func (h *Handler) GetDeployInternal(c *gin.Context) {
 
 	d, err := h.repo.Get(c.Request.Context(), deployID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "deploy not found"})
 			return
 		}

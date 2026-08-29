@@ -11,8 +11,11 @@ func TestUpdateStatusSQLStoppedAtAccounting(t *testing.T) {
 		want string
 	}{
 		{
+			// The status is bound twice because SQLite's placeholders are
+			// positional, and the timestamp is a parameter because its date
+			// functions produce a format these columns do not use.
 			name: "stopped status sets stopped_at",
-			want: "WHEN $1 = 'stopped' THEN COALESCE(stopped_at, now())",
+			want: "WHEN ? = 'stopped' THEN COALESCE(stopped_at, ?)",
 		},
 		{
 			name: "non stopped statuses preserve stopped_at",
@@ -75,10 +78,14 @@ func TestReclaimNeverTakesAnAliasedDeploy(t *testing.T) {
 	if !strings.Contains(normalized, "AND NOT EXISTS ( SELECT 1 FROM custom_domains cd") {
 		t.Fatalf("reclaim sweep must exclude alias-pinned deploys: %s", normalized)
 	}
-	if !strings.Contains(normalized, "ttl_expires_at < now()") {
+	// The cutoff is a bound parameter rather than now(): SQLite's date
+	// functions produce a format that does not compare correctly against the
+	// RFC 3339 text these columns hold, so every timestamp comparison is
+	// computed in Go.
+	if !strings.Contains(normalized, "ttl_expires_at < ?") {
 		t.Fatalf("reclaim sweep must still honor TTL expiry: %s", normalized)
 	}
-	if !strings.Contains(normalized, "rank > $2") {
+	if !strings.Contains(normalized, "rank > ?") {
 		t.Fatalf("reclaim sweep must apply per-project retention: %s", normalized)
 	}
 

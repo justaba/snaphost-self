@@ -2,26 +2,27 @@ package apikey
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	controldb "snaphost/internal/control/db"
 )
 
 // ErrNotFound is returned when no active key matches the lookup.
 var ErrNotFound = errors.New("api key not found")
 
-// Repository persists API keys in PostgreSQL.
+// Repository persists API keys.
 type Repository struct {
-	pool *pgxpool.Pool
+	db *sql.DB
 }
 
-// NewRepository builds a Repository over the given pool.
-func NewRepository(pool *pgxpool.Pool) *Repository {
-	return &Repository{pool: pool}
+// NewRepository builds a Repository over the given handle.
+func NewRepository(handle *sql.DB) *Repository {
+	return &Repository{db: handle}
 }
 
 // Info is the non-secret view of a key returned in listings.
@@ -35,29 +36,33 @@ type Info struct {
 
 // Create inserts a new key and returns its id and creation time.
 func (r *Repository) Create(ctx context.Context, userID uuid.UUID, hash, prefix, name string) (uuid.UUID, time.Time, error) {
-	var id uuid.UUID
-	var createdAt time.Time
-	err := r.pool.QueryRow(ctx,
-		`INSERT INTO api_keys (user_id, key_hash, key_prefix, name)
-		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, created_at`,
-		userID, hash, prefix, name,
-	).Scan(&id, &createdAt)
+	// The id is generated here rather than by the database: SQLite has no
+	// gen_random_uuid().
+	id := uuid.New()
+	createdAt := time.Now().UTC()
+
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO api_keys (id, user_id, key_hash, key_prefix, name, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		id.String(), userID.String(), hash, prefix, name, controldb.FormatTime(createdAt),
+	)
 	if err != nil {
 		return uuid.Nil, time.Time{}, fmt.Errorf("create api key: %w", err)
 	}
-	return id, createdAt, nil
+	// Truncated to the stored precision so the value returned to the caller is
+	// the value a later read will produce.
+	return id, createdAt.Truncate(time.Millisecond), nil
 }
 
 // VerifyByHash resolves an active (non-revoked) key by its hash to the owning
 // user and key id. Returns ErrNotFound if no active key matches.
 func (r *Repository) VerifyByHash(ctx context.Context, hash string) (userID, keyID uuid.UUID, err error) {
-	err = r.pool.QueryRow(ctx,
+	err = r.db.QueryRowContext(ctx,
 		`SELECT user_id, id FROM api_keys
-		 WHERE key_hash = $1 AND revoked_at IS NULL`,
+		 WHERE key_hash = ? AND revoked_at IS NULL`,
 		hash,
 	).Scan(&userID, &keyID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return uuid.Nil, uuid.Nil, ErrNotFound
 	}
 	if err != nil {
@@ -68,12 +73,12 @@ func (r *Repository) VerifyByHash(ctx context.Context, hash string) (userID, key
 
 // List returns all active keys for a user, newest first.
 func (r *Repository) List(ctx context.Context, userID uuid.UUID) ([]Info, error) {
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, key_prefix, name, created_at, last_used_at
 		 FROM api_keys
-		 WHERE user_id = $1 AND revoked_at IS NULL
+		 WHERE user_id = ? AND revoked_at IS NULL
 		 ORDER BY created_at DESC`,
-		userID,
+		userID.String(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list api keys: %w", err)
@@ -83,7 +88,8 @@ func (r *Repository) List(ctx context.Context, userID uuid.UUID) ([]Info, error)
 	var out []Info
 	for rows.Next() {
 		var i Info
-		if err := rows.Scan(&i.ID, &i.Prefix, &i.Name, &i.CreatedAt, &i.LastUsedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.Prefix, &i.Name,
+			controldb.Into(&i.CreatedAt), controldb.IntoNull(&i.LastUsedAt)); err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
 		}
 		out = append(out, i)
@@ -97,15 +103,19 @@ func (r *Repository) List(ctx context.Context, userID uuid.UUID) ([]Info, error)
 // Revoke marks a key revoked. It is scoped to the owning user so a caller cannot
 // revoke another user's key. Returns ErrNotFound if no active key matched.
 func (r *Repository) Revoke(ctx context.Context, userID, keyID uuid.UUID) error {
-	tag, err := r.pool.Exec(ctx,
-		`UPDATE api_keys SET revoked_at = now()
-		 WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
-		keyID, userID,
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE api_keys SET revoked_at = ?
+		 WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
+		controldb.Now(), keyID.String(), userID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("revoke api key: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("revoke api key: %w", err)
+	}
+	if affected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -114,8 +124,8 @@ func (r *Repository) Revoke(ctx context.Context, userID, keyID uuid.UUID) error 
 // TouchLastUsed records a successful verification. Best-effort: callers should
 // not fail a request if this errors.
 func (r *Repository) TouchLastUsed(ctx context.Context, keyID uuid.UUID) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE api_keys SET last_used_at = now() WHERE id = $1`, keyID)
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE api_keys SET last_used_at = ? WHERE id = ?`, controldb.Now(), keyID.String())
 	if err != nil {
 		return fmt.Errorf("touch api key: %w", err)
 	}
