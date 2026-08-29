@@ -53,10 +53,15 @@ services:
       REDIS_URL: ${REDIS_URL}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
 
-      # Identity. The gateway half verifies Supabase RS256 tokens against this
-      # issuer's JWKS and refuses to start if the prefetch fails.
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_WEBHOOK_SECRET: ${SUPABASE_WEBHOOK_SECRET}
+      # Identity, issued here. The operator account is created on first start
+      # and its password printed once to this container's log; nothing external
+      # is contacted, and there is no default credential to change.
+      OPERATOR_EMAIL: ${OPERATOR_EMAIL:-operator@localhost}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
+      # Unset derives the cookie's Secure attribute from the request, which is
+      # what local development over http:// needs. Set it to true once an edge
+      # terminates TLS.
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
 
       RATE_LIMIT_IP: ${RATE_LIMIT_IP:-30}
