@@ -15,8 +15,17 @@ MIGRATIONS_BACKWARD_COMPATIBLE=${MIGRATIONS_BACKWARD_COMPATIBLE:-false}
 MIN_FREE_KB=${SNAPHOST_MIN_FREE_KB:-5242880}
 READINESS_TIMEOUT=${SNAPHOST_READINESS_TIMEOUT:-180}
 STABILITY_DELAY=${SNAPHOST_STABILITY_DELAY:-5}
+# Path inside the container, matching DATABASE_PATH in docker-compose.prod.yml.
+# Overridable so the two can be moved together, not so they can drift.
+DATABASE_PATH=${SNAPHOST_DATABASE_PATH:-/var/snaphost/data/snaphost.db}
 
-EXPECTED_SERVICES=(snaphost postgres redis buildkitd)
+# Rollout order, and the only list of services in this file. Infrastructure
+# first, the application last, because `--no-deps` means Compose will not order
+# them for us. EXPECTED_SERVICES is derived rather than written twice: a second
+# list is what let the rollback path keep naming seven services that had not
+# existed for two commits.
+INFRA_SERVICES=(redis buildkitd)
+EXPECTED_SERVICES=("${INFRA_SERVICES[@]}" snaphost)
 SNAPHOST_IMAGES=(snaphost)
 PHASE=preflight
 TARGET_SHA=
@@ -116,7 +125,7 @@ validate_rendered_compose() {
   rendered=$(mktemp)
   chmod 600 "$rendered"
   compose config >"$rendered" || { rm -f "$rendered"; die "cannot inspect rendered Compose"; }
-  for service in postgres redis buildkitd; do
+  for service in "${INFRA_SERVICES[@]}"; do
     if sed -n "/^  $service:/,/^  [a-zA-Z0-9_-]*:/p" "$rendered" | grep -q '^    ports:'; then
       rm -f "$rendered"
       die "$service must not publish host ports"
@@ -138,7 +147,7 @@ preflight() {
   local key
   for key in \
     SNAPHOST_VERSION GHCR_IMAGE_PREFIX API_GATEWAY_BIND_ADDRESS API_GATEWAY_PORT DOMAIN_SUFFIX \
-    POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD WEBHOOK_SECRET CORS_ALLOW_ORIGINS \
+    WEBHOOK_SECRET CORS_ALLOW_ORIGINS RUN_MIGRATIONS \
     SAGA_WORKER_ENABLED SAGA_BUILD_TIMEOUT_MIN SAGA_RESUME_INTERVAL_SEC \
     DEPLOY_DEFAULT_PORT RATE_LIMIT_IP RATE_LIMIT_USER RATE_LIMIT_DEPLOY LOG_LEVEL \
     REGISTRY_PREFIX MAX_REPO_SIZE_MB MAX_BUILD_TIME_MIN MAX_CONCURRENT_PER_USER \
@@ -149,7 +158,7 @@ preflight() {
     DOMAIN_VERIFY_INTERVAL_SEC DOMAIN_REVERIFY_HOURS DOMAIN_VERIFY_GRACE_HOURS ALIAS_IDLE_GC_DAYS PROJECT_DEPLOY_RETENTION \
     LLM_BASE_URL LLM_JSON_MODE OPENROUTER_API_KEY OPENROUTER_MODEL OPENROUTER_REFERER OPENROUTER_APP_NAME LLM_TIMEOUT LLM_MAX_RETRIES \
     CACHE_TTL_DAYS MAX_FILE_SIZE_KB MAX_FILES_PER_REQUEST CONTROL_PLANE_CPU_LIMIT CONTROL_PLANE_MEMORY_LIMIT \
-    POSTGRES_CPU_LIMIT POSTGRES_MEMORY_LIMIT REDIS_CPU_LIMIT REDIS_MEMORY_LIMIT BUILDKIT_CPU_LIMIT BUILDKIT_MEMORY_LIMIT; do
+    REDIS_CPU_LIMIT REDIS_MEMORY_LIMIT BUILDKIT_CPU_LIMIT BUILDKIT_MEMORY_LIMIT; do
     require_env "$key"
   done
   # The builder and runner service-account keys, and the guard that checked a
@@ -235,29 +244,37 @@ check_images_present() {
   done < <(compose config --images)
 }
 
-postgres_running() {
+snaphost_running() {
   local cid
-  cid=$(compose ps -q postgres 2>/dev/null) || return 1
+  cid=$(compose ps -q snaphost 2>/dev/null) || return 1
   [[ -n "$cid" ]] && [[ $(docker inspect -f '{{.State.Running}}' "$cid") == true ]]
 }
 
-backup_postgres() {
-  if ! postgres_running; then
-    [[ -f "$STATE_DIR/current.env" ]] && die "PostgreSQL is not running; refusing deployment with existing state"
+# backup_database dumps the store before migrations run.
+#
+# The store used to be a PostgreSQL container this script could reach over a
+# socket. It is a SQLite file in the application's own volume now, so the dump
+# runs inside the application container — the only one that has the file. The
+# tempting alternative, copying the volume, is wrong: under WAL the committed
+# state is spread across the database and its -wal, and a copy of the two is a
+# torn snapshot that restores without complaining.
+backup_database() {
+  if ! snaphost_running; then
+    [[ -f "$STATE_DIR/current.env" ]] && die "the application is not running; refusing deployment with existing state"
     BACKUP_PATH=bootstrap-no-existing-database
-    log "Bootstrap deployment: no existing PostgreSQL container to back up"
+    log "Bootstrap deployment: no existing container to back up"
     return
   fi
   local timestamp tmp final checksum checksum_tmp base
   timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-  tmp=$(mktemp "$BACKUP_DIR/.postgres-${timestamp}-${TARGET_SHA}.XXXXXX")
+  tmp=$(mktemp "$BACKUP_DIR/.database-${timestamp}-${TARGET_SHA}.XXXXXX")
   base=${tmp##*/}
   base=${base#.}
-  final="$BACKUP_DIR/$base.dump"
+  final="$BACKUP_DIR/$base.sql"
   if [[ "$DRY_RUN" == true ]]; then
     rm -f -- "$tmp"
     BACKUP_PATH=$final
-    log "DRY-RUN: create PostgreSQL custom-format backup"
+    log "DRY-RUN: create SQLite dump"
     return
   fi
   umask 077
@@ -267,8 +284,13 @@ backup_postgres() {
   # rest of that heredoc, so every line after the deploy call silently never
   # runs and the caller still sees exit 0 — which is exactly how the
   # `/opt/snaphost/current` symlink went missing on 2026-08-03.
-  compose exec -T postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$tmp" </dev/null || { rm -f "$tmp"; die "PostgreSQL backup failed"; }
-  [[ -s "$tmp" ]] || { rm -f "$tmp"; die "PostgreSQL backup is empty"; }
+  compose exec -T snaphost sqlite3 "$DATABASE_PATH" .dump >"$tmp" </dev/null || { rm -f "$tmp"; die "database backup failed"; }
+  [[ -s "$tmp" ]] || { rm -f "$tmp"; die "database backup is empty"; }
+  # sqlite3 exits 0 on some read failures after printing a partial dump, so the
+  # terminating COMMIT is what says the transaction actually finished. A dump
+  # cut short still restores — into a database missing whatever came after the
+  # cut, which is the failure mode a backup exists to prevent.
+  tail -n 1 "$tmp" | grep -qx 'COMMIT;' || { rm -f "$tmp"; die "database backup is truncated: no terminating COMMIT"; }
   chmod 600 "$tmp"
   ln -- "$tmp" "$final" || { rm -f -- "$tmp"; die "backup destination already exists: $final"; }
   rm -f -- "$tmp"
@@ -308,7 +330,7 @@ probe_internal() {
   # Supabase; that is gone, but migrations and the operator bootstrap still run
   # before the listener binds.
   while (( SECONDS < deadline )); do
-    # </dev/null for the same reason as backup_postgres: `compose run` attaches
+    # </dev/null for the same reason as backup_database: `compose run` attaches
     # our stdin to the container.
     if compose run --rm --no-deps --entrypoint curl snaphost --fail --silent --max-time 10 "$url" >/dev/null </dev/null; then
       return
@@ -331,14 +353,18 @@ check_stable_container() {
 
 rollout() {
   local service
-  for service in postgres redis buildkitd; do
+  for service in "${INFRA_SERVICES[@]}"; do
     action "update $service" compose up -d --no-deps "$service"
     wait_health "$service"
   done
 
   PHASE=migrations-started
   write_progress migrations-running started pending
-  # </dev/null: `compose run` attaches stdin, see backup_postgres.
+  # The application is deliberately still down here. Two containers holding one
+  # SQLite file is the thing the RUN_MIGRATIONS=false setting exists to avoid,
+  # and `run --rm` finishing is what sequences them.
+  #
+  # </dev/null: `compose run` attaches stdin, see backup_database.
   action "run migrations" compose --profile migration run --rm --no-deps snaphost-migrate </dev/null
   PHASE=migrations-applied
   write_progress rolling-out applied pending
@@ -374,7 +400,13 @@ rollback_to() {
   local sha=$1 service
   validate_sha "$sha" || return 1
   TARGET_SHA=$sha
-  for service in postgres redis buildkitd user-billing ai-orchestrator builder-api builder-worker runner-api runner-watchdog api-gateway; do
+  # This list named seven services that stopped existing when the control plane
+  # became one process, so the first `compose up -d --no-deps user-billing`
+  # returned non-zero and every rollback failed at its first step. The tests did
+  # not catch it because they fake `docker`, and a fake does not object to a
+  # service that is not in the manifest. Rolling back is the operation nobody
+  # exercises until they need it.
+  for service in "${EXPECTED_SERVICES[@]}"; do
     action "rollback $service" compose up -d --no-deps "$service" || return 1
     wait_health "$service" || return 1
   done
@@ -431,7 +463,7 @@ deploy() {
   login_and_pull
   ensure_previous_images
   write_progress backed-up not-started pending
-  backup_postgres
+  backup_database
   write_progress backed-up not-started pending
   rollout
   smoke

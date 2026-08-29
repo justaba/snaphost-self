@@ -1,18 +1,23 @@
 name: snaphost-self
 
 # Production manifest. One application service pinned to an exact image SHA,
-# plus the three pieces of infrastructure the platform does not implement
-# itself.
+# plus the two pieces of infrastructure the platform does not implement itself.
 #
 # It used to be ten services and five images, and a deployment had to verify
 # every one of those manifests existed at the same SHA before it could start.
 # There is one now (Task 1).
 #
+# PostgreSQL is gone with item 6: the store is a SQLite file in the
+# application's own volume. That removes the container, the volume, five
+# environment variables and the healthcheck the whole rollout waited on — and
+# it moves the backup from `pg_dump` over a network socket to `sqlite3 .dump`
+# inside the one container that has the file. Item 7 removes Redis too.
+#
 # Still the wrong shape for a self-hosted product: this describes pushing a
 # GHCR image onto a VDS over SSH, and a self-hosted platform is installed by
 # its own operator. Rewriting the deployment story is its own task; this file
-# is kept correct in the meantime rather than left referencing services that
-# no longer exist.
+# is kept correct in the meantime rather than left referencing infrastructure
+# that no longer exists.
 
 services:
   snaphost:
@@ -22,18 +27,19 @@ services:
       - control
       - data
     # The only published port. Everything else answers on an internal network,
-    # and `data` is marked internal so PostgreSQL and Redis have no route out.
+    # and `data` is marked internal so Redis has no route out.
     ports:
       - "${API_GATEWAY_BIND_ADDRESS}:${API_GATEWAY_PORT}:8080"
-    # The runtime backend starts user containers through the host daemon.
-    # This is the largest privilege in the file: anything that can reach this
-    # socket is root on the host. It replaced a cloud service-account key, and
-    # unlike that key it has no per-environment identity to check.
     volumes:
+      # The runtime backend starts user containers through the host daemon.
+      # This is the largest privilege in the file: anything that can reach this
+      # socket is root on the host. It replaced a cloud service-account key, and
+      # unlike that key it has no per-environment identity to check.
       - /var/run/docker.sock:/var/run/docker.sock:rw
+      # The whole store. One file, held open by this process, which is why the
+      # backup runs `sqlite3 .dump` in here rather than copying the volume.
+      - snaphost_data:/var/snaphost/data
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
       buildkitd:
@@ -51,7 +57,12 @@ services:
     environment:
       PORT: "8080"
       LOG_LEVEL: "${LOG_LEVEL}"
-      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      DATABASE_PATH: "/var/snaphost/data/snaphost.db"
+      # The env file has always carried RUN_MIGRATIONS=false and this file has
+      # never passed it, so the application migrated at startup anyway and the
+      # profile-only migrate service was decoration. On SQLite that is two
+      # containers opening one file.
+      RUN_MIGRATIONS: "${RUN_MIGRATIONS}"
       REDIS_URL: "redis://redis:6379"
       WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
 
@@ -116,45 +127,30 @@ services:
       MAX_FILE_SIZE_KB: "${MAX_FILE_SIZE_KB}"
       MAX_FILES_PER_REQUEST: "${MAX_FILES_PER_REQUEST}"
 
-  # One-shot migrators under a profile, so a deployment can apply the schema as
+  # One-shot migrator under a profile, so a deployment can apply the schema as
   # its own step before the service that would otherwise do it at startup is
   # allowed to run.
+  #
+  # It mounts the same volume rather than reaching a database over a network,
+  # which is the shape SQLite forces: the migration and the process it runs
+  # ahead of are two containers sharing one file, so they must not overlap.
+  # `compose run --rm` finishes before the rollout continues, which is what
+  # keeps them apart.
   snaphost-migrate:
     image: "${GHCR_IMAGE_PREFIX}/snaphost:${SNAPHOST_VERSION}"
     profiles: ["migration"]
     entrypoint: ["/control-migrate"]
     restart: "no"
+    # It needs no network at all now that the store is a file, but Compose
+    # attaches a service without one to a `default` network it invents. Keep it
+    # on `data`, which is marked internal.
     networks:
       - data
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
-      LOG_LEVEL: "${LOG_LEVEL}"
-
-
-  postgres:
-    image: "postgres:16.4-alpine3.20"
-    restart: unless-stopped
-    networks:
-      - data
-    environment:
-      POSTGRES_DB: "${POSTGRES_DB}"
-      POSTGRES_USER: "${POSTGRES_USER}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    deploy:
-      resources:
-        limits:
-          cpus: "${POSTGRES_CPU_LIMIT}"
-          memory: "${POSTGRES_MEMORY_LIMIT}"
+      - snaphost_data:/var/snaphost/data
+    environment:
+      DATABASE_PATH: "/var/snaphost/data/snaphost.db"
+      LOG_LEVEL: "${LOG_LEVEL}"
 
   redis:
     image: "redis:7.4.0-alpine3.20"
@@ -203,7 +199,7 @@ services:
           memory: "${BUILDKIT_MEMORY_LIMIT}"
 
 volumes:
-  postgres_data:
+  snaphost_data:
   redis_data:
   buildkit_cache:
 

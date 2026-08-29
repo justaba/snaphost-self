@@ -11,6 +11,12 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
 
+# The services the manifest actually contains. The fake `docker` answers
+# `config --services` from this and refuses `up` for anything else, so a script
+# that names a service the manifest dropped fails here the way it would on the
+# box — which is the bug this list was added after.
+export MANIFEST_SERVICES="snaphost redis buildkitd"
+
 cat >"$BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
 set -u
@@ -44,14 +50,14 @@ case "$op" in
   config)
     [[ ${FAIL_CONFIG:-0} != 1 ]] || exit 1
     if [[ "$*" == *'--services'* ]]; then
-      printf '%s\n' snaphost postgres redis buildkitd
+      printf '%s\n' $MANIFEST_SERVICES
     elif [[ "$*" == *'--images'* ]]; then
       sha=${SNAPHOST_VERSION:?}
       printf 'ghcr.io/acme/repo/%s:%s\n' snaphost "$sha"
     elif [[ "$*" != *'--quiet'* ]]; then
-      # snaphost publishes a port; the three infrastructure services must not.
+      # snaphost publishes a port; the two infrastructure services must not.
       # The rendered-compose check greps exactly this shape.
-      printf 'services:\n  snaphost:\n    ports:\n      - target: 8080\n  postgres:\n    image: postgres\n  redis:\n    image: redis\n  buildkitd:\n    image: buildkit\n'
+      printf 'services:\n  snaphost:\n    ports:\n      - target: 8080\n  redis:\n    image: redis\n  buildkitd:\n    image: buildkit\n'
     fi
     ;;
   pull) [[ ${FAIL_PULL:-0} != 1 ]] ;;
@@ -61,7 +67,12 @@ case "$op" in
     # is what makes the stdin-consumption regression test meaningful.
     cat >/dev/null 2>&1 || true
     [[ ${FAIL_BACKUP:-0} != 1 ]] || exit 1
-    printf 'fake-pg-dump'
+    if [[ ${TRUNCATED_BACKUP:-0} == 1 ]]; then
+      # What a dump cut short looks like: valid SQL, no terminating COMMIT.
+      printf 'PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\nCREATE TABLE users (id text primary key);\n'
+    else
+      printf 'PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\nCREATE TABLE users (id text primary key);\nCOMMIT;\n'
+    fi
     ;;
   run)
     # Real `compose run` attaches stdin too.
@@ -69,7 +80,22 @@ case "$op" in
     if [[ "$*" == *'migrate'* && ${FAIL_MIGRATION:-0} == 1 ]]; then exit 1; fi
     exit 0
     ;;
-  up) exit 0 ;;
+  up)
+    # A fake that accepts any service name is exactly why the rollback path kept
+    # naming seven services deleted two commits earlier, with every test green.
+    # Refuse what the real `compose up` would refuse: a service the manifest
+    # does not contain.
+    service=${!#}
+    found=0
+    for known in $MANIFEST_SERVICES; do
+      [[ "$service" == "$known" ]] && found=1
+    done
+    if [[ $found -ne 1 ]]; then
+      echo "no such service: $service" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
 esac
 FAKE
 
@@ -119,11 +145,9 @@ GHCR_IMAGE_PREFIX=ghcr.io/acme/repo
 API_GATEWAY_BIND_ADDRESS=0.0.0.0
 API_GATEWAY_PORT=8080
 DOMAIN_SUFFIX=apps.prod.invalid
-POSTGRES_DB=snaphost
-POSTGRES_USER=snaphost
-POSTGRES_PASSWORD=production-password
 WEBHOOK_SECRET=internal-secret-value
 CORS_ALLOW_ORIGINS=https://app.prod.invalid
+RUN_MIGRATIONS=false
 SAGA_WORKER_ENABLED=true
 SAGA_BUILD_TIMEOUT_MIN=15
 SAGA_RESUME_INTERVAL_SEC=60
@@ -174,8 +198,6 @@ MAX_FILE_SIZE_KB=50
 MAX_FILES_PER_REQUEST=20
 CONTROL_PLANE_CPU_LIMIT=1
 CONTROL_PLANE_MEMORY_LIMIT=512M
-POSTGRES_CPU_LIMIT=2
-POSTGRES_MEMORY_LIMIT=2G
 REDIS_CPU_LIMIT=1
 REDIS_MEMORY_LIMIT=1G
 BUILDKIT_CPU_LIMIT=4
@@ -188,7 +210,7 @@ EOF
   export SNAPHOST_STATE_DIR="$CASE_DIR/state" SNAPHOST_BACKUP_DIR="$CASE_DIR/backups"
   export SNAPHOST_GHCR_TOKEN_FILE="$TOKEN_FILE" SNAPHOST_PUBLIC_SMOKE_URL=https://control.invalid
   export SNAPHOST_MIN_FREE_KB=0 SNAPHOST_READINESS_TIMEOUT=1 SNAPHOST_STABILITY_DELAY=0
-  unset FAIL_CONFIG FAIL_LOGIN FAIL_PULL FAIL_BACKUP FAIL_MIGRATION FAIL_READINESS FAIL_SMOKE FAIL_AUTH_SMOKE SLOW_AUTH_SMOKE AUTH_SMOKE_STARTED FAIL_CHECKSUM_PUBLISH GHCR_USERNAME MIGRATIONS_BACKWARD_COMPATIBLE MISSING_ROLLBACK_IMAGE TMPDIR
+  unset FAIL_CONFIG FAIL_LOGIN FAIL_PULL FAIL_BACKUP TRUNCATED_BACKUP FAIL_MIGRATION FAIL_READINESS FAIL_SMOKE FAIL_AUTH_SMOKE SLOW_AUTH_SMOKE AUTH_SMOKE_STARTED FAIL_CHECKSUM_PUBLISH GHCR_USERNAME MIGRATIONS_BACKWARD_COMPATIBLE MISSING_ROLLBACK_IMAGE TMPDIR
 }
 
 # Deployment state as it looks after a successful release, which is the only
@@ -235,6 +257,16 @@ if [[ "$projects" == '--project-name snaphost-test' ]]; then pass 'Compose proje
 setup_case; export GHCR_USERNAME=operator FAIL_LOGIN=1; run_capture deploy "$SHA"; [[ $RC -ne 0 ]] && pass 'GHCR login failure' || fail 'GHCR login failure'
 setup_case; export FAIL_PULL=1; run_capture deploy "$SHA"; if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG"; then pass 'pull failure leaves runtime'; else fail 'pull failure leaves runtime'; fi
 setup_case; export FAIL_BACKUP=1; run_capture deploy "$SHA"; if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG"; then pass 'backup failure stops rollout'; else fail 'backup failure stops rollout'; fi
+# A dump cut short is the dangerous case, because it is not an error: sqlite3
+# can exit 0 after printing part of one, and the result restores cleanly into a
+# database missing whatever came after the cut. The terminating COMMIT is the
+# only thing that says the read transaction finished.
+setup_case; export TRUNCATED_BACKUP=1; run_capture deploy "$SHA"
+if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG" && [[ -z $(find "$CASE_DIR/backups" -maxdepth 1 -name '*.sql' -print -quit) ]]; then
+  pass 'truncated backup stops rollout and publishes nothing'
+else
+  fail 'truncated backup stops rollout and publishes nothing'
+fi
 setup_case; export FAIL_MIGRATION=1; run_capture deploy "$SHA"; [[ $RC -ne 0 && -f "$CASE_DIR/state/in-progress.env" ]] && pass 'migration failure recorded' || fail 'migration failure recorded'
 setup_case; export FAIL_READINESS=1; run_capture deploy "$SHA"; [[ $RC -ne 0 ]] && pass 'readiness timeout' || fail 'readiness timeout'
 setup_case; export FAIL_SMOKE=1; run_capture deploy "$SHA"; [[ $RC -ne 0 ]] && pass 'smoke failure' || fail 'smoke failure'
@@ -299,8 +331,8 @@ export FAIL_MIGRATION=1
 run_capture deploy "$SHA"
 rm -f "$CASE_DIR/state/in-progress.env"
 run_capture deploy "$OLD_SHA"
-dumps=$(find "$CASE_DIR/backups" -maxdepth 1 -name '*.dump' | wc -l)
-checksums=$(find "$CASE_DIR/backups" -maxdepth 1 -name '*.dump.sha256' | wc -l)
+dumps=$(find "$CASE_DIR/backups" -maxdepth 1  -name '*.sql' | wc -l)
+checksums=$(find "$CASE_DIR/backups" -maxdepth 1  -name '*.sql.sha256' | wc -l)
 if [[ $dumps -eq 2 && $checksums -eq 2 ]]; then
   pass 'backup and checksum are not overwritten'
 else
@@ -318,8 +350,8 @@ if [[ $RC -eq 0 && ! -e "$CASE_DIR/state/previous.env" ]]; then pass 'first depl
 setup_case
 export FAIL_CHECKSUM_PUBLISH=1
 run_capture deploy "$SHA"
-dumps=$(find "$CASE_DIR/backups" -maxdepth 1 -name '*.dump' | wc -l)
-checksums=$(find "$CASE_DIR/backups" -maxdepth 1 -name '*.dump.sha256' | wc -l)
+dumps=$(find "$CASE_DIR/backups" -maxdepth 1  -name '*.sql' | wc -l)
+checksums=$(find "$CASE_DIR/backups" -maxdepth 1  -name '*.sql.sha256' | wc -l)
 if [[ $RC -ne 0 && $dumps -eq 0 && $checksums -eq 0 ]]; then pass 'checksum publish failure removes current dump'; else fail 'checksum publish failure removes current dump'; fi
 
 setup_case
