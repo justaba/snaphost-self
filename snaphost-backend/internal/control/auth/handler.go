@@ -26,12 +26,13 @@ type CookieOptions struct {
 type Handler struct {
 	svc     *Service
 	cookies CookieOptions
+	limiter *LoginLimiter
 	log     *zap.Logger
 }
 
 // NewHandler creates the auth HTTP handler.
 func NewHandler(svc *Service, cookies CookieOptions, log *zap.Logger) *Handler {
-	return &Handler{svc: svc, cookies: cookies, log: log}
+	return &Handler{svc: svc, cookies: cookies, limiter: NewLoginLimiter(0, 0), log: log}
 }
 
 type loginRequest struct {
@@ -50,6 +51,16 @@ type changePasswordRequest struct {
 // only unauthenticated password check: everything else either presents the
 // cookie it returns or an sk_ key.
 func (h *Handler) Login(c *gin.Context) {
+	// Checked before the body is even parsed, so an address that is over the
+	// limit costs nothing — including the argon2 hash, which is the expensive
+	// half of answering a wrong password.
+	addr := c.ClientIP()
+	if ok, retryAfter := h.limiter.Allow(addr); !ok {
+		h.log.Warn("login refused: too many failed attempts", zap.String("client_ip", addr))
+		tooManyAttempts(c, retryAfter)
+		return
+	}
+
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, errResponse("invalid_body", "email and password are required"))
@@ -59,6 +70,10 @@ func (h *Handler) Login(c *gin.Context) {
 	token, session, err := h.svc.Login(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
+			// Only a wrong credential counts. An internal error is this
+			// platform's fault, and holding it against the client would turn a
+			// database hiccup into a lockout.
+			h.limiter.Fail(addr)
 			c.JSON(http.StatusUnauthorized, errResponse("invalid_credentials", "email or password is wrong"))
 			return
 		}
@@ -66,6 +81,7 @@ func (h *Handler) Login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "login failed"))
 		return
 	}
+	h.limiter.Succeed(addr)
 
 	h.setSessionCookie(c, token, int(h.svc.TTL().Seconds()))
 	c.JSON(http.StatusOK, identityBody(session))

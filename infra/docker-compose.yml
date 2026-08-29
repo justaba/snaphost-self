@@ -64,9 +64,6 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
 
-      RATE_LIMIT_IP: ${RATE_LIMIT_IP:-30}
-      RATE_LIMIT_USER: ${RATE_LIMIT_USER:-120}
-      RATE_LIMIT_DEPLOY: ${RATE_LIMIT_DEPLOY:-5}
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
 
       # Deploys, projects and domains.

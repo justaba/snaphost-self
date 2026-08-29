@@ -18,9 +18,6 @@ const (
 	CtxKeyUserRole  = contextKey("userRole")
 )
 
-// For backwards compatibility with ratelimit.go
-const ContextKeyUserID = string(CtxKeyUserID)
-
 // PublicRoutes defines routes that skip authentication and authorization.
 // Both Auth and Casbin consult it, so a route added here is exempt from both.
 //

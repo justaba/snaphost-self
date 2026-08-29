@@ -409,7 +409,7 @@ func buildControl(
 		uploadStore, int64(cfg.MaxUploadSizeMB)*1024*1024, time.Duration(cfg.UploadTTLMin)*time.Minute,
 		credStore, time.Duration(cfg.GitCredTTLMin)*time.Minute)
 
-	attachLimiter := domain.Limiter(domain.NewRedisLimiter(rdb, cfg.DomainAttachPerHour, time.Hour))
+	attachLimiter := domain.Limiter(domain.NewMemoryLimiter(cfg.DomainAttachPerHour, time.Hour))
 	domainHandler := domain.NewHandler(domainRepo, attachLimiter, domain.Config{
 		PlatformSuffix:  cfg.DomainSuffix,
 		ReservedDomains: cfg.ReservedDomains,
@@ -545,7 +545,6 @@ func buildEngine(
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger(log))
 	r.Use(middleware.Auth(sessions, &wiring.KeyVerifier{Repo: ctl.apikeyRepo, Log: log}))
-	r.Use(middleware.RateLimit(rdb, gwCfg))
 	r.Use(middleware.Casbin(enforcer))
 	r.Use(middleware.Enrich())
 
