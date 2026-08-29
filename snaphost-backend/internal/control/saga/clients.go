@@ -47,9 +47,9 @@ type DeployResponse struct {
 	EndpointURL string `json:"endpoint_url"`
 }
 
-// BuilderClient triggers builds on builder-svc. EnqueueBuild is fire-and-
-// forget: builder-svc accepts the job, runs it asynchronously, and signals
-// completion via Redis pub/sub on build-events:{deploy_id}.
+// BuilderClient triggers builds. EnqueueBuild is fire-and-forget: the build
+// pipeline accepts the job, runs it asynchronously, and reports the outcome
+// through BuildEvents, which the saga's next step waits on.
 type BuilderClient interface {
 	EnqueueBuild(ctx context.Context, req BuildRequest) error
 }

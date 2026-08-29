@@ -1,7 +1,8 @@
 // Package events publishes coarse-grained build lifecycle events
-// (started/completed/failed) to Redis pub/sub on channels named
-// build-events:{deploy_id}. Subscribers (notably user-billing's saga
-// orchestrator) use these to advance their state machines.
+// (started/completed/failed). The saga orchestrator waits on them to advance
+// its state machine; the Publisher interface is satisfied by an adapter over
+// internal/buildevents, and used to be a Redis pub/sub client because the
+// builder and the saga were separate processes.
 //
 // This is intentionally separate from logs.Publisher: log lines are a
 // stream of human-readable text, while events are structured signals.
@@ -9,12 +10,7 @@ package events
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"time"
-
-	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
 )
 
 // BuildEventType identifies which lifecycle transition an event represents.
@@ -49,32 +45,4 @@ type Publisher interface {
 	// Publish sends one event. Best-effort: callers should log and proceed
 	// rather than failing the build because the publish failed.
 	Publish(ctx context.Context, event BuildEvent) error
-}
-
-// RedisEventPublisher publishes events to Redis pub/sub channels named
-// build-events:{deploy_id}.
-type RedisEventPublisher struct {
-	rdb *redis.Client
-	log *zap.Logger
-}
-
-// NewRedisEventPublisher constructs a publisher backed by the given Redis client.
-func NewRedisEventPublisher(rdb *redis.Client, log *zap.Logger) *RedisEventPublisher {
-	return &RedisEventPublisher{rdb: rdb, log: log}
-}
-
-// Publish marshals the event to JSON and PUBLISHes to build-events:{deploy_id}.
-func (p *RedisEventPublisher) Publish(ctx context.Context, event BuildEvent) error {
-	if event.Timestamp.IsZero() {
-		event.Timestamp = time.Now().UTC()
-	}
-	data, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("marshal build event: %w", err)
-	}
-	channel := "build-events:" + event.DeployID
-	if err := p.rdb.Publish(ctx, channel, data).Err(); err != nil {
-		return fmt.Errorf("publish to %s: %w", channel, err)
-	}
-	return nil
 }

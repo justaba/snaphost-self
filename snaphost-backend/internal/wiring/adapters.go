@@ -36,7 +36,9 @@ import (
 	aiservice "snaphost/internal/ai/service"
 	builderai "snaphost/internal/builder/ai"
 	builderapi "snaphost/internal/builder/api"
+	builderevents "snaphost/internal/builder/events"
 	builderlogs "snaphost/internal/builder/logs"
+	"snaphost/internal/buildevents"
 	"snaphost/internal/control/apikey"
 	"snaphost/internal/control/auth"
 	"snaphost/internal/control/deploy"
@@ -448,4 +450,47 @@ func (a *LogArchiver) Archive(deployID string) []byte {
 		n = 200
 	}
 	return logbus.EncodeLines(a.Bus.Tail(deployID, n))
+}
+
+// ---------------------------------------------------------------------------
+// builder ↔ saga: build outcomes
+// ---------------------------------------------------------------------------
+
+// BuildEventPublisher satisfies events.Publisher by putting the event on the
+// in-process bus instead of a Redis channel.
+type BuildEventPublisher struct{ Bus *buildevents.Bus }
+
+func (p *BuildEventPublisher) Publish(_ context.Context, event builderevents.BuildEvent) error {
+	p.Bus.Publish(buildevents.Event{
+		Type:      buildevents.Type(event.Type),
+		DeployID:  event.DeployID,
+		ImageRef:  event.ImageRef,
+		Port:      event.Port,
+		CommitSHA: event.CommitSHA,
+		Reason:    event.Reason,
+		Timestamp: event.Timestamp,
+	})
+	return nil
+}
+
+// BuildEventWaiter satisfies saga.BuildEvents.
+//
+// The two sides keep their own types rather than sharing one. That is not
+// ceremony: the saga deliberately did not import the builder's package even
+// when both were separate modules, and collapsing them now would tie the state
+// machine to the pipeline's wire format for no gain.
+type BuildEventWaiter struct{ Bus *buildevents.Bus }
+
+func (w *BuildEventWaiter) Wait(ctx context.Context, deployID string, timeout time.Duration) (saga.BuildOutcome, error) {
+	ev, err := w.Bus.Wait(ctx, deployID, timeout)
+	if err != nil {
+		return saga.BuildOutcome{}, err
+	}
+	return saga.BuildOutcome{
+		Failed:    ev.Type == buildevents.Failed,
+		ImageRef:  ev.ImageRef,
+		Port:      ev.Port,
+		CommitSHA: ev.CommitSHA,
+		Reason:    ev.Reason,
+	}, nil
 }

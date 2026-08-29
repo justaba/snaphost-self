@@ -2,13 +2,11 @@ package saga
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"snaphost/internal/control/logs"
@@ -27,15 +25,15 @@ type DeployRepository interface {
 // failure). The state machine is read from deploy_sagas at every step,
 // which is what makes Run safe to call repeatedly on the same saga.
 type Orchestrator struct {
-	Repo       *Repository
-	DeployRepo DeployRepository
-	Builder    BuilderClient
-	Runner     RunnerClient
-	Redis      *redis.Client
-	Publisher  logs.Publisher
-	Log        *zap.Logger
-	// BuildTimeout caps how long the saga waits on a build-events
-	// notification before giving up and compensating.
+	Repo        *Repository
+	DeployRepo  DeployRepository
+	Builder     BuilderClient
+	Runner      RunnerClient
+	BuildEvents BuildEvents
+	Publisher   logs.Publisher
+	Log         *zap.Logger
+	// BuildTimeout caps how long the saga waits on a build outcome
+	// before giving up and compensating.
 	BuildTimeout time.Duration
 	// DeployPort is the container port runner-svc reports to Traefik for
 	// load-balancing. Must match the port the user app listens on.
@@ -78,25 +76,30 @@ func (o *Orchestrator) ttlMinutes() int {
 	return ttl
 }
 
-// buildEventType mirrors internal/builder/events.BuildEventType.
-// Duplicated locally so user-billing does not depend on builder-svc's
-// Go module.
-type buildEventType string
+// BuildOutcome is what the saga learns when a build ends. It used to be a JSON
+// body decoded off a Redis channel; the fields are the same, minus the ones
+// that only existed to identify the message on the wire.
+type BuildOutcome struct {
+	// Failed distinguishes the two terminal outcomes. Anything that is not a
+	// failure carried an image.
+	Failed    bool
+	ImageRef  string
+	Port      int
+	CommitSHA string
+	Reason    string
+}
 
-const (
-	buildEventCompleted buildEventType = "completed"
-	buildEventFailed    buildEventType = "failed"
-)
-
-// buildEvent is the JSON body builder-svc publishes to build-events:{id}.
-type buildEvent struct {
-	Type      buildEventType `json:"type"`
-	DeployID  string         `json:"deploy_id"`
-	ImageRef  string         `json:"image_ref,omitempty"`
-	Port      int            `json:"port,omitempty"`
-	CommitSHA string         `json:"commit_sha,omitempty"`
-	Reason    string         `json:"reason,omitempty"`
-	Timestamp time.Time      `json:"timestamp"`
+// BuildEvents reports the outcome of a build the saga is waiting on.
+//
+// An interface rather than the bus itself, for the reason every seam in this
+// package is one: the orchestrator's tests drive it through fakes, and it has
+// no business knowing whether the answer came from another goroutine or from
+// another machine.
+type BuildEvents interface {
+	// Wait blocks until the build for deployID ends, the timeout elapses, or
+	// ctx is cancelled. A build that has already ended is answered without
+	// waiting.
+	Wait(ctx context.Context, deployID string, timeout time.Duration) (BuildOutcome, error)
 }
 
 // terminalError signals the orchestrator should abort and compensate.
@@ -229,11 +232,11 @@ func (o *Orchestrator) stepWaitForBuild(ctx context.Context, deployID uuid.UUID,
 	}
 
 	o.publish(deployID, "saga", "info", "waiting for build to complete")
-	event, err := o.waitForBuildEvent(ctx, deployID, o.BuildTimeout)
+	event, err := o.BuildEvents.Wait(ctx, deployID.String(), o.BuildTimeout)
 	if err != nil {
 		return fmt.Errorf("wait for build event: %w", err)
 	}
-	if event.Type == buildEventFailed {
+	if event.Failed {
 		reason := event.Reason
 		if reason == "" {
 			reason = "build failed"
@@ -346,48 +349,6 @@ func (o *Orchestrator) promoteAliases(ctx context.Context, deployID uuid.UUID) {
 		o.Log.Info("custom domains repointed to the new deploy",
 			zap.String("deploy_id", deployID.String()), zap.Int("domains", moved))
 		o.publish(deployID, "saga", "info", "custom domain now serves this version")
-	}
-}
-
-// waitForBuildEvent subscribes to build-events:{deploy_id} and returns
-// the first message of type completed or failed. The subscription is
-// always cleaned up on exit.
-func (o *Orchestrator) waitForBuildEvent(ctx context.Context, deployID uuid.UUID, timeout time.Duration) (*buildEvent, error) {
-	channel := "build-events:" + deployID.String()
-	sub := o.Redis.Subscribe(ctx, channel)
-	defer sub.Close()
-
-	// Make sure the subscription is established before we proceed.
-	if _, err := sub.Receive(ctx); err != nil {
-		return nil, fmt.Errorf("subscribe to %s: %w", channel, err)
-	}
-
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	ch := sub.Channel()
-	for {
-		select {
-		case <-waitCtx.Done():
-			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
-				return nil, fmt.Errorf("timed out after %s", timeout)
-			}
-			return nil, waitCtx.Err()
-		case msg, ok := <-ch:
-			if !ok {
-				return nil, errors.New("subscription channel closed")
-			}
-			var ev buildEvent
-			if err := json.Unmarshal([]byte(msg.Payload), &ev); err != nil {
-				o.Log.Warn("decode build event failed", zap.Error(err))
-				continue
-			}
-			if ev.Type != buildEventCompleted && ev.Type != buildEventFailed {
-				// "started" and unknown types are ignored.
-				continue
-			}
-			return &ev, nil
-		}
 	}
 }
 

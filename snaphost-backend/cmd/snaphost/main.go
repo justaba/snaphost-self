@@ -46,7 +46,6 @@ import (
 	builderbuild "snaphost/internal/builder/build"
 	builderclone "snaphost/internal/builder/clone"
 	builderconfig "snaphost/internal/builder/config"
-	builderevents "snaphost/internal/builder/events"
 	buildergitcred "snaphost/internal/builder/gitcred"
 	builderpipeline "snaphost/internal/builder/pipeline"
 	builderqueue "snaphost/internal/builder/queue"
@@ -54,6 +53,7 @@ import (
 	builderscan "snaphost/internal/builder/scan"
 	builderunpack "snaphost/internal/builder/unpack"
 	builderupload "snaphost/internal/builder/upload"
+	"snaphost/internal/buildevents"
 	"snaphost/internal/control/admin"
 	"snaphost/internal/control/apikey"
 	"snaphost/internal/control/auth"
@@ -145,6 +145,11 @@ func main() {
 	// because four processes produced it; one process produces it now.
 	bus := logbus.New(0, 0)
 
+	// Build outcomes. A separate bus from the log one on purpose: a log line
+	// may be dropped for a slow reader, and a build outcome is a state
+	// transition the saga acts on.
+	events := buildevents.New(0)
+
 	rdb, err := newRedis(ctx, ctlCfg.RedisURL)
 	if err != nil {
 		log.Fatal("redis connection failed", zap.Error(err))
@@ -154,8 +159,8 @@ func main() {
 	// 5. Components, bottom up.
 	ai := buildAI(pool, aiCfg, log)
 	rt := buildRuntime(pool, rtCfg, bus, log)
-	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, rdb, log)
-	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, rdb, log)
+	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, events, rdb, log)
+	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, events, rdb, log)
 
 	// 6. One engine. The middleware order is the gateway's, unchanged and
 	//    load-bearing: rate limiting before authentication so an IP limit
@@ -281,7 +286,7 @@ type builderParts struct {
 	runner   *builderpipeline.Runner
 }
 
-func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, rdb *redis.Client, log *zap.Logger) builderParts {
+func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, events *buildevents.Bus, rdb *redis.Client, log *zap.Logger) builderParts {
 	_ = aiCfg
 
 	q := builderqueue.NewQueue(rdb, log)
@@ -290,7 +295,7 @@ func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Confi
 	}
 
 	pub := &wiring.BuilderLogPublisher{Bus: bus}
-	eventsPub := builderevents.NewRedisEventPublisher(rdb, log)
+	eventsPub := &wiring.BuildEventPublisher{Bus: events}
 
 	dockerConfigDir := os.Getenv("DOCKER_CONFIG")
 	if dockerConfigDir == "" {
@@ -361,6 +366,7 @@ func buildControl(
 	enqueuer *builderapi.Enqueuer,
 	runtimeSvc *runner.Service,
 	bus *logbus.Bus,
+	events *buildevents.Bus,
 	rdb *redis.Client,
 	log *zap.Logger,
 ) controlParts {
@@ -399,7 +405,7 @@ func buildControl(
 		DeployRepo:       dRepo,
 		Builder:          &wiring.BuilderClient{Enqueuer: enqueuer},
 		Runner:           runnerClient,
-		Redis:            rdb,
+		BuildEvents:      &wiring.BuildEventWaiter{Bus: events},
 		Publisher:        sagaPub,
 		Log:              log,
 		BuildTimeout:     time.Duration(cfg.SagaBuildTimeoutMin) * time.Minute,
