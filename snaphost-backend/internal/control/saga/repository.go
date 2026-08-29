@@ -245,3 +245,28 @@ func (r *Repository) ListInFlight(ctx context.Context, limit int) ([]SagaState, 
 	}
 	return out, nil
 }
+
+// RewindInterruptedBuilds puts sagas that were waiting on a build back to the
+// step that enqueues one, and reports how many moved.
+//
+// It runs once at startup, and only for sagas with no image reference: one that
+// has an image finished building, and its wait step recognises that from the
+// row rather than from an event. Rewinding those would build the same source a
+// second time.
+func (r *Repository) RewindInterruptedBuilds(ctx context.Context) (int64, error) {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE deploy_sagas
+		    SET current_step = ?
+		  WHERE current_step = ?
+		    AND (image_ref IS NULL OR image_ref = '')`,
+		StepPending, StepBuilding,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("rewind interrupted builds: %w", err)
+	}
+	moved, err := result.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return moved, nil
+}

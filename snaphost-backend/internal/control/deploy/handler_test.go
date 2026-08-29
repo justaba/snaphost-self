@@ -320,7 +320,7 @@ func newCreateDeployRouter(t *testing.T) *gin.Engine {
 			},
 		},
 		log:       zap.NewNop(),
-		sagaQueue: saga.NewQueue(nil, zap.NewNop()),
+		sagaQueue: saga.NewQueue(0, zap.NewNop()),
 	}
 	r := gin.New()
 	r.POST("/api/v1/deploys", h.CreateDeploy)

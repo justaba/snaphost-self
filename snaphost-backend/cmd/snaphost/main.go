@@ -289,11 +289,7 @@ type builderParts struct {
 func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, events *buildevents.Bus, rdb *redis.Client, log *zap.Logger) builderParts {
 	_ = aiCfg
 
-	q := builderqueue.NewQueue(rdb, log)
-	if err := q.EnsureGroup(context.Background()); err != nil {
-		log.Fatal("failed to ensure build consumer group", zap.Error(err))
-	}
-
+	q := builderqueue.NewQueue(0, log)
 	pub := &wiring.BuilderLogPublisher{Bus: bus}
 	eventsPub := &wiring.BuildEventPublisher{Bus: events}
 
@@ -377,7 +373,7 @@ func buildControl(
 	domainRepo := domain.NewRepository(pool)
 	adminRepo := admin.NewRepository(pool)
 
-	sagaQueue := saga.NewQueue(rdb, log)
+	sagaQueue := saga.NewQueue(0, log)
 	sagaRepo := saga.NewRepository(pool)
 	sagaPub := &wiring.ControlLogPublisher{Bus: bus}
 	logReader := logs.NewReader(bus, dRepo)
@@ -595,20 +591,16 @@ func startBackground(
 
 	go watchdog.NewWatchdog(rt.service, rt.billing, rtCfg, log).Run(ctx)
 
-	consumer, _ := os.Hostname()
-	if consumer == "" {
-		consumer = "builder-1"
-	}
-	go runBuildWorker(ctx, bld, consumer, bldCfg, log)
+	go runBuildWorker(ctx, bld, bldCfg, log)
 }
 
-// runBuildWorker consumes build jobs. The ack policy is the one the separate
-// worker process had: returning nil acks the message, and a failed pipeline
-// finalises the deploy as failed rather than being retried, because a retry
-// budget is still Task 5b of the inherited backlog.
-func runBuildWorker(ctx context.Context, bld builderParts, consumer string, cfg *builderconfig.Config, log *zap.Logger) {
+// runBuildWorker consumes build jobs. The failure policy is the one the
+// separate worker process had: a failed pipeline finalises the deploy as
+// failed rather than being retried, because a retry budget is still Task 5b of
+// the inherited backlog.
+func runBuildWorker(ctx context.Context, bld builderParts, cfg *builderconfig.Config, log *zap.Logger) {
 	_ = cfg
-	err := bld.queue.Consume(ctx, consumer, func(job builderqueue.Job) error {
+	err := bld.queue.Consume(ctx, func(job builderqueue.Job) error {
 		log.Info("processing build job",
 			zap.String("deploy_id", job.DeployID),
 			zap.String("user_id", job.UserID),

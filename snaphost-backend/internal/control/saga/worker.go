@@ -2,15 +2,10 @@ package saga
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"go.uber.org/zap"
 )
-
-// consumerGroup is the Redis Streams consumer group name shared by all
-// saga workers across instances.
-const consumerGroup = "saga-workers"
 
 // Worker drives two concurrent loops:
 //   - a queue consumer that pulls jobs off the saga stream and runs the
@@ -29,19 +24,26 @@ type Worker struct {
 // Run blocks until ctx is cancelled. Any error from the consumer loop is
 // returned; the sweeper is best-effort.
 func (w *Worker) Run(ctx context.Context) error {
-	if err := w.Queue.EnsureGroup(ctx, consumerGroup); err != nil {
-		return err
-	}
+	w.Log.Info("starting saga worker")
 
-	consumerName, _ := os.Hostname()
-	if consumerName == "" {
-		consumerName = "saga-worker"
+	// A saga left mid-build by a restart is put back to the step before the
+	// build, so it is enqueued again rather than waiting out its whole build
+	// timeout to discover nobody is building it.
+	//
+	// This is what the Redis Stream's un-acked message used to do, and it is
+	// closer to correct than that was: redelivering the build request would
+	// have re-run a pipeline whose uploaded archive and git credential are
+	// deleted the moment they are consumed, so for two of the three source
+	// types the redelivery could only fail.
+	if n, err := w.Repo.RewindInterruptedBuilds(ctx); err != nil {
+		w.Log.Warn("could not rewind interrupted builds", zap.Error(err))
+	} else if n > 0 {
+		w.Log.Info("rewound sagas interrupted mid-build", zap.Int64("sagas", n))
 	}
-	w.Log.Info("starting saga worker", zap.String("consumer", consumerName))
 
 	go w.runResumeSweeper(ctx)
 
-	return w.Queue.Consume(ctx, consumerGroup, consumerName, func(job SagaJob) error {
+	return w.Queue.Consume(ctx, func(job SagaJob) error {
 		w.Log.Info("processing saga job",
 			zap.String("deploy_id", job.DeployID),
 			zap.String("user_id", job.UserID),
