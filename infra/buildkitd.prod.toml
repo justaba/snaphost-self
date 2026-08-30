@@ -1,4 +1,6 @@
 debug = false
 
-# Production uses TLS-enabled external registries. Do not add the insecure
-# local-development registry exceptions from buildkitd.toml here.
+# Deliberately empty beyond the line above. Builds export into the local Docker
+# daemon rather than pushing to a registry, so there is no registry
+# configuration to get wrong here — and no insecure exception that could be
+# copied in from a development file.

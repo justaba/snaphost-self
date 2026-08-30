@@ -51,7 +51,6 @@ import (
 	builderconfig "snaphost/internal/builder/config"
 	builderpipeline "snaphost/internal/builder/pipeline"
 	builderqueue "snaphost/internal/builder/queue"
-	builderregistry "snaphost/internal/builder/registry"
 	builderscan "snaphost/internal/builder/scan"
 	builderunpack "snaphost/internal/builder/unpack"
 	"snaphost/internal/buildevents"
@@ -179,7 +178,7 @@ func main() {
 	// 5. Components, bottom up.
 	ai := buildAI(pool, aiCfg, log)
 	rt := buildRuntime(pool, rtCfg, bus, log)
-	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, events, uploadsStore, credsStore, log)
+	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, events, uploadsStore, credsStore, rt.loader, log)
 	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, events, uploadsStore, credsStore, log)
 
 	// 6. One engine. The middleware order is the gateway's and still
@@ -245,6 +244,12 @@ func buildAI(pool *sql.DB, cfg *aiconfig.Config, log *zap.Logger) aiParts {
 type runtimeParts struct {
 	service *runner.Service
 	billing *wiring.BillingClient
+	// loader hands a built image to the Docker daemon. It lives on the runtime
+	// side because that package is the only one allowed to import the Docker
+	// SDK. The builder takes it as two narrow interfaces — one to load a built
+	// image, one to remove a rejected one — but it is passed around concretely so
+	// that a nil backend cannot hide inside a non-nil interface value.
+	loader *runtimedocker.DockerBackend
 }
 
 func buildRuntime(pool *sql.DB, cfg *runtimeconfig.Config, bus *logbus.Bus, log *zap.Logger) runtimeParts {
@@ -255,25 +260,28 @@ func buildRuntime(pool *sql.DB, cfg *runtimeconfig.Config, bus *logbus.Bus, log 
 	billingClient := &wiring.BillingClient{Repo: deployRepo(pool, bus, nil)}
 
 	var b runtimebackend.Backend
+	var loader *runtimedocker.DockerBackend
 	switch cfg.RunnerBackend {
 	case "docker":
 		var err error
-		b, err = runtimedocker.NewDockerBackend(cfg, publisher, log)
+		loader, err = runtimedocker.NewDockerBackend(cfg, publisher, log)
 		if err != nil {
 			log.Fatal("failed to initialise docker backend", zap.Error(err))
 		}
+		b = loader
 	default:
 		log.Fatal("unknown RUNNER_BACKEND value", zap.String("value", cfg.RunnerBackend))
 	}
 	log.Info("runtime backend selected", zap.String("backend", b.Name()))
 
-	if !cfg.StrictImageValidation && len(cfg.AllowedRegistryPrefixes) == 0 {
-		log.Warn("STRICT_IMAGE_VALIDATION=false and REGISTRY_ALLOWED_PREFIXES empty: any image_ref will be accepted (dev-only safe configuration)")
+	if !cfg.StrictImageValidation && len(cfg.AllowedImagePrefixes) == 0 {
+		log.Warn("STRICT_IMAGE_VALIDATION=false and ALLOWED_IMAGE_PREFIXES empty: any image_ref will be accepted (dev-only safe configuration)")
 	}
 
 	return runtimeParts{
 		service: runner.NewService(b, billingClient, publisher, cfg, log),
 		billing: billingClient,
+		loader:  loader,
 	}
 }
 
@@ -283,29 +291,19 @@ type builderParts struct {
 	runner   *builderpipeline.Runner
 }
 
-func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, events *buildevents.Bus, uploadsStore *uploads.Store, credsStore *gitcreds.Store, log *zap.Logger) builderParts {
+func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Config, ai aiParts, bus *logbus.Bus, events *buildevents.Bus, uploadsStore *uploads.Store, credsStore *gitcreds.Store, loader *runtimedocker.DockerBackend, log *zap.Logger) builderParts {
 	_ = aiCfg
 
 	q := builderqueue.NewQueue(0, log)
 	pub := &wiring.BuilderLogPublisher{Bus: bus}
 	eventsPub := &wiring.BuildEventPublisher{Bus: events}
 
-	dockerConfigDir := os.Getenv("DOCKER_CONFIG")
-	if dockerConfigDir == "" {
-		dockerConfigDir = os.ExpandEnv("$HOME/.docker")
-	}
-	builder, err := builderbuild.NewBuilder(cfg.BuildKitHost, dockerConfigDir, cfg, pub, log)
+	builder, err := builderbuild.NewBuilder(cfg.BuildKitHost, loader, pub, log)
 	if err != nil {
 		log.Fatal("failed to create buildkit builder", zap.Error(err))
 	}
 
-	var scanCredentials builderscan.CredentialsProvider
-	if cfg.RegistryUsername != "" || cfg.RegistryPassword != "" {
-		scanCredentials = func(context.Context) (string, string, error) {
-			return cfg.RegistryUsername, cfg.RegistryPassword, nil
-		}
-	}
-	scanner := builderscan.NewScanner(pub, log, cfg.RegistryInsecure, registryHost(cfg.RegistryURL), scanCredentials)
+	scanner := builderscan.NewScanner(pub, log)
 
 	return builderParts{
 		enqueuer: &builderapi.Enqueuer{Queue: q, Cfg: cfg, Log: log},
@@ -322,7 +320,7 @@ func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Confi
 			// write, so a status update cannot be lost to a network blip.
 			Status:      &wiring.StatusReporter{Repo: deployRepo(pool, bus, nil)},
 			AIClient:    &wiring.AIClient{Service: ai.service},
-			Registry:    builderregistry.NewDockerV2Client(log),
+			Images:      loader,
 			Uploads:     uploadsStore,
 			Credentials: credsStore,
 			UnpackLimits: builderunpack.Limits{
@@ -452,22 +450,6 @@ func deployRepo(pool *sql.DB, bus *logbus.Bus, cfg *controlconfig.Config) *deplo
 			KeepPerProject: cfg.ProjectDeployRetention,
 		}),
 	)...)
-}
-
-func registryHost(registryURL string) string {
-	value := registryURL
-	for _, prefix := range []string{"https://", "http://"} {
-		if len(value) >= len(prefix) && value[:len(prefix)] == prefix {
-			value = value[len(prefix):]
-			break
-		}
-	}
-	for i := 0; i < len(value); i++ {
-		if value[i] == '/' {
-			return value[:i]
-		}
-	}
-	return value
 }
 
 // ---------------------------------------------------------------------------

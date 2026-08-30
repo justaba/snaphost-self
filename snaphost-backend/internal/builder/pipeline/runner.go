@@ -23,7 +23,6 @@ import (
 	"snaphost/internal/builder/events"
 	"snaphost/internal/builder/logs"
 	"snaphost/internal/builder/queue"
-	"snaphost/internal/builder/registry"
 	"snaphost/internal/builder/scan"
 	"snaphost/internal/builder/unpack"
 	"snaphost/internal/gitcreds"
@@ -45,6 +44,15 @@ type StatusReporter interface {
 }
 
 // AIClient interface moved to internal/ai
+
+// ImageRemover deletes an image from the local Docker daemon.
+//
+// It replaces a registry client whose one method was a DELETE against the v2
+// API. The image never leaves the daemon it was built into, so a rejected
+// artifact has to be removed from there.
+type ImageRemover interface {
+	RemoveImage(ctx context.Context, imageRef string) error
+}
 
 // Runner orchestrates the full build pipeline for each job.
 type Runner struct {
@@ -70,7 +78,7 @@ type Runner struct {
 	AIClient ai.Client
 	// Registry cleans up images that fail the post-push scan. Optional;
 	// nil disables cleanup (used by tests that don't exercise that path).
-	Registry registry.Client
+	Images ImageRemover
 	// Uploads reads archive blobs for source_type=archive jobs (14b-2).
 	// Optional; nil makes archive jobs fail permanently.
 	Uploads *uploads.Store
@@ -500,9 +508,9 @@ func (r *Runner) executePipeline(ctx context.Context, job queue.Job, log *zap.Lo
 	}
 
 	// 11. Compute image ref.
-	imageRef := imageRefForJob(r.Cfg.RegistryURL, job.UserID, job.DeployID)
+	imageRef := imageRefForJob(job.UserID, job.DeployID)
 
-	// 12. Build image and push to registry.
+	// 12. Build the image into the local Docker daemon.
 	log.Info("building image", zap.String("stage", "build"), zap.String("image_ref", imageRef))
 	buildTimeout := time.Duration(r.Cfg.MaxBuildTimeMin) * time.Minute
 	_, err = r.Builder.Build(ctx, build.BuildOptions{
@@ -517,19 +525,19 @@ func (r *Runner) executePipeline(ctx context.Context, job queue.Job, log *zap.Lo
 		return "", "", 0, classifyBuildKitError(fmt.Errorf("build: %w", err))
 	}
 
-	// 13. Scan pushed image via Trivy. On critical-vulnerability failure
-	// with the gate enabled, delete the image from the registry so
-	// vulnerable artifacts don't accumulate. Cleanup failure is logged
-	// but doesn't change the user-visible outcome — scan failure is the
-	// primary error.
+	// 13. Scan the built image via Trivy. On critical-vulnerability failure
+	// with the gate enabled, remove the image from the daemon so a rejected
+	// artifact does not sit on the host. Cleanup failure is logged but does
+	// not change the user-visible outcome — the scan failure is the primary
+	// error.
 	log.Info("scanning image for vulnerabilities", zap.String("stage", "scan"))
 	scanResult, err := r.Scanner.Scan(ctx, imageRef)
 	if err != nil {
 		if errors.Is(err, scan.ErrCriticalVulnerability) {
 			if r.Cfg.ScanFailOnCritical {
-				if r.Registry != nil {
-					if delErr := r.Registry.DeleteImage(ctx, imageRef); delErr != nil {
-						log.Error("failed to delete vulnerable image from registry",
+				if r.Images != nil {
+					if delErr := r.Images.RemoveImage(ctx, imageRef); delErr != nil {
+						log.Error("failed to remove the vulnerable image from the local daemon",
 							zap.String("image_ref", imageRef),
 							zap.Error(delErr),
 						)
@@ -620,10 +628,20 @@ func (r *Runner) unpackUpload(ctx context.Context, job queue.Job, workdirPath st
 	return nil
 }
 
-func imageRefForJob(registryURL, userID, deployID string) string {
+// imageRefForJob names the image in the local daemon's store.
+//
+// It used to start with a registry host, because the image was pushed there and
+// pulled back. Nothing pushes now, so the leading component is a fixed
+// namespace: it keeps this platform's images distinguishable from whatever else
+// the operator has on the same daemon, which is the only job the prefix had
+// that survives.
+//
+// The user id is hashed rather than used directly for the reason it always was:
+// an image name ends up in `docker ps` output and in build logs, and an account
+// identifier does not need to be in either.
+func imageRefForJob(userID, deployID string) string {
 	userHash := fmt.Sprintf("%x", sha256.Sum256([]byte(userID)))
-	registryURL = strings.TrimRight(registryURL, "/")
-	return fmt.Sprintf("%s/proj-%s:%s", registryURL, userHash[:8], deployID)
+	return fmt.Sprintf("snaphost/proj-%s:%s", userHash[:8], deployID)
 }
 
 // issueLevel returns the log level for a validation issue code.

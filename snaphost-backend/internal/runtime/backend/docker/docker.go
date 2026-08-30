@@ -5,6 +5,7 @@ package docker
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -58,9 +59,8 @@ func NewDockerBackend(cfg *config.Config, publisher logs.Publisher, log *zap.Log
 	}, nil
 }
 
-// Run pulls the image if needed, creates and starts the container on an isolated
-// network, connects it to the Traefik network, waits for it to be healthy, and
-// returns the public endpoint URL.
+// Run starts the image on an isolated network, connects it to the Traefik
+// network, waits for it to be healthy, and returns the public endpoint URL.
 func (b *DockerBackend) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
 	// Apply overall timeout.
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -68,26 +68,21 @@ func (b *DockerBackend) Run(ctx context.Context, req backend.RunRequest) (*backe
 
 	containerName := fmt.Sprintf("snaphost-deploy-%s", req.DeployID)
 
-	// 1. Pull the image.
-	b.publishLog(req.DeployID, "runtime-startup", fmt.Sprintf("pulling image %s", req.ImageRef), "info")
-
-	pullOpts := image.PullOptions{}
-	if b.cfg.RegistryAuth != "" {
-		pullOpts.RegistryAuth = b.cfg.RegistryAuth
+	// 1. The image is already here — the build loaded it into this daemon.
+	//
+	// This used to be a pull, which is what a registry was for. On one host the
+	// image never leaves the machine it was built on, so a pull was a network
+	// round trip to fetch something already on disk. It also could not work:
+	// the builder pushed to a name resolvable only inside the Docker network,
+	// and this call is made by the host daemon, which is not on it.
+	//
+	// Absence is a real failure rather than a reason to fetch. A deploy whose
+	// image is missing is one whose build did not produce what it said it did,
+	// and starting a pull would turn that into a confusing registry error.
+	if _, _, err := b.cli.ImageInspectWithRaw(ctx, req.ImageRef); err != nil {
+		return nil, fmt.Errorf("%w: image %s is not in the local store: %s",
+			backend.ErrImagePullFailed, req.ImageRef, err.Error())
 	}
-
-	pullReader, err := b.cli.ImagePull(ctx, req.ImageRef, pullOpts)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", backend.ErrImagePullFailed, err.Error())
-	}
-	// Drain the pull stream so Docker actually pulls the layers.
-	if _, err := io.Copy(io.Discard, pullReader); err != nil {
-		pullReader.Close()
-		return nil, fmt.Errorf("%w: drain pull stream: %s", backend.ErrImagePullFailed, err.Error())
-	}
-	pullReader.Close()
-
-	b.publishLog(req.DeployID, "runtime-startup", "image pulled successfully", "info")
 
 	// 2. Create isolated network.
 	if _, err := CreateIsolatedNetwork(ctx, b.cli, req.DeployID); err != nil {
@@ -367,4 +362,56 @@ func sanitizeEnv(env map[string]string) []string {
 		result = append(result, fmt.Sprintf("%s=%s", k, v))
 	}
 	return result
+}
+
+// LoadImage reads a Docker image tarball into the daemon's own image store.
+//
+// It exists because the build pipeline has no way to reach the daemon itself:
+// this package is the only one allowed to import the Docker SDK, which is why
+// the builder takes an interface and gets this.
+//
+// The pull it replaces went through a registry, and on a single host that was
+// two network hops and a daemon to move an image between two processes that
+// share a filesystem. It also could not work locally: the builder pushed to a
+// Compose service name resolvable only inside the Docker network, and the pull
+// was performed by the host daemon, which is not on that network.
+func (b *DockerBackend) LoadImage(ctx context.Context, r io.Reader) error {
+	// quiet=true: the progress stream is for a terminal, and this one is read
+	// only to find out whether the load failed.
+	resp, err := b.cli.ImageLoad(ctx, r, true)
+	if err != nil {
+		return fmt.Errorf("load image into the docker daemon: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// The response is a progress stream. Draining it is what makes the load
+	// actually happen — the same reason the pull it replaced was drained.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read image load response: %w", err)
+	}
+	// The daemon reports a failed load in the body with a 200 status, so the
+	// only way to notice is to look.
+	if bytes.Contains(body, []byte(`"errorDetail"`)) {
+		return fmt.Errorf("docker rejected the image: %s", strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// RemoveImage deletes an image from the daemon's store.
+//
+// The build pipeline calls it when a scan finds critical vulnerabilities and
+// the gate is on, so a rejected artifact does not sit on the host. It used to
+// be a DELETE against the registry's v2 API; the image never leaves this daemon
+// now, so this is where it has to be removed from.
+//
+// force=true because the image was tagged by the build and nothing else refers
+// to it; prune untagged parents, since the layers under a rejected image are
+// not wanted either.
+func (b *DockerBackend) RemoveImage(ctx context.Context, imageRef string) error {
+	_, err := b.cli.ImageRemove(ctx, imageRef, image.RemoveOptions{Force: true, PruneChildren: true})
+	if err != nil && !client.IsErrNotFound(err) {
+		return fmt.Errorf("remove image %s: %w", imageRef, err)
+	}
+	return nil
 }

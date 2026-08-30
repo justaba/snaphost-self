@@ -7,10 +7,11 @@ name: snaphost-self
 # runner-watchdog and ai-orchestrator.
 #
 # What is left beside it is infrastructure the platform genuinely does not
-# implement itself — BuildKit, a registry, and Traefik. PostgreSQL went with
-# item 6 and Redis with item 7: the store is a SQLite file inside the
-# application container, and the queues, log fan-out, uploads and credentials
-# Redis held are all in the process that uses them.
+# implement itself — BuildKit and Traefik. PostgreSQL went with item 6, Redis
+# with item 7, and the registry with the move to a local image store: the
+# store is a SQLite file inside the application container, the queues, log
+# fan-out, uploads and credentials Redis held are all in the process that uses
+# them, and a built image is loaded straight into the host daemon that runs it.
 
 services:
   snaphost:
@@ -42,8 +43,6 @@ services:
       - "${DOCKER_SOCKET_GID:-0}"
     depends_on:
       buildkitd:
-        condition: service_started
-      registry:
         condition: service_started
     environment:
       PORT: "8080"
@@ -86,7 +85,6 @@ services:
 
       # Build pipeline.
       BUILDKIT_HOST: ${BUILDKIT_HOST:-tcp://buildkitd:1234}
-      REGISTRY_URL: ${REGISTRY_URL:-registry:5000/snaphost}
       WORKDIR_ROOT: /var/snaphost/builds
       MAX_REPO_SIZE_MB: ${MAX_REPO_SIZE_MB:-500}
       MAX_BUILD_TIME_MIN: ${MAX_BUILD_TIME_MIN:-15}
@@ -104,9 +102,8 @@ services:
       RUNTIME_PROBE_ENABLED: ${RUNTIME_PROBE_ENABLED:-true}
       RUNTIME_PROBE_TIMEOUT_SEC: ${RUNTIME_PROBE_TIMEOUT_SEC:-30}
       WATCHDOG_INTERVAL_SEC: ${WATCHDOG_INTERVAL_SEC:-30}
-      REGISTRY_AUTH: ${REGISTRY_AUTH:-}
       STRICT_IMAGE_VALIDATION: ${STRICT_IMAGE_VALIDATION:-false}
-      REGISTRY_ALLOWED_PREFIXES: ${REGISTRY_ALLOWED_PREFIXES:-registry:5000/snaphost}
+      ALLOWED_IMAGE_PREFIXES: ${ALLOWED_IMAGE_PREFIXES:-snaphost/}
 
       # Dockerfile generation.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
@@ -149,18 +146,6 @@ services:
       - snaphost-net
     restart: unless-stopped
 
-  registry:
-    image: registry:2
-    environment:
-      REGISTRY_STORAGE_DELETE_ENABLED: "true"
-    ports:
-      - "5000:5000"
-    volumes:
-      - registry_data:/var/lib/registry
-    networks:
-      - snaphost-net
-    restart: unless-stopped
-
   traefik:
     image: traefik:v2.11
     ports:
@@ -183,7 +168,6 @@ services:
 volumes:
   snaphost_data:
   buildkit_cache:
-  registry_data:
 
 networks:
   snaphost-net:

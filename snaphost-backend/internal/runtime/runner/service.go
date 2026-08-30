@@ -373,20 +373,20 @@ func generateSubdomain(deployID string) string {
 // roundtrip last (only under StrictImageValidation).
 func (s *Service) validateDeployRequest(ctx context.Context, req DeployRequest) error {
 	// 1. Registry prefix check (provider-agnostic; values come from config).
-	if len(s.cfg.AllowedRegistryPrefixes) == 0 {
+	if len(s.cfg.AllowedImagePrefixes) == 0 {
 		// Only reachable in non-strict mode (strict + empty list is a
 		// fatal startup error). Skip prefix check, log once already at
 		// startup via main.go warning.
 	} else {
 		ok := false
-		for _, p := range s.cfg.AllowedRegistryPrefixes {
+		for _, p := range s.cfg.AllowedImagePrefixes {
 			if imageRefMatchesAllowedPrefix(req.ImageRef, p) {
 				ok = true
 				break
 			}
 		}
 		if !ok {
-			return &ValidationError{Err: fmt.Errorf("image_ref %q does not match any allowed registry prefix", req.ImageRef)}
+			return &ValidationError{Err: fmt.Errorf("image_ref %q does not match any allowed image prefix", req.ImageRef)}
 		}
 	}
 

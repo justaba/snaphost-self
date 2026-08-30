@@ -6,8 +6,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-
-	"go.uber.org/zap"
 )
 
 // Config holds all configuration values for the builder-svc service.
@@ -16,12 +14,6 @@ type Config struct {
 	Port string
 	// BuildKitHost is the gRPC address of the BuildKit daemon.
 	BuildKitHost string
-	// RegistryURL is the container registry prefix (e.g. registry:5000/snaphost).
-	RegistryURL string
-	// RegistryUsername is the optional registry authentication username.
-	RegistryUsername string
-	// RegistryPassword is the optional registry authentication password.
-	RegistryPassword string
 	// WorkdirRoot is the base directory for per-build temporary workspaces.
 	WorkdirRoot string
 	// MaxRepoSizeMB is the maximum allowed cloned repository size in megabytes.
@@ -50,21 +42,6 @@ type Config struct {
 	AIOrchestratorURL string
 	// UserBillingURL is the HTTP endpoint for the user-billing service.
 	UserBillingURL string
-	// RegistryInsecure controls whether Trivy disables TLS verification when
-	// pulling images for scanning. Default: false (secure).
-	//
-	// Auto-enabled at startup when RegistryURL points at a known local-development
-	// host (localhost, 127.0.0.1, host.docker.internal, registry:). MUST remain
-	// false in production with TLS-enabled registries (cr.yandex, etc.).
-	//
-	// An explicit REGISTRY_INSECURE env var overrides auto-detection.
-	RegistryInsecure bool
-	// RegistryAuthMode selects the credential source for registry pushes.
-	// "static" reads the docker config file, and is the only mode: the cloud
-	// IAM mode went with the cloud runtime. The switch is kept rather than
-	// removed because the registry itself is on its way out — a build and the
-	// container that runs it share a host here, so there is nothing to push to.
-	RegistryAuthMode string
 	// MaxArchiveFiles caps entries extracted from an uploaded archive
 	// (source_type=archive, Task 14b-2).
 	MaxArchiveFiles int
@@ -77,21 +54,12 @@ type Config struct {
 // Load reads configuration from environment variables with fallback to defaults.
 // Required fields without defaults cause an error if unset.
 func Load() (*Config, error) {
-	log, _ := zap.NewProduction()
 	cfg := &Config{
 		Port:              envOrDefault("PORT", "8082"),
 		BuildKitHost:      envOrDefault("BUILDKIT_HOST", "tcp://buildkitd:1234"),
 		WorkdirRoot:       envOrDefault("WORKDIR_ROOT", "/var/snaphost/builds"),
 		AIOrchestratorURL: envOrDefault("AI_ORCHESTRATOR_URL", "http://ai-orchestrator:8087"),
 		UserBillingURL:    envOrDefault("USER_BILLING_URL", "http://user-billing:8081"),
-		RegistryUsername:  os.Getenv("REGISTRY_USERNAME"),
-		RegistryPassword:  os.Getenv("REGISTRY_PASSWORD"),
-	}
-
-	// Required: REGISTRY_URL
-	cfg.RegistryURL = os.Getenv("REGISTRY_URL")
-	if cfg.RegistryURL == "" {
-		return nil, fmt.Errorf("config: REGISTRY_URL is required but not set")
 	}
 
 	// Required: WEBHOOK_SECRET
@@ -171,37 +139,6 @@ func Load() (*Config, error) {
 	}
 	cfg.ScanFailOnCritical = scanFail
 
-	// RegistryInsecure — auto-detect for known local registries unless explicitly set.
-	registryInsecureStr, registryInsecureExplicit := os.LookupEnv("REGISTRY_INSECURE")
-	if registryInsecureExplicit {
-		insecure, err := strconv.ParseBool(registryInsecureStr)
-		if err != nil {
-			return nil, fmt.Errorf("config: REGISTRY_INSECURE is not a valid boolean: %w", err)
-		}
-		cfg.RegistryInsecure = insecure
-	}
-
-	if !registryInsecureExplicit {
-		if isLocalRegistry(cfg.RegistryURL) {
-			cfg.RegistryInsecure = true
-			log.Info("local registry detected, enabling Trivy --insecure flag",
-				zap.String("registry", cfg.RegistryURL))
-		}
-	}
-
-	if cfg.RegistryInsecure && !isLocalRegistry(cfg.RegistryURL) {
-		log.Warn("REGISTRY_INSECURE=true with a non-local registry — TLS verification will be disabled, which is unsafe for production",
-			zap.String("registry", cfg.RegistryURL))
-	}
-
-	cfg.RegistryAuthMode = envOrDefault("REGISTRY_AUTH_MODE", "static")
-	switch cfg.RegistryAuthMode {
-	case "static":
-		// no extra requirements
-	default:
-		return nil, fmt.Errorf("config: REGISTRY_AUTH_MODE must be 'static', got %q", cfg.RegistryAuthMode)
-	}
-
 	return cfg, nil
 }
 
@@ -225,16 +162,4 @@ func splitTrim(s, sep string) []string {
 		}
 	}
 	return out
-}
-
-// isLocalRegistry returns true when the registry URL points at a known
-// local-development host. Used to auto-enable --insecure for Trivy.
-func isLocalRegistry(url string) bool {
-	localHosts := []string{"localhost", "127.0.0.1", "host.docker.internal", "registry:"}
-	for _, h := range localHosts {
-		if strings.Contains(url, h) {
-			return true
-		}
-	}
-	return false
 }

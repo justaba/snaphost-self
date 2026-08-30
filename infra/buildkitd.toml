@@ -1,17 +1,9 @@
 debug = false
 
-# The local snaphost registry runs plain HTTP without TLS, so BuildKit
-# must be told not to attempt HTTPS when pulling/pushing images to it.
-# Without this, push fails with:
-#   "http: server gave HTTP response to HTTPS client"
-[registry."registry:5000"]
-  http = true
-  insecure = true
-
-# When pushing/pulling via host.docker.internal:5000 (the path the host's
-# Docker daemon takes — see runner-svc), the same plaintext-HTTP setup
-# applies. buildkitd resolves host.docker.internal through Docker Desktop
-# and round-trips back to the registry container via the published port.
-[registry."host.docker.internal:5000"]
-  http = true
-  insecure = true
+# There are no [registry."..."] sections here any more.
+#
+# They existed because the build pushed to a local plain-HTTP registry and
+# BuildKit refuses HTTP unless told to allow it. A build now exports the image
+# straight into the host's Docker daemon over the API, so nothing is pushed and
+# there is no registry to distrust. Base images still come from Docker Hub,
+# which is HTTPS and needs no exception.

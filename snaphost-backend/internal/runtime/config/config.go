@@ -35,14 +35,13 @@ type Config struct {
 	WatchdogIntervalSec int
 	// LogLevel controls the zap logger verbosity ("info" or "debug").
 	LogLevel string
-	// RegistryAuth is an optional base64-encoded Docker auth JSON for private registries.
-	RegistryAuth string
-	// AllowedRegistryPrefixes lists registry URL prefixes that image_ref
-	// values are permitted to start with. Provider-agnostic: each backend
-	// contributes its own values via the REGISTRY_ALLOWED_PREFIXES env var
-	// (comma-separated, e.g. "host.docker.internal:5000/snaphost").
+	// AllowedImagePrefixes lists what an image_ref may start with. There is no
+	// registry any more, so these are local image names: the build tags what it
+	// produces "snaphost/proj-<hash>", and this is what stops the internal
+	// deploy endpoint being asked to run something else on the host.
+	//
 	// Empty + StrictImageValidation=true is a fatal startup error.
-	AllowedRegistryPrefixes []string
+	AllowedImagePrefixes []string
 
 	// StrictImageValidation toggles the user_id and status cross-checks
 	// against user-billing in runner-svc.Service.Deploy. Must be true in
@@ -72,7 +71,6 @@ func Load() (*Config, error) {
 		DomainSuffix:   envOrDefault("DOMAIN_SUFFIX", "localhost"),
 		DockerSocket:   envOrDefault("DOCKER_SOCKET", "/var/run/docker.sock"),
 		LogLevel:       envOrDefault("LOG_LEVEL", "info"),
-		RegistryAuth:   os.Getenv("REGISTRY_AUTH"),
 	}
 
 	// Required: WEBHOOK_SECRET
@@ -121,18 +119,18 @@ func Load() (*Config, error) {
 	}
 	cfg.StrictImageValidation = strict
 
-	prefixesRaw := os.Getenv("REGISTRY_ALLOWED_PREFIXES")
+	prefixesRaw := os.Getenv("ALLOWED_IMAGE_PREFIXES")
 	if prefixesRaw != "" {
 		for _, p := range strings.Split(prefixesRaw, ",") {
 			if p = strings.TrimSpace(p); p != "" {
-				cfg.AllowedRegistryPrefixes = append(cfg.AllowedRegistryPrefixes, p)
+				cfg.AllowedImagePrefixes = append(cfg.AllowedImagePrefixes, p)
 			}
 		}
 	}
 	// Secure default: strict mode without an allow-list is a misconfiguration
 	// in prod. Fail at startup rather than silently accept any image_ref.
-	if cfg.StrictImageValidation && len(cfg.AllowedRegistryPrefixes) == 0 {
-		return nil, fmt.Errorf("config: REGISTRY_ALLOWED_PREFIXES must be set when STRICT_IMAGE_VALIDATION=true")
+	if cfg.StrictImageValidation && len(cfg.AllowedImagePrefixes) == 0 {
+		return nil, fmt.Errorf("config: ALLOWED_IMAGE_PREFIXES must be set when STRICT_IMAGE_VALIDATION=true")
 	}
 
 	// Optional: WATCHDOG_INTERVAL_SEC (default 30)

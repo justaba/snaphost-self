@@ -6,14 +6,11 @@ package scan
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -50,26 +47,20 @@ type trivyResults struct {
 
 // Scanner provides container image vulnerability scanning.
 type Scanner struct {
-	pub              logs.Publisher
-	log              *zap.Logger
-	registryInsecure bool
-	registryHost     string
-	credentials      CredentialsProvider
+	pub logs.Publisher
+	log *zap.Logger
 }
 
-// CredentialsProvider returns short-lived credentials for the configured
-// target registry. Implementations must not log returned values.
-type CredentialsProvider func(context.Context) (username, password string, err error)
-
-// NewScanner creates a new Scanner instance. When registryInsecure is true,
-// Trivy will skip TLS certificate verification (--insecure flag).
-func NewScanner(pub logs.Publisher, log *zap.Logger, registryInsecure bool, registryHost string, credentials CredentialsProvider) *Scanner {
+// NewScanner creates a new Scanner instance.
+//
+// The registry host, the insecure-TLS flag and the credentials provider went
+// with the registry: the image being scanned is in the local Docker daemon,
+// put there by the build, so there is nothing to authenticate to and no
+// certificate to distrust.
+func NewScanner(pub logs.Publisher, log *zap.Logger) *Scanner {
 	return &Scanner{
-		pub:              pub,
-		log:              log,
-		registryInsecure: registryInsecure,
-		registryHost:     registryHost,
-		credentials:      credentials,
+		pub: pub,
+		log: log,
 	}
 }
 
@@ -91,9 +82,9 @@ func (s *Scanner) Scan(ctx context.Context, imageRef string) (*ScanResult, error
 	cmd := exec.CommandContext(scanCtx, "trivy", args...)
 	cmd.Env = os.Environ()
 
-	cleanupAuth, err := s.configureRegistryAuth(scanCtx, cmd, imageRef)
+	cleanupAuth, err := noAuthCleanup()
 	if err != nil {
-		return nil, fmt.Errorf("configure registry auth: %w", err)
+		return nil, fmt.Errorf("prepare scan environment: %w", err)
 	}
 	defer cleanupAuth()
 
@@ -153,86 +144,25 @@ func (s *Scanner) Scan(ctx context.Context, imageRef string) (*ScanResult, error
 	return result, nil
 }
 
-// buildArgs constructs the Trivy CLI arguments for an image scan. The
-// --insecure flag is included only when s.registryInsecure is true
-// (Task 7), so Trivy will skip TLS verification when pulling from a
-// dev/self-signed registry.
+// buildArgs constructs the Trivy CLI arguments for an image scan.
+//
+// --image-src is "docker" rather than "remote": the image is in the local
+// daemon's store because the build loaded it there, and asking Trivy to
+// fetch it from a registry would send it looking for something that was never
+// pushed. --insecure went with the same change: there is no TLS to skip when
+// nothing crosses a network.
 func (s *Scanner) buildArgs(imageRef string) []string {
-	args := []string{
+	return []string{
 		"image",
-		"--image-src", "remote",
+		"--image-src", "docker",
 		"--format", "json",
 		"--severity", "CRITICAL,HIGH",
 		"--exit-code", "0",
 		"--no-progress",
 		"--timeout", "2m",
+		imageRef,
 	}
-	if s.registryInsecure {
-		args = append(args, "--insecure")
-	}
-	args = append(args, imageRef)
-	return args
 }
 
-func (s *Scanner) configureRegistryAuth(ctx context.Context, cmd *exec.Cmd, imageRef string) (func(), error) {
-	if s.credentials == nil {
-		return func() {}, nil
-	}
-	if s.registryHost == "" || imageRegistryHost(imageRef) != s.registryHost {
-		return nil, errors.New("image host does not match configured registry")
-	}
-
-	username, password, err := s.credentials(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if username == "" || password == "" {
-		return nil, errors.New("registry credentials are empty")
-	}
-
-	dir, err := os.MkdirTemp("", "snaphost-trivy-auth-")
-	if err != nil {
-		return nil, fmt.Errorf("create temporary auth directory: %w", err)
-	}
-	cleanup := func() { _ = os.RemoveAll(dir) }
-
-	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-	config := struct {
-		Auths map[string]struct {
-			Auth string `json:"auth"`
-		} `json:"auths"`
-	}{Auths: map[string]struct {
-		Auth string `json:"auth"`
-	}{s.registryHost: {Auth: auth}}}
-	raw, err := json.Marshal(config)
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("encode registry auth: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), raw, 0o600); err != nil {
-		cleanup()
-		return nil, fmt.Errorf("write temporary registry auth: %w", err)
-	}
-
-	cmd.Env = replaceEnv(cmd.Env, "DOCKER_CONFIG", dir)
-	return cleanup, nil
-}
-
-func imageRegistryHost(imageRef string) string {
-	first, _, ok := strings.Cut(strings.TrimSpace(imageRef), "/")
-	if !ok || (!strings.Contains(first, ".") && !strings.Contains(first, ":") && first != "localhost") {
-		return "registry-1.docker.io"
-	}
-	return first
-}
-
-func replaceEnv(env []string, key, value string) []string {
-	prefix := key + "="
-	result := make([]string, 0, len(env)+1)
-	for _, item := range env {
-		if !strings.HasPrefix(item, prefix) {
-			result = append(result, item)
-		}
-	}
-	return append(result, prefix+value)
-}
+// noAuthCleanup keeps Scan's shape while there is nothing to clean up.
+func noAuthCleanup() (func(), error) { return func() {}, nil }

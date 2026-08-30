@@ -1,130 +1,62 @@
 package scan
 
 import (
-	"context"
-	"encoding/base64"
-	"encoding/json"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
+	"slices"
 	"testing"
 )
 
-func TestBuildArgs_InsecureTrue(t *testing.T) {
-	s := &Scanner{registryInsecure: true}
-	args := s.buildArgs("registry:5000/img:tag")
+// The scan reads the image from the local Docker daemon, because that is where
+// the build put it. Asking Trivy for "remote" would send it to a registry for
+// something that was never pushed — and on the local stack that registry name
+// does not even resolve from the daemon's side of the network.
+func TestScanReadsTheImageFromTheLocalDaemon(t *testing.T) {
+	args := (&Scanner{}).buildArgs("snaphost/proj-abcd1234:deploy-1")
 
-	if !containsStr(args, "--insecure") {
-		t.Fatalf("expected --insecure in args, got: %v", args)
+	src := flagValue(args, "--image-src")
+	if src != "docker" {
+		t.Fatalf("--image-src = %q, want docker", src)
 	}
-	if args[len(args)-1] != "registry:5000/img:tag" {
-		t.Fatalf("expected imageRef as last arg, got: %v", args)
+	if slices.Contains(args, "--insecure") {
+		t.Error("--insecure is present; there is no TLS to skip when nothing is fetched")
 	}
 }
 
-func TestConfigureRegistryAuthUsesScopedTemporaryDockerConfig(t *testing.T) {
-	s := &Scanner{
-		registryHost: "cr.yandex",
-		credentials: func(context.Context) (string, string, error) {
-			return "iam", "short-lived-token", nil
-		},
-	}
-	cmd := exec.Command("trivy")
-	cmd.Env = []string{"DOCKER_CONFIG=old", "PATH=test"}
+// The image reference has to be last: Trivy takes it as a positional argument,
+// and a flag appended after it is read as a second target.
+func TestTheImageReferenceIsTheFinalArgument(t *testing.T) {
+	const ref = "snaphost/proj-abcd1234:deploy-1"
+	args := (&Scanner{}).buildArgs(ref)
 
-	cleanup, err := s.configureRegistryAuth(context.Background(), cmd, "cr.yandex/registry/project:image")
-	if err != nil {
-		t.Fatalf("configureRegistryAuth() error = %v", err)
+	if len(args) == 0 || args[len(args)-1] != ref {
+		t.Fatalf("last argument = %q, want %q", args[len(args)-1], ref)
 	}
-
-	dir := envValue(cmd.Env, "DOCKER_CONFIG")
-	if dir == "" || dir == "old" {
-		t.Fatalf("unexpected DOCKER_CONFIG %q", dir)
-	}
-	raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
-	if err != nil {
-		t.Fatalf("read temporary config: %v", err)
-	}
-	var config struct {
-		Auths map[string]struct {
-			Auth string `json:"auth"`
-		} `json:"auths"`
-	}
-	if err := json.Unmarshal(raw, &config); err != nil {
-		t.Fatalf("decode temporary config: %v", err)
-	}
-	wantAuth := base64.StdEncoding.EncodeToString([]byte("iam:short-lived-token"))
-	if len(config.Auths) != 1 || config.Auths["cr.yandex"].Auth != wantAuth {
-		t.Fatalf("temporary config is not scoped to the expected registry")
-	}
-	if strings.Contains(strings.Join(cmd.Args, " "), "short-lived-token") {
-		t.Fatal("registry token leaked into command arguments")
-	}
-
-	cleanup()
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Fatalf("temporary auth directory still exists after cleanup: %v", err)
+	if args[0] != "image" {
+		t.Fatalf("first argument = %q, want the image subcommand", args[0])
 	}
 }
 
-func TestConfigureRegistryAuthRejectsUnexpectedImageHost(t *testing.T) {
-	called := false
-	s := &Scanner{
-		registryHost: "cr.yandex",
-		credentials: func(context.Context) (string, string, error) {
-			called = true
-			return "iam", "token", nil
-		},
-	}
+// Severity and exit code are the two settings that decide what a scan means:
+// the pipeline reads the report and applies its own policy, so Trivy must not
+// fail the process on a finding.
+func TestScanReportsRatherThanFails(t *testing.T) {
+	args := (&Scanner{}).buildArgs("snaphost/proj-abcd1234:deploy-1")
 
-	if _, err := s.configureRegistryAuth(context.Background(), exec.Command("trivy"), "cr.yandex.evil.example/image:tag"); err == nil {
-		t.Fatal("expected unexpected image host to be rejected")
+	if got := flagValue(args, "--exit-code"); got != "0" {
+		t.Errorf("--exit-code = %q, want 0", got)
 	}
-	if called {
-		t.Fatal("credential provider called for unexpected image host")
+	if got := flagValue(args, "--severity"); got != "CRITICAL,HIGH" {
+		t.Errorf("--severity = %q", got)
+	}
+	if got := flagValue(args, "--format"); got != "json" {
+		t.Errorf("--format = %q, want json", got)
 	}
 }
 
-func envValue(env []string, key string) string {
-	prefix := key + "="
-	for _, item := range env {
-		if strings.HasPrefix(item, prefix) {
-			return strings.TrimPrefix(item, prefix)
+func flagValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
 		}
 	}
 	return ""
-}
-
-func TestBuildArgs_InsecureFalse(t *testing.T) {
-	s := &Scanner{registryInsecure: false}
-	args := s.buildArgs("cr.yandex/abc123/img:tag")
-
-	if containsStr(args, "--insecure") {
-		t.Fatalf("did not expect --insecure in args, got: %v", args)
-	}
-	if args[len(args)-1] != "cr.yandex/abc123/img:tag" {
-		t.Fatalf("expected imageRef as last arg, got: %v", args)
-	}
-}
-
-func TestBuildArgs_CoreFlagsPresent(t *testing.T) {
-	s := &Scanner{registryInsecure: false}
-	args := s.buildArgs("some/image:latest")
-
-	required := []string{"image", "--image-src", "remote", "--format", "json", "--severity", "CRITICAL,HIGH", "--exit-code", "0", "--no-progress", "--timeout", "2m"}
-	for _, flag := range required {
-		if !containsStr(args, flag) {
-			t.Errorf("expected %q in args, got: %v", flag, args)
-		}
-	}
-}
-
-func containsStr(ss []string, target string) bool {
-	for _, s := range ss {
-		if s == target {
-			return true
-		}
-	}
-	return false
 }

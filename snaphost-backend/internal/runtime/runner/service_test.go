@@ -116,15 +116,15 @@ func (b fakeBackend) Name() string { return "fake" }
 
 func strictCfg() *config.Config {
 	return &config.Config{
-		AllowedRegistryPrefixes: []string{testPrefix},
-		StrictImageValidation:   true,
+		AllowedImagePrefixes:  []string{testPrefix},
+		StrictImageValidation: true,
 	}
 }
 
 func looseCfg() *config.Config {
 	return &config.Config{
-		AllowedRegistryPrefixes: []string{testPrefix},
-		StrictImageValidation:   false,
+		AllowedImagePrefixes:  []string{testPrefix},
+		StrictImageValidation: false,
 	}
 }
 
@@ -341,8 +341,8 @@ func TestImageRefMatchesAllowedPrefix(t *testing.T) {
 
 func TestValidate_YandexProductionPrefix(t *testing.T) {
 	cfg := &config.Config{
-		AllowedRegistryPrefixes: []string{"cr.yandex/crp123/snaphost"},
-		StrictImageValidation:   true,
+		AllowedImagePrefixes:  []string{"cr.yandex/crp123/snaphost"},
+		StrictImageValidation: true,
 	}
 	imageRef := "cr.yandex/crp123/snaphost/proj-abcdef12:" + testDeployID
 	info := deployableInfo()
