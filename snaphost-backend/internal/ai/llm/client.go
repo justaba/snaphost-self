@@ -265,12 +265,18 @@ func (c *Client) classifyError(err error) error {
 	var status int
 	var detail string
 
+	// Both are read, and the order matters. When the provider sends a body the
+	// library can parse but not use, it returns a RequestError wrapping an
+	// APIError — and only the outer one carries the HTTP status; the inner one
+	// keeps its zero value. A switch that stopped at the first match found the
+	// inner error, read a status of 0, and fell through to the generic branch,
+	// which is how a 403 kept printing as the provider's empty message.
 	var apiErr *openai.APIError
 	var reqErr *openai.RequestError
-	switch {
-	case errors.As(err, &apiErr):
+	if errors.As(err, &apiErr) {
 		status, detail = apiErr.HTTPStatusCode, apiErr.Message
-	case errors.As(err, &reqErr):
+	}
+	if errors.As(err, &reqErr) && reqErr.HTTPStatusCode != 0 {
 		status = reqErr.HTTPStatusCode
 	}
 

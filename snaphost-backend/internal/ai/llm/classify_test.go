@@ -2,6 +2,7 @@ package llm
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -53,5 +54,48 @@ func TestOtherStatusesKeepTheirClassification(t *testing.T) {
 	got := c.classifyError(&openai.APIError{HTTPStatusCode: http.StatusBadGateway, Message: "upstream down"})
 	if !errors.Is(got, ErrUpstream) || strings.Contains(got.Error(), "OPENROUTER_API_KEY") {
 		t.Errorf("502 classified as %v; a server error is not an auth problem", got)
+	}
+}
+
+// The nesting is what the first attempt at this got wrong. When the provider
+// sends a body the library can parse but not use, it returns a RequestError
+// wrapping an APIError, and only the outer error carries the HTTP status — the
+// inner one keeps its zero value.
+//
+// A switch that stopped at the first errors.As match found the inner APIError,
+// read a status of 0, and fell through to the generic branch. The tests that
+// went with it passed, because they built the two shapes independently and
+// never nested them, so a real 403 kept printing as the provider's empty
+// message while the suite was green.
+func TestAStatusOnTheOuterErrorIsNotLostToTheInnerOne(t *testing.T) {
+	nested := &openai.RequestError{
+		HTTPStatusCode: http.StatusForbidden,
+		Err:            &openai.APIError{}, // no status: this is where the zero came from
+	}
+
+	got := (&Client{}).classifyError(nested)
+
+	if !strings.Contains(got.Error(), "OPENROUTER_API_KEY") {
+		t.Fatalf("classifyError() = %q; the 403 on the outer error was not read", got)
+	}
+}
+
+// The reverse nesting, and the plain cases, keep working: a status anywhere in
+// the chain is enough.
+func TestAStatusIsFoundWhereverItSits(t *testing.T) {
+	cases := map[string]error{
+		"outer request error":         &openai.RequestError{HTTPStatusCode: 401, Err: &openai.APIError{}},
+		"inner api error carries it":  &openai.RequestError{Err: &openai.APIError{HTTPStatusCode: 401}},
+		"api error alone":             &openai.APIError{HTTPStatusCode: 401},
+		"request error alone":         &openai.RequestError{HTTPStatusCode: 401, Err: errors.New("EOF")},
+		"wrapped by a caller with %w": fmt.Errorf("generate: %w", &openai.RequestError{HTTPStatusCode: 403, Err: &openai.APIError{}}),
+	}
+
+	for name, err := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := (&Client{}).classifyError(err); !strings.Contains(got.Error(), "OPENROUTER_API_KEY") {
+				t.Fatalf("classifyError() = %q, want the rejected-key message", got)
+			}
+		})
 	}
 }
