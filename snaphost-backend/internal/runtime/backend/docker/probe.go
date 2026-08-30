@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/docker/docker/api/types/network"
 
 	"snaphost/internal/runtime/backend"
+	"snaphost/internal/runtime/config"
 )
 
 // probeInterval is how often the probe retries while waiting for the server
@@ -65,17 +67,40 @@ func (b *DockerBackend) Probe(ctx context.Context, req backend.ProbeRequest) err
 	}
 }
 
-// containerAddress picks the first usable IPv4 address across the container's
-// networks. A deploy container joins its own isolated network plus the Traefik
-// one, and either is reachable from runner-svc.
+// containerAddress returns the address the probe should dial.
+//
+// A deploy container joins two networks: its own isolated one, created per
+// deploy with inter-container communication disabled, and the shared network
+// this process is also on. Only the second is reachable from here — the first
+// exists precisely so that nothing else can reach it.
+//
+// This used to return the first address the map produced, with a comment
+// claiming either would do. Go randomises map iteration order, so the probe
+// dialled the unreachable address about half the time and the deploy failed
+// with "nothing answered on the port", blaming the user's application for a
+// coin flip. The shared network is named, and the fallback is last.
 func containerAddress(networks map[string]*network.EndpointSettings) string {
-	for _, endpoint := range networks {
-		if endpoint == nil {
-			continue
-		}
-		if endpoint.IPAddress != "" {
+	if endpoint := networks[config.TraefikNetwork]; endpoint != nil && endpoint.IPAddress != "" {
+		return endpoint.IPAddress
+	}
+
+	// Nothing on the shared network. Any address is a better answer than none:
+	// a backend that does not attach to it still has to be probed somehow.
+	for _, name := range sortedNames(networks) {
+		if endpoint := networks[name]; endpoint != nil && endpoint.IPAddress != "" {
 			return endpoint.IPAddress
 		}
 	}
 	return ""
+}
+
+// sortedNames keeps the fallback deterministic, so a probe failure is
+// reproducible rather than intermittent.
+func sortedNames(networks map[string]*network.EndpointSettings) []string {
+	names := make([]string, 0, len(networks))
+	for name := range networks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
