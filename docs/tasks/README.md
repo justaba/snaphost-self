@@ -7,7 +7,7 @@ Updated: 2026-08-30
 
 | Task | Status | Document |
 | --- | --- | --- |
-| 1 — Collapse the control plane into one binary | In progress — the cloud runtime path, dead docs, billing and the module split are gone, the platform is one process, the store is SQLite, identity is issued here rather than by Supabase, Redis is gone and the runtime knows its memory ceiling. The docs rewrite and the embedded panel remain | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
+| 1 — Collapse the control plane into one binary | In progress — the cloud runtime path, dead docs, billing and the module split are gone, the platform is one process, the store is SQLite, identity is issued here rather than by Supabase, Redis is gone, the runtime knows its memory ceiling, the registry is gone and the panel is served from the binary. Only the docs rewrite remains | [active/0001-collapse-to-one-binary.md](active/0001-collapse-to-one-binary.md) |
 
 Remaining order inside Task 1: **10** the panel → **9** docs. Then Task 7.
 

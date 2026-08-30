@@ -482,7 +482,7 @@ The numbers are identities, not an order — commits and other documents refer t
    at least visible; if it starts costing more than the double write would,
    move this ahead of item 10 and accept rewriting the panel section.
 
-10. [ ] The panel, embedded in the binary.
+10. [x] The panel, embedded in the binary. *(done 2026-08-30)*
 
     There is no frontend in this repository. It stayed in `justaba/snaphost-ui`,
     which was not forked: React 19 and Vite, 180 files, about 9,800 lines, 21
@@ -513,13 +513,45 @@ The numbers are identities, not an order — commits and other documents refer t
     environment variables, volumes and managed services, and each of those
     brings its own screens.
 
+    **It is a middleware before `Auth`, not `NoRoute`.** The obvious shape is
+    a `NoRoute` fallback, and it is wrong: Gin runs the global middleware for
+    `NoRoute` too, so the panel would sit behind `Auth` and `Casbin` and the
+    login page would answer `401` to exactly the people who need it. The
+    middleware claims `GET` and `HEAD` for paths outside `/api`, `/ws`,
+    `/internal`, `/health` and `/metrics`, and nothing else — a mistyped API
+    path still gets a JSON `404`, which is far easier to diagnose than a page
+    of HTML with a `200` on it.
+
+    **A binary with no panel is a supported state.** A fresh checkout has
+    never run the frontend build, so `internal/panel/dist` holds a committed
+    `.gitkeep` and nothing else. That compiles, starts, warns once, and
+    serves the API. The alternative — a build tag, or a startup failure —
+    makes `go build ./...` in a clean tree a thing that does not work.
+
+    **Two things had to be fixed before any of this could be seen.** The
+    login form validated the email with zod’s `email()`, which requires a
+    dotted domain, so the panel refused `operator@localhost` — the only
+    credential the platform issues. And a deploy could not start at all: the
+    build pushed to `registry:5000`, a Compose service name, while the *host*
+    daemon performs the pull and is not on that network. The registry is gone
+    (BuildKit exports straight into the daemon that will run the image), which
+    was a recorded Task 1 decision brought forward because half the panel is
+    unverifiable without one successful deploy.
+
+    Two gaps this leaves, both recorded rather than fixed: nothing removes a
+    built image when its deploy is deleted or expires — with no registry, the
+    disk that fills is the one the platform runs on — and no deploy has yet
+    reached `running` locally, because the sample repository serves on port 80
+    and ignores `PORT`, so the liveness probe correctly fails it.
+
 ## Order of the remaining items
 
-**10 → 9**, then [Task 7](../planned/0007-install-and-upgrade.md).
+**9**, then [Task 7](../planned/0007-install-and-upgrade.md). Item 10 landed
+on 2026-08-30, so item 9 is the only one left in this task.
 
-The one placement left is a dependency rather than preference: **9 last**,
-because its job is to describe what is there and item 10 changes what that is.
-See item 9.
+The placement was a dependency rather than a preference: **9 last**, because
+its job is to describe what is there and item 10 changed what that is. That
+now holds nothing up — the shape item 9 has to describe is settled.
 
 Item 7 came before 8 for the same kind of reason, and both landed on 2026-08-30:
 item 7 moved a 50 MB upload out of RAM and brought two in-process queues with
