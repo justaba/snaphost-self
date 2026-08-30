@@ -3,7 +3,6 @@ export {
   useAdminDeploys,
   useAdminDomains,
   useAdminOverview,
-  useAdminTransactions,
   useAdminUser,
   useAdminUserKeys,
   useAdminUsers,
@@ -11,11 +10,9 @@ export {
 export {
   deployTone,
   domainTone,
-  formatCoins,
+  formatCount,
   formatDate,
   formatDateTime,
-  ledgerTone,
-  LEDGER_TYPE_LABEL,
   shortId,
   SOURCE_TYPE_LABEL,
 } from './lib/format';
@@ -24,7 +21,6 @@ export type {
   AdminDeploy,
   AdminDeployDetail,
   AdminDomain,
-  AdminLedgerEntry,
   AdminListQuery,
   AdminOverview,
   AdminPage,

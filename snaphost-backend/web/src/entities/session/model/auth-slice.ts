@@ -1,7 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
 import { auth } from '../api/auth';
-import type { AuthError, OAuthProvider, Session, SignInData, SignUpData, User } from './types';
+import type { AuthError, ChangePasswordData, Session, SignInData, User } from './types';
 
 export interface AuthState {
   session: Session | null;
@@ -46,17 +46,6 @@ export const bootstrapAuth = createAsyncThunk<Session | null, void, { rejectValu
   },
 );
 
-export const signUp = createAsyncThunk<Session | null, SignUpData, { rejectValue: AuthError }>(
-  'auth/signUp',
-  async (data, { rejectWithValue }) => {
-    try {
-      return await auth.signUp(data);
-    } catch (err) {
-      return rejectWithValue(toAuthError(err));
-    }
-  },
-);
-
 export const signIn = createAsyncThunk<Session, SignInData, { rejectValue: AuthError }>(
   'auth/signIn',
   async (data, { rejectWithValue }) => {
@@ -68,16 +57,11 @@ export const signIn = createAsyncThunk<Session, SignInData, { rejectValue: AuthE
   },
 );
 
-export interface OAuthArgs {
-  provider: OAuthProvider;
-  redirectTo: string;
-}
-
-export const signInWithOAuth = createAsyncThunk<void, OAuthArgs, { rejectValue: AuthError }>(
-  'auth/signInWithOAuth',
-  async ({ provider, redirectTo }, { rejectWithValue }) => {
+export const changePassword = createAsyncThunk<void, ChangePasswordData, { rejectValue: AuthError }>(
+  'auth/changePassword',
+  async (data, { rejectWithValue }) => {
     try {
-      await auth.signInWithOAuth(provider, redirectTo);
+      await auth.changePassword(data);
     } catch (err) {
       return rejectWithValue(toAuthError(err));
     }
@@ -124,19 +108,6 @@ export const authSlice = createSlice({
         state.error = action.payload ?? { code: 'unknown', message: 'Failed to load session.' };
       })
 
-      .addCase(signUp.pending, (state) => {
-        state.status = 'loading';
-        state.error = null;
-      })
-      .addCase(signUp.fulfilled, (state, action) => {
-        state.session = action.payload;
-        state.status = action.payload ? 'authenticated' : 'unauthenticated';
-      })
-      .addCase(signUp.rejected, (state, action) => {
-        state.status = 'unauthenticated';
-        state.error = action.payload ?? { code: 'unknown', message: 'Sign up failed.' };
-      })
-
       .addCase(signIn.pending, (state) => {
         state.status = 'loading';
         state.error = null;
@@ -151,13 +122,8 @@ export const authSlice = createSlice({
         state.error = action.payload ?? { code: 'unknown', message: 'Sign in failed.' };
       })
 
-      .addCase(signInWithOAuth.pending, (state) => {
-        state.status = 'loading';
-        state.error = null;
-      })
-      .addCase(signInWithOAuth.rejected, (state, action) => {
-        state.status = 'unauthenticated';
-        state.error = action.payload ?? { code: 'unknown', message: 'OAuth sign in failed.' };
+      .addCase(changePassword.rejected, (state, action) => {
+        state.error = action.payload ?? { code: 'unknown', message: 'Password change failed.' };
       })
 
       .addCase(signOut.fulfilled, (state) => {

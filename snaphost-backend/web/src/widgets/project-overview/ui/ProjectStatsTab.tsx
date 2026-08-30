@@ -1,4 +1,4 @@
-import { Activity, Clock, Coins, Timer } from 'lucide-react';
+import { Activity, Clock, Timer } from 'lucide-react';
 import { useUptime, type DeployDetail } from '@/entities/deploy';
 import styles from './ProjectStatsTab.module.css';
 
@@ -55,12 +55,6 @@ function ProjectStatsTab({ deploy }: ProjectStatsTabProps) {
         label="Запросов"
         value="—"
         hint="Будет доступно позже"
-      />
-      <StatCard
-        icon={<Coins size={14} />}
-        label="Стоимость"
-        value={`${deploy.cost_vibecoins}`}
-        hint="вайб-коинов"
       />
       <StatCard
         icon={<Timer size={14} />}

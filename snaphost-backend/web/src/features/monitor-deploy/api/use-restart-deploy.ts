@@ -15,7 +15,6 @@ export function useRestartDeploy() {
     onSuccess: (_data, id) => {
       void queryClient.invalidateQueries({ queryKey: ['deploys'] });
       void queryClient.invalidateQueries({ queryKey: ['deploys', id] });
-      void queryClient.invalidateQueries({ queryKey: ['billing'] });
     },
   });
 }

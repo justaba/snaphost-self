@@ -15,15 +15,12 @@ function deploy(status: DeployStatus, saga: Partial<DeployDetail['saga']> = {}):
     image_ref: null,
     endpoint_url: null,
     subdomain: null,
-    cost_vibecoins: 10,
     ttl_expires_at: null,
     failure_reason: status === 'failed' ? 'build failed' : null,
     saga: {
       current_step: status,
-      coins_reserved: false,
       image_built: false,
       container_running: false,
-      coins_committed: false,
       retry_count: 0,
       ...saga,
     },
@@ -34,20 +31,18 @@ function deploy(status: DeployStatus, saga: Partial<DeployDetail['saga']> = {}):
 }
 
 describe('deriveDeploySteps', () => {
-  it('marks the reserve stage active for a pending deploy', () => {
+  it('marks the queued stage active for a pending deploy', () => {
     const steps = deriveDeploySteps(deploy('pending'));
 
-    expect(steps[0]).toMatchObject({ key: 'reserve', state: 'active' });
+    expect(steps[0]).toMatchObject({ key: 'queued', state: 'active' });
     expect(steps.slice(1).every((step) => step.state === 'pending')).toBe(true);
   });
 
   it('marks every stage done for a running deploy', () => {
     const steps = deriveDeploySteps(
       deploy('running', {
-        coins_reserved: true,
         image_built: true,
         container_running: true,
-        coins_committed: true,
       }),
     );
 
@@ -55,7 +50,7 @@ describe('deriveDeploySteps', () => {
   });
 
   it('marks the first incomplete stage failed', () => {
-    const steps = deriveDeploySteps(deploy('failed', { coins_reserved: true }));
+    const steps = deriveDeploySteps(deploy('failed'));
 
     expect(steps[0].state).toBe('done');
     expect(steps[1]).toMatchObject({ key: 'build', state: 'failed' });

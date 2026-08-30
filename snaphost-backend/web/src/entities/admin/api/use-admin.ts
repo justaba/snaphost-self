@@ -6,7 +6,6 @@ import type {
   AdminDeploy,
   AdminDeployDetail,
   AdminDomain,
-  AdminLedgerEntry,
   AdminListQuery,
   AdminOverview,
   AdminPage,
@@ -73,16 +72,6 @@ export function useAdminDeploy(deployId: string | undefined) {
     queryFn: () => api.get<AdminDeployDetail>(`/api/v1/admin/deploys/${deployId}`),
     enabled: Boolean(deployId),
     staleTime: STALE_MS,
-  });
-}
-
-export function useAdminTransactions(query: AdminListQuery) {
-  return useQuery<AdminPage<AdminLedgerEntry>, Error>({
-    queryKey: ['admin', 'transactions', query],
-    queryFn: () =>
-      api.get<AdminPage<AdminLedgerEntry>>(`/api/v1/admin/transactions${toSearch(query)}`),
-    staleTime: STALE_MS,
-    placeholderData: keepPreviousData,
   });
 }
 

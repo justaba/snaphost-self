@@ -22,7 +22,9 @@ export function formatDate(value: string | null | undefined): string {
   });
 }
 
-export function formatCoins(value: number | null | undefined): string {
+/** Thousands separators for a count. It was formatCount, and every caller but
+ *  one was already passing a number of users or deploys rather than money. */
+export function formatCount(value: number | null | undefined): string {
   if (value == null) return '—';
   return value.toLocaleString('ru-RU');
 }
@@ -53,17 +55,6 @@ const DOMAIN_STATUS_TONE: Record<string, Tone> = {
   revoked: 'zinc',
 };
 
-/** A ledger type's tone reads as direction of money, not as health: coins
- *  arriving are green, coins leaving are zinc, a reserve still in flight is
- *  amber because it is the state that can get stuck. */
-const LEDGER_TYPE_TONE: Record<string, Tone> = {
-  topup: 'green',
-  bonus: 'green',
-  refund: 'blue',
-  commit: 'zinc',
-  reserve: 'amber',
-};
-
 export function deployTone(status: string): Tone {
   return DEPLOY_STATUS_TONE[status] ?? 'zinc';
 }
@@ -71,18 +62,6 @@ export function deployTone(status: string): Tone {
 export function domainTone(status: string): Tone {
   return DOMAIN_STATUS_TONE[status] ?? 'zinc';
 }
-
-export function ledgerTone(type: string): Tone {
-  return LEDGER_TYPE_TONE[type] ?? 'zinc';
-}
-
-export const LEDGER_TYPE_LABEL: Record<string, string> = {
-  topup: 'пополнение',
-  bonus: 'бонус',
-  reserve: 'резерв',
-  commit: 'списание',
-  refund: 'возврат',
-};
 
 export const SOURCE_TYPE_LABEL: Record<string, string> = {
   git_public: 'git',

@@ -38,7 +38,6 @@ export function useDeleteDeploy() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['deploys'] });
-      void queryClient.invalidateQueries({ queryKey: ['billing'] });
     },
   });
 }

@@ -13,7 +13,6 @@ function summary(overrides: Partial<DeploySummary>): DeploySummary {
     status: 'running',
     endpoint_url: null,
     subdomain: null,
-    cost_vibecoins: 10,
     ttl_expires_at: null,
     created_at: '2026-08-15T10:00:00Z',
     stopped_at: null,

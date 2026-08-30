@@ -2,22 +2,20 @@ import styles from './AdminUserPage.module.css';
 
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 
-import { domainTone, formatCoins, formatDateTime, shortId, useAdminUser } from '@/entities/admin';
+import { domainTone, formatCount, formatDateTime, shortId, useAdminUser } from '@/entities/admin';
 import { AdminTable } from '@/shared/ui/admin-table';
 import { Skeleton } from '@/shared/ui/skeleton';
 import { StatTile } from '@/shared/ui/stat-tile';
 import { StatusPill } from '@/shared/ui/status-pill';
 import { Tabs } from '@/shared/ui/tabs';
 import { AdminDeployList } from '@/widgets/admin-deploy-list';
-import { AdminTransactionList } from '@/widgets/admin-transaction-list';
 
-type TabValue = 'deploys' | 'transactions' | 'projects' | 'domains' | 'keys';
+type TabValue = 'deploys' | 'projects' | 'domains' | 'keys';
 
 const TAB_ITEMS = [
   { value: 'deploys', label: 'Деплои' },
-  { value: 'transactions', label: 'Транзакции' },
   { value: 'projects', label: 'Проекты' },
   { value: 'domains', label: 'Домены' },
   { value: 'keys', label: 'API-ключи' },
@@ -66,30 +64,14 @@ function AdminUserPage() {
         <p className="font-mono text-xs text-zinc-400 mt-0.5 select-all">{user.id}</p>
       </div>
 
-      {!user.has_wallet && (
-        <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 flex items-start gap-2">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-          <span>
-            У аккаунта нет кошелька: seed-вебхук Supabase не сработал. Любой его деплой вернёт{' '}
-            <code className="font-mono text-xs">wallet_not_found</code>, пока кошелёк не создан
-            через <code className="font-mono text-xs">POST /internal/users</code>.
-          </span>
-        </p>
-      )}
-
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatTile
-          label="Баланс"
-          value={user.balance ?? 0}
-          hint={`${formatCoins(user.reserved ?? 0)} зарезервировано`}
-        />
+      <section className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <StatTile
           label="Деплои"
           value={user.deploys_total}
-          hint={`${formatCoins(user.deploys_running)} запущено · ${formatCoins(user.deploys_failed)} с ошибкой`}
+          hint={`${formatCount(user.deploys_running)} запущено · ${formatCount(user.deploys_failed)} с ошибкой`}
         />
-        <StatTile label="Пополнено" value={user.coins_topped_up} hint="за всё время" />
-        <StatTile label="Списано" value={user.coins_spent} hint="за всё время" />
+        <StatTile label="Домены" value={user.domains_count} hint="привязано к аккаунту" />
+        <StatTile label="API-ключи" value={user.api_keys.length} hint="активных" />
       </section>
 
       <div className="text-sm text-zinc-500">
@@ -105,7 +87,6 @@ function AdminUserPage() {
       />
 
       {tab === 'deploys' && <AdminDeployList userId={user.id} />}
-      {tab === 'transactions' && <AdminTransactionList userId={user.id} />}
 
       {tab === 'projects' && (
         <AdminTable

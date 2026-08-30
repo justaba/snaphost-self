@@ -1,11 +1,20 @@
-interface ApiAuthSession {
-  accessToken: string;
-}
+/**
+ * The API client.
+ *
+ * It used to hold an access token, put it in an Authorization header, and on a
+ * 401 refresh the token and retry once. All three are gone with the token: the
+ * session is an HttpOnly cookie, so the browser attaches it and this code
+ * cannot read it, and the server slides its expiry on use rather than handing
+ * out a refresh token to exchange.
+ *
+ * What survives is the part that mattered — a 401 means the session is over,
+ * and something has to notice. That is now one call to the sign-out bridge
+ * instead of a retry loop.
+ */
 
 interface ApiAuthBridge {
-  getSession: () => Promise<ApiAuthSession | null>;
-  refreshSession: () => Promise<ApiAuthSession | null>;
-  signOut: () => Promise<void>;
+  /** Called when the server says the session is no longer valid. */
+  onUnauthenticated: () => void;
 }
 
 let authBridge: ApiAuthBridge | null = null;
@@ -26,8 +35,13 @@ class ApiError extends Error {
   }
 }
 
-const baseURL = import.meta.env.VITE_API_URL;
-if (!baseURL) throw new Error('VITE_API_URL must be set');
+/**
+ * Empty in production: one binary serves the panel and the API, so every
+ * request is same-origin and a base URL would only be a way to get it wrong.
+ * It stays configurable for a development server pointed at a backend
+ * elsewhere.
+ */
+const baseURL = import.meta.env.VITE_API_URL ?? '';
 
 function parseRetryAfter(value: string | null): number | undefined {
   if (!value) return undefined;
@@ -45,28 +59,25 @@ async function request<T>(
   path: string,
   init: RequestInit = {},
   extraHeaders?: Record<string, string>,
-  isRetry = false,
 ): Promise<T> {
-  if (!authBridge) throw new Error('API auth bridge is not configured');
-  const session = await authBridge.getSession();
-
   const headers = new Headers(init.headers);
   headers.set('Content-Type', 'application/json');
-  if (session) headers.set('Authorization', `Bearer ${session.accessToken}`);
   if (extraHeaders) {
     for (const [key, value] of Object.entries(extraHeaders)) {
       headers.set(key, value);
     }
   }
 
-  const response = await fetch(`${baseURL}${path}`, { ...init, headers });
+  const response = await fetch(`${baseURL}${path}`, {
+    ...init,
+    headers,
+    // Explicit rather than relying on the same-origin default, so a
+    // development server on another port behaves the same as production.
+    credentials: 'include',
+  });
 
-  if (response.status === 401 && !isRetry && session) {
-    const refreshed = await authBridge.refreshSession();
-    if (refreshed) {
-      return request<T>(path, init, extraHeaders, true);
-    }
-    await authBridge.signOut();
+  if (response.status === 401) {
+    authBridge?.onUnauthenticated();
     throw new ApiError(401, null, 'Session expired');
   }
 

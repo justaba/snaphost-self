@@ -27,12 +27,6 @@ function deriveWebSocketUrl(deployId: string, override?: string | null): string 
   return `${proto}://${window.location.host}/ws/logs/${deployId}`;
 }
 
-function withWebSocketToken(url: string, token: string): string {
-  const wsUrl = new URL(url, window.location.origin);
-  wsUrl.searchParams.set('token', token);
-  return wsUrl.toString();
-}
-
 function appendCapped(prev: LogLine[], next: LogLine[]): LogLine[] {
   const merged = [...prev, ...next];
   if (merged.length <= MAX_LINES) return merged;
@@ -141,10 +135,12 @@ export function useDeployLogs(
         return;
       }
 
-      const url = withWebSocketToken(
-        deriveWebSocketUrl(deployId, websocketUrl),
-        session.accessToken,
-      );
+      // No token in the query string any more. The session is an HttpOnly
+      // cookie the browser attaches to the handshake by itself, which is also
+      // why the server had to start checking Origin: a WebSocket handshake is
+      // not subject to the same-origin policy, so a cookie alone would have let
+      // any page the operator visits open this socket as them.
+      const url = deriveWebSocketUrl(deployId, websocketUrl);
       let ws: WebSocket;
       try {
         ws = new WebSocket(url);

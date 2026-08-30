@@ -18,7 +18,6 @@ interface DeployFormProps {
   error: DeployFormError | null;
   onSubmit: (values: DeployFormValues) => Promise<void>;
   onCancel: () => void;
-  onInsufficientFunds: () => void;
 }
 
 export default function DeployForm({
@@ -26,7 +25,6 @@ export default function DeployForm({
   error,
   onSubmit,
   onCancel,
-  onInsufficientFunds,
 }: DeployFormProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const form = useForm<DeployFormValues>({
@@ -35,7 +33,6 @@ export default function DeployForm({
   });
 
   const submit: SubmitHandler<DeployFormValues> = async (values) => onSubmit(values);
-  const isInsufficient = error?.code === 'insufficient_balance';
 
   return (
     <form onSubmit={form.handleSubmit(submit)} className={styles.form} noValidate>
@@ -81,13 +78,6 @@ export default function DeployForm({
       {error && (
         <div className={styles.error} role="alert">
           <span>{error.message}</span>
-          {isInsufficient && (
-            <div>
-              <Button type="button" variant="primary" size="sm" onClick={onInsufficientFunds}>
-                Пополнить баланс
-              </Button>
-            </div>
-          )}
         </div>
       )}
 

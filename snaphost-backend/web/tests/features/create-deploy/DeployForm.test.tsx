@@ -15,7 +15,6 @@ describe('DeployForm', () => {
         error={null}
         onSubmit={onSubmit}
         onCancel={vi.fn()}
-        onInsufficientFunds={vi.fn()}
       />,
     );
 
@@ -38,7 +37,6 @@ describe('DeployForm', () => {
         error={null}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onInsufficientFunds={vi.fn()}
       />,
     );
 

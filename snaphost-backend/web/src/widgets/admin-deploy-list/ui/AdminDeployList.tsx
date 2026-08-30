@@ -6,7 +6,6 @@ import { ExternalLink, Search } from 'lucide-react';
 
 import {
   deployTone,
-  formatCoins,
   formatDateTime,
   shortId,
   SOURCE_TYPE_LABEL,
@@ -88,7 +87,7 @@ function AdminDeployList({ userId }: AdminDeployListProps) {
       </div>
 
       <AdminTable
-        headers={['Деплой', 'Пользователь', 'Источник', 'Статус', 'Стоимость', 'Адрес', 'Создан']}
+        headers={['Деплой', 'Пользователь', 'Источник', 'Статус', 'Адрес', 'Создан']}
         isLoading={isLoading}
         isError={isError}
         isEmpty={deploys.length === 0}
@@ -145,9 +144,6 @@ function AdminDeployList({ userId }: AdminDeployListProps) {
               <StatusPill tone={deployTone(deploy.status)} title={deploy.failure_reason}>
                 {deploy.status}
               </StatusPill>
-            </td>
-            <td className="px-4 py-3 tabular-nums text-zinc-500">
-              {formatCoins(deploy.cost_vibecoins)}
             </td>
             <td className="px-4 py-3">
               {deploy.endpoint_url ? (

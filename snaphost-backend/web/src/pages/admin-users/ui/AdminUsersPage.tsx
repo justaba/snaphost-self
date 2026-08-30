@@ -2,9 +2,9 @@ import styles from './AdminUsersPage.module.css';
 
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 
-import { formatCoins, formatDate, formatDateTime, shortId, useAdminUsers } from '@/entities/admin';
+import { formatCount, formatDate, formatDateTime, shortId, useAdminUsers } from '@/entities/admin';
 import { useDebounced } from '@/shared/lib/use-debounced';
 import { AdminTable } from '@/shared/ui/admin-table';
 import { Input } from '@/shared/ui/input';
@@ -42,11 +42,7 @@ function AdminUsersPage() {
       <AdminTable
         headers={[
           'Пользователь',
-          'Баланс',
-          'Резерв',
           'Деплои',
-          'Пополнено',
-          'Списано',
           'Домены',
           'Последний деплой',
           'Регистрация',
@@ -80,36 +76,14 @@ function AdminUsersPage() {
                 {shortId(user.id)}
               </div>
             </td>
-            <td className="px-4 py-3 tabular-nums">
-              {user.has_wallet ? (
-                formatCoins(user.balance)
-              ) : (
-                <span
-                  className="inline-flex items-center gap-1 text-amber-700"
-                  title="Кошелёк не создан — seed-вебхук Supabase не сработал. Деплой вернёт wallet_not_found."
-                >
-                  <AlertTriangle size={13} />
-                  нет кошелька
-                </span>
-              )}
-            </td>
             <td className="px-4 py-3 tabular-nums text-zinc-500">
-              {user.has_wallet ? formatCoins(user.reserved) : '—'}
-            </td>
-            <td className="px-4 py-3 tabular-nums text-zinc-500">
-              {formatCoins(user.deploys_total)}
+              {formatCount(user.deploys_total)}
               {user.deploys_running > 0 && (
                 <span className="text-emerald-600"> · {user.deploys_running} live</span>
               )}
               {user.deploys_failed > 0 && (
                 <span className="text-red-500"> · {user.deploys_failed} fail</span>
               )}
-            </td>
-            <td className="px-4 py-3 tabular-nums text-zinc-500">
-              {formatCoins(user.coins_topped_up)}
-            </td>
-            <td className="px-4 py-3 tabular-nums text-zinc-500">
-              {formatCoins(user.coins_spent)}
             </td>
             <td className="px-4 py-3 tabular-nums text-zinc-500">{user.domains_count || '—'}</td>
             <td className="px-4 py-3 text-zinc-500 whitespace-nowrap">

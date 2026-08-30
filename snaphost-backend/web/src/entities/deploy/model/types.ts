@@ -24,10 +24,8 @@ export type LogLevel = 'info' | 'warn' | 'error';
 
 export interface DeploySaga {
   current_step: DeployStatus;
-  coins_reserved: boolean;
   image_built: boolean;
   container_running: boolean;
-  coins_committed: boolean;
   retry_count: number;
 }
 
@@ -40,7 +38,6 @@ export interface DeploySummary {
   status: DeployStatus;
   endpoint_url: string | null;
   subdomain: string | null;
-  cost_vibecoins: number;
   ttl_expires_at: string | null;
   created_at: string;
   stopped_at: string | null;

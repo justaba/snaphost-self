@@ -1,11 +1,9 @@
-import { Cpu, MemoryStick, Network, HardDrive } from 'lucide-react';
+import { Network, HardDrive } from 'lucide-react';
 import type { DeployDetail } from '@/entities/deploy';
-import type { User } from '@/entities/session';
 import styles from './ProjectResourcesTab.module.css';
 
 export interface ProjectResourcesTabProps {
   deploy: DeployDetail;
-  role?: User['role'];
 }
 
 interface RowProps {
@@ -30,20 +28,17 @@ function Row({ icon, label, value, hint }: RowProps) {
   );
 }
 
-const TARIFF_LIMITS: Record<NonNullable<User['role']>, { cpu: string; ram: string }> = {
-  user: { cpu: '0.5 ядра', ram: '512 МБ' },
-  pro: { cpu: '2 ядра', ram: '2 ГБ' },
-  admin: { cpu: '4 ядра', ram: '4 ГБ' },
-};
-
-function ProjectResourcesTab({ deploy, role = 'user' }: ProjectResourcesTabProps) {
-  const limits = TARIFF_LIMITS[role];
-
+function ProjectResourcesTab({ deploy }: ProjectResourcesTabProps) {
+  // The CPU and RAM rows used to read from a table keyed by the account's
+  // role — 0.5 cores for a free user, 2 for pro, 4 for an admin. That is a
+  // pricing tier, and this platform has none: every container gets
+  // CONTAINER_CPU_LIMIT and CONTAINER_MEMORY_MB from the operator's own
+  // configuration. Showing an invented number would be worse than showing
+  // none, so the rows are gone until there is somewhere to read the real one.
+  //
   // TODO: hook up when /api/v1/deploys/:id/metrics endpoint is added
   return (
     <div className={styles.root}>
-      <Row icon={<Cpu size={14} />} label="CPU лимит" value={limits.cpu} hint="по тарифу" />
-      <Row icon={<MemoryStick size={14} />} label="RAM лимит" value={limits.ram} hint="по тарифу" />
       <Row
         icon={<HardDrive size={14} />}
         label="Образ"

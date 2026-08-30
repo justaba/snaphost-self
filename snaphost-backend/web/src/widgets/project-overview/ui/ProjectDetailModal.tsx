@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ExternalLink, GitBranch, Layers } from 'lucide-react';
 import { DeployStatusBadge as ProjectStatusBadge, useDeployDetail } from '@/entities/deploy';
-import { useAuth } from '@/entities/session';
 import { useDeleteDeploy } from '@/features/delete-deploy';
 import { useRestartDeploy } from '@/features/monitor-deploy';
 import { Button } from '@/shared/ui/button';
@@ -42,7 +41,6 @@ function ProjectDetailModal({ deployId, isOpen, onClose }: ProjectDetailModalPro
   const detailQuery = useDeployDetail(isOpen ? deployId : null);
   const deleteMut = useDeleteDeploy();
   const restartMut = useRestartDeploy();
-  const { user } = useAuth();
   const { toast } = useToast();
   const deploy = detailQuery.data;
 
@@ -139,7 +137,7 @@ function ProjectDetailModal({ deployId, isOpen, onClose }: ProjectDetailModalPro
           {deploy && (
             <>
               {tab === 'stats' && <ProjectStatsTab deploy={deploy} />}
-              {tab === 'resources' && <ProjectResourcesTab deploy={deploy} role={user?.role} />}
+              {tab === 'resources' && <ProjectResourcesTab deploy={deploy} />}
               {tab === 'logs' && <ProjectLogsTab deployId={deploy.id} />}
             </>
           )}

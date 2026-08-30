@@ -7,10 +7,7 @@ import { ArrowLeft, Check, ExternalLink, X } from 'lucide-react';
 import {
   deployTone,
   domainTone,
-  formatCoins,
   formatDateTime,
-  ledgerTone,
-  LEDGER_TYPE_LABEL,
   shortId,
   SOURCE_TYPE_LABEL,
   useAdminDeploy,
@@ -131,7 +128,6 @@ function AdminDeployPage() {
         <Field label="Runtime">
           {deploy.container_id ?? <span className="text-zinc-400">нет контейнера</span>}
         </Field>
-        <Field label="Стоимость">{formatCoins(deploy.cost_vibecoins)} коинов</Field>
         <Field label="Создан">{formatDateTime(deploy.created_at)}</Field>
         <Field label="TTL истекает">{formatDateTime(deploy.ttl_expires_at)}</Field>
         <Field label="Последний запрос">
@@ -167,10 +163,8 @@ function AdminDeployPage() {
               )}
             </div>
             <div className="flex flex-wrap gap-x-6 gap-y-2">
-              <Flag label="коины зарезервированы" value={deploy.saga.coins_reserved} />
               <Flag label="образ собран" value={deploy.saga.image_built} />
               <Flag label="контейнер запущен" value={deploy.saga.container_running} />
-              <Flag label="коины списаны" value={deploy.saga.coins_committed} />
             </div>
             {deploy.saga.last_error && (
               <p className="text-sm text-zinc-600 bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 break-all">
@@ -187,33 +181,6 @@ function AdminDeployPage() {
             Саги нет — деплой не дошёл до воркера либо создан до саговой схемы.
           </p>
         )}
-      </section>
-
-      <section>
-        <h3 className="text-sm font-medium text-zinc-900 mb-2">Движение коинов</h3>
-        <AdminTable
-          headers={['Тип', 'Сумма', 'Статус', 'Создана', 'Завершена']}
-          isEmpty={deploy.ledger.length === 0}
-          emptyText="Операций по этому деплою нет"
-        >
-          {deploy.ledger.map((entry) => (
-            <tr key={entry.id} className="border-b border-zinc-100 last:border-b-0">
-              <td className="px-4 py-3">
-                <StatusPill tone={ledgerTone(entry.type)}>
-                  {LEDGER_TYPE_LABEL[entry.type] ?? entry.type}
-                </StatusPill>
-              </td>
-              <td className="px-4 py-3 tabular-nums text-zinc-900">{formatCoins(entry.amount)}</td>
-              <td className="px-4 py-3 text-zinc-500">{entry.status}</td>
-              <td className="px-4 py-3 text-zinc-500 whitespace-nowrap">
-                {formatDateTime(entry.created_at)}
-              </td>
-              <td className="px-4 py-3 text-zinc-500 whitespace-nowrap">
-                {formatDateTime(entry.completed_at)}
-              </td>
-            </tr>
-          ))}
-        </AdminTable>
       </section>
 
       <section>

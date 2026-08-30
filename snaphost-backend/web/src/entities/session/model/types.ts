@@ -1,29 +1,20 @@
 export interface User {
   id: string;
   email: string;
-  displayName: string | null;
-  avatarUrl: string | null;
-  role: 'user' | 'pro' | 'admin';
+  role: 'user' | 'admin';
 }
 
+/**
+ * A signed-in session.
+ *
+ * It carries no token. The session is an HttpOnly cookie the browser attaches
+ * by itself and this code cannot read — which is the point of it being
+ * HttpOnly, and why the previous shape (accessToken, refreshToken, expiresAt)
+ * had to go rather than be filled in with blanks. What is left is who the
+ * server says you are.
+ */
 export interface Session {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number;
   user: User;
-}
-
-export interface SignUpData {
-  email: string;
-  password: string;
-  displayName?: string;
-  githubUsername?: string;
-  offerAccepted: boolean;
-  acceptableUseAccepted: boolean;
-  personalDataConsent: boolean;
-  ageConfirmed: boolean;
-  legalVersion: string;
-  acceptedAt: string;
 }
 
 export interface SignInData {
@@ -31,25 +22,22 @@ export interface SignInData {
   password: string;
 }
 
-export type OAuthProvider = 'github' | 'google';
+export interface ChangePasswordData {
+  currentPassword: string;
+  newPassword: string;
+}
 
 export type AuthErrorCode =
   | 'invalid_credentials'
-  | 'email_not_confirmed'
-  | 'user_already_exists'
   | 'weak_password'
   | 'rate_limited'
   | 'network_error'
   | 'unknown';
 
-export type AuthError =
-  | { code: 'invalid_credentials'; message: string }
-  | { code: 'email_not_confirmed'; message: string }
-  | { code: 'user_already_exists'; message: string }
-  | { code: 'weak_password'; message: string }
-  | { code: 'rate_limited'; message: string }
-  | { code: 'network_error'; message: string }
-  | { code: 'unknown'; message: string };
+export interface AuthError {
+  code: AuthErrorCode;
+  message: string;
+}
 
 export type AuthStateListener = (session: Session | null) => void;
 export type Unsubscribe = () => void;

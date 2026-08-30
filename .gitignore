@@ -48,3 +48,9 @@ terraform/.test-customer-domain/
 
 # Local tooling caches from existing developer checkouts
 .tools/
+
+# The panel's build output. It is embedded into the binary and produced by the
+# image build, so it is not committed — but the directory has to exist for
+# go:embed to compile, which is what the .gitkeep is for.
+snaphost-backend/internal/panel/dist/*
+!snaphost-backend/internal/panel/dist/.gitkeep

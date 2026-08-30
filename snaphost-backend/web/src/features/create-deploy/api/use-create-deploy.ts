@@ -14,7 +14,6 @@ export function useCreateDeploy() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['deploys'] });
-      void queryClient.invalidateQueries({ queryKey: ['billing'] });
     },
   });
 }

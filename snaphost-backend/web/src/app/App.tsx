@@ -9,26 +9,8 @@ import { AuthProvider } from './providers/AuthProvider';
 import { queryClient } from './providers/query-client';
 import ProtectedRoute from './routes/ProtectedRoute';
 
-const MainLayout = lazy(() =>
-  import('@/widgets/marketing-layout').then(({ MarketingLayout }) => ({
-    default: MarketingLayout,
-  })),
-);
-const Home = lazy(() => import('@/pages/home').then(({ HomePage }) => ({ default: HomePage })));
 const LoginPage = lazy(() =>
   import('@/pages/login').then(({ LoginPage: Page }) => ({ default: Page })),
-);
-const SignupPage = lazy(() =>
-  import('@/pages/signup').then(({ SignupPage: Page }) => ({ default: Page })),
-);
-const RecoverPage = lazy(() =>
-  import('@/pages/recover').then(({ RecoverPage: Page }) => ({ default: Page })),
-);
-const ResetPasswordPage = lazy(() =>
-  import('@/pages/reset-password').then(({ ResetPasswordPage: Page }) => ({ default: Page })),
-);
-const AuthCallbackPage = lazy(() =>
-  import('@/pages/auth-callback').then(({ AuthCallbackPage: Page }) => ({ default: Page })),
 );
 const DashboardLayout = lazy(() =>
   import('@/widgets/dashboard-layout').then(({ DashboardLayout: Layout }) => ({ default: Layout })),
@@ -40,9 +22,6 @@ const ProjectPage = lazy(() =>
   import('@/pages/project-details').then(({ ProjectDetailsPage }) => ({
     default: ProjectDetailsPage,
   })),
-);
-const StatsPage = lazy(() =>
-  import('@/pages/stats').then(({ StatsPage: Page }) => ({ default: Page })),
 );
 const ApiKeysPage = lazy(() =>
   import('@/pages/api-keys').then(({ ApiKeysPage: Page }) => ({ default: Page })),
@@ -71,19 +50,8 @@ const AdminDeploysPage = lazy(() =>
 const AdminDeployPage = lazy(() =>
   import('@/pages/admin-deploy').then(({ AdminDeployPage: Page }) => ({ default: Page })),
 );
-const AdminTransactionsPage = lazy(() =>
-  import('@/pages/admin-transactions').then(({ AdminTransactionsPage: Page }) => ({
-    default: Page,
-  })),
-);
 const AdminDomainsPage = lazy(() =>
   import('@/pages/admin-domains').then(({ AdminDomainsPage: Page }) => ({ default: Page })),
-);
-const LegalIndexPage = lazy(() =>
-  import('@/pages/legal-index').then(({ LegalIndexPage: Page }) => ({ default: Page })),
-);
-const LegalDocumentPage = lazy(() =>
-  import('@/pages/legal-document').then(({ LegalDocumentPage: Page }) => ({ default: Page })),
 );
 
 function RouteFallback() {
@@ -106,25 +74,21 @@ function App() {
           <ToastProvider>
             <Suspense fallback={<RouteFallback />}>
               <Routes>
-                <Route element={<MainLayout />}>
-                  <Route path="/" element={<Home />} />
-                  <Route path="/legal" element={<LegalIndexPage />} />
-                  <Route path="/legal/:documentSlug" element={<LegalDocumentPage />} />
-                  <Route path="/abuse" element={<Navigate to="/legal/abuse" replace />} />
-                </Route>
+                {/* The panel has no public face. An operator arriving at the root
+                    is either signed in, in which case this is their dashboard,
+                    or not, in which case ProtectedRoute sends them to login.
+                    What used to be here was a marketing landing page with
+                    pricing tiers, which is a page for selling a service to
+                    someone who does not own the machine. */}
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
                 <Route path="/login" element={<LoginPage />} />
-                <Route path="/signup" element={<SignupPage />} />
-                <Route path="/recover" element={<RecoverPage />} />
-                <Route path="/reset-password" element={<ResetPasswordPage />} />
-                <Route path="/auth/callback" element={<AuthCallbackPage />} />
 
                 <Route element={<ProtectedRoute />}>
                   <Route path="/dashboard" element={<DashboardLayout />}>
                     <Route index element={<Navigate to="projects" replace />} />
                     <Route path="projects" element={<ProjectsPage />} />
                     <Route path="projects/:projectId" element={<ProjectPage />} />
-                    <Route path="stats" element={<StatsPage />} />
                     <Route path="keys" element={<ApiKeysPage />} />
                     <Route path="domains" element={<DomainsPage />} />
                     <Route path="settings" element={<SettingsPage />} />
@@ -139,7 +103,6 @@ function App() {
                         <Route path="users/:userId" element={<AdminUserPage />} />
                         <Route path="deploys" element={<AdminDeploysPage />} />
                         <Route path="deploys/:deployId" element={<AdminDeployPage />} />
-                        <Route path="transactions" element={<AdminTransactionsPage />} />
                         <Route path="domains" element={<AdminDomainsPage />} />
                       </Route>
                     </Route>

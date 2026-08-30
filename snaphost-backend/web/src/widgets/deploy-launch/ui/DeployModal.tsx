@@ -73,7 +73,6 @@ function DeployModal({ isOpen, onClose }: DeployModalProps) {
             error={error}
             onSubmit={handleSubmit}
             onCancel={handleClose}
-            onInsufficientFunds={handleClose}
           />
         )}
 

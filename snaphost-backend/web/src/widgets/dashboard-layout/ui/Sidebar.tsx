@@ -2,12 +2,10 @@ import styles from './Sidebar.module.css';
 
 import {
   LayoutGrid,
-  BarChart3,
   Globe,
   KeyRound,
   Settings,
   ShieldCheck,
-  FileText,
 } from 'lucide-react';
 import SidebarItem from './SidebarItem';
 import { useAuth } from '@/entities/session';
@@ -38,12 +36,6 @@ function Sidebar({ onNavigate }: SidebarProps) {
           onNavigate={onNavigate}
         />
         <SidebarItem
-          to="/dashboard/stats"
-          icon={<BarChart3 size={18} />}
-          label="Статистика"
-          onNavigate={onNavigate}
-        />
-        <SidebarItem
           to="/dashboard/domains"
           icon={<Globe size={18} />}
           label="Домены"
@@ -59,13 +51,6 @@ function Sidebar({ onNavigate }: SidebarProps) {
           to="/dashboard/settings"
           icon={<Settings size={18} />}
           label="Настройки"
-          onNavigate={onNavigate}
-        />
-        <div className="my-2 border-t border-zinc-200" />
-        <SidebarItem
-          to="/legal"
-          icon={<FileText size={18} />}
-          label="Документы"
           onNavigate={onNavigate}
         />
         {isAdmin && (

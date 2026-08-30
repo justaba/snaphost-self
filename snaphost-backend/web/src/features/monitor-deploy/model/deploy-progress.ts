@@ -1,6 +1,6 @@
 import type { DeployDetail } from '@/entities/deploy';
 
-export type DeployStepKey = 'reserve' | 'build' | 'scan' | 'provision' | 'start' | 'live';
+export type DeployStepKey = 'queued' | 'build' | 'scan' | 'provision' | 'start' | 'live';
 export type DeployStepState = 'pending' | 'active' | 'done' | 'failed';
 
 export interface DeployStep {
@@ -12,7 +12,6 @@ export interface DeployStep {
 export function deriveDeploySteps(deploy: DeployDetail | undefined): DeployStep[] {
   const status = deploy?.status;
   const saga = deploy?.saga;
-  const reserveDone = saga?.coins_reserved ?? false;
   const buildActive = status === 'building';
   const buildDone =
     (saga?.image_built ?? false) ||
@@ -29,10 +28,18 @@ export function deriveDeploySteps(deploy: DeployDetail | undefined): DeployStep[
   };
 
   const steps: DeployStep[] = [
+    // Was 'Резерв', for the coin reservation removed in Task 1 item 3. The
+    // step it replaces is real: 'pending' used to be traversed instantly on the
+    // way to 'reserved' and is now where a saga waits before its first external
+    // call.
     {
-      key: 'reserve',
-      label: 'Резерв',
-      state: stateOf(status === 'reserved' || status === 'pending', reserveDone),
+      key: 'queued',
+      label: 'В очереди',
+      // Done the moment the saga leaves 'pending', not when the build
+      // succeeds. Keying it on image_built looks equivalent and is not: a build
+      // that failed never sets it, so the stepper would mark the queue as the
+      // failed stage and say the deploy never started building.
+      state: stateOf(status === 'pending', Boolean(status) && status !== 'pending'),
     },
     { key: 'build', label: 'Сборка', state: stateOf(buildActive, buildDone) },
     { key: 'scan', label: 'Сканирование', state: stateOf(false, buildDone) },
