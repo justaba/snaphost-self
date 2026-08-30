@@ -1,16 +1,47 @@
 FROM node:{{NODE_VERSION}}-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
+# A strict install is the right default: it installs exactly what the lock
+# file pins. It also fails outright when that file has drifted from
+# package.json, which is common in a repository nobody has installed in for a
+# while — and whoever is deploying it usually cannot fix the repository. So a
+# strict failure falls back to a resolving install, saying so in the log,
+# rather than ending the deploy.
+#
+# The lock file is also tested before npm ci runs. That command refuses to do
+# anything without one, so a project carrying only a package.json could not be
+# built at all.
 RUN \
-  if [ -f pnpm-lock.yaml ]; then npm install -g pnpm && pnpm install --frozen-lockfile; \
-  elif [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
-  else npm ci; \
+  if [ -f pnpm-lock.yaml ]; then \
+    npm install -g pnpm && \
+    { pnpm install --frozen-lockfile || { echo "snaphost: pnpm-lock.yaml is out of sync with package.json; installing without it" >&2; pnpm install --no-frozen-lockfile; }; }; \
+  elif [ -f yarn.lock ]; then \
+    yarn install --frozen-lockfile || { echo "snaphost: yarn.lock is out of sync with package.json; installing without it" >&2; yarn install; }; \
+  elif [ -f package-lock.json ]; then \
+    npm ci || { echo "snaphost: package-lock.json is out of sync with package.json; installing without it" >&2; npm install; }; \
+  else \
+    npm install; \
   fi
 COPY . .
 RUN {{BUILD_CMD}}
+# The output directory is configurable in every one of these tools, so it is
+# located rather than assumed: a hardcoded path fails at the COPY, minutes
+# into the build, with a message about a missing directory instead of a
+# message about the project.
+RUN set -e; \
+    OUTPUT_DIR=""; \
+    for candidate in dist build out public; do \
+      if [ -f "$candidate/index.html" ]; then OUTPUT_DIR="$candidate"; break; fi; \
+    done; \
+    if [ -z "$OUTPUT_DIR" ]; then \
+      echo "ERROR: no index.html in dist/, build/, out/, public/ after the build" >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /app/build-output; \
+    cp -a "$OUTPUT_DIR/." /app/build-output/
 
 FROM nginx:alpine
-COPY --from=builder /app/{{DIST_DIR}} /usr/share/nginx/html
+COPY --from=builder /app/build-output /usr/share/nginx/html
 # The server config is written at build time, into its final location.
 #
 # nginx ships an entrypoint that renders /etc/nginx/templates/*.template into

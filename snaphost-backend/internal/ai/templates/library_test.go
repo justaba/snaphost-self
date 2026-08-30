@@ -405,3 +405,91 @@ func TestStaticBuildTemplateNeedsNoWritableRoot(t *testing.T) {
 		t.Fatalf("rendered template does not write its config at build time:\n%s", rendered)
 	}
 }
+
+// Vite is a build tool, not an application shape. SvelteKit, Nuxt, Astro and
+// SolidStart all build with it, and none of them produces a directory a web
+// server can hand out — a SvelteKit project on adapter-vercel writes a server
+// bundle to .svelte-kit/output and no dist/ at all.
+//
+// This was made worse by fixing the devDependencies lookup: before that, a
+// SvelteKit project did not match here because vite sits in devDependencies,
+// and it went to the LLM. Afterwards it matched, built for several minutes,
+// and failed at the COPY with a message about a missing path.
+func TestViteTemplateRefusesFrameworksThatEmitAServer(t *testing.T) {
+	cases := map[string]*PackageJSON{
+		"sveltekit on adapter-vercel, the case that prompted this": {
+			Scripts: map[string]string{"build": "vite build"},
+			DevDependencies: map[string]string{
+				"@sveltejs/kit":            "^2.16.0",
+				"@sveltejs/adapter-vercel": "^5.7.2",
+				"vite":                     "^6.2.5",
+			},
+		},
+		"nuxt": {
+			Scripts:         map[string]string{"build": "nuxt build"},
+			DevDependencies: map[string]string{"nuxt": "^3.0.0", "vite": "^7.0.0"},
+		},
+		"astro": {
+			Scripts:         map[string]string{"build": "astro build"},
+			DevDependencies: map[string]string{"astro": "^4.0.0", "vite": "^7.0.0"},
+		},
+	}
+
+	for name, pkg := range cases {
+		t.Run(name, func(t *testing.T) {
+			match, ok := FindMatch(ProjectSignals{PackageJSON: pkg})
+			if ok && (match.Template.ID == "vite-react" || match.Template.ID == "static-build") {
+				t.Fatalf("%s matched %s, which serves a directory this project does not produce", name, match.Template.ID)
+			}
+		})
+	}
+}
+
+// A plain Vite app still has to match, or the guard above has taken the
+// template's whole purpose with it.
+func TestViteTemplateStillMatchesAPlainViteApp(t *testing.T) {
+	pkg := &PackageJSON{
+		Scripts:         map[string]string{"build": "vite build"},
+		Dependencies:    map[string]string{"react": "^19.0.0"},
+		DevDependencies: map[string]string{"vite": "^7.0.0", "@vitejs/plugin-react": "^5.0.0"},
+	}
+
+	match, ok := FindMatch(ProjectSignals{PackageJSON: pkg})
+	if !ok || match.Template.ID != "vite-react" {
+		t.Fatalf("a plain Vite app matched %v, want vite-react", match)
+	}
+}
+
+// Both templates that used to name their output directory now locate it. The
+// tools they cover all let a project reconfigure it, and a hardcoded path
+// fails at the COPY — minutes into the build, with a message about a missing
+// directory rather than about the project.
+func TestBuildOutputIsLocatedRatherThanAssumed(t *testing.T) {
+	vars := map[string]string{"NODE_VERSION": "20", "BUILD_CMD": "npm run build", "DIST_DIR": "dist"}
+
+	for _, id := range []string{"vite-react", "cra", "static-build"} {
+		t.Run(id, func(t *testing.T) {
+			var tmpl Template
+			for _, candidate := range Library {
+				if candidate.ID == id {
+					tmpl = candidate
+					break
+				}
+			}
+			if tmpl.ID == "" {
+				t.Fatalf("%s not found in Library", id)
+			}
+
+			rendered, err := Render(&tmpl, vars)
+			if err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			if !strings.Contains(rendered, "COPY --from=builder /app/build-output /usr/share/nginx/html") {
+				t.Fatalf("%s copies from a fixed path:\n%s", id, rendered)
+			}
+			if !strings.Contains(rendered, `if [ -f "$candidate/index.html" ]`) {
+				t.Fatalf("%s does not search for its output:\n%s", id, rendered)
+			}
+		})
+	}
+}

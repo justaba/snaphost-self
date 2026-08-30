@@ -283,6 +283,16 @@ var Library = []Template{
 			if input.PackageJSON == nil {
 				return false, nil
 			}
+			// Vite is a build tool, not an application shape. SvelteKit,
+			// Nuxt, Astro and SolidStart all build with it and none of them
+			// produces a directory of files a web server can hand out — a
+			// SvelteKit project on adapter-vercel writes a server bundle to
+			// .svelte-kit/output and no dist/ at all. Matching on vite alone
+			// claimed those projects and then failed at the COPY, several
+			// minutes into a build, with a message about a missing path.
+			if hasAnyPackage(input.PackageJSON, serverFrameworks) {
+				return false, nil
+			}
 			// devDependencies too, and that is where it almost always is:
 			// `npm create vite` puts vite there, so matching only
 			// dependencies missed essentially every Vite project and sent it
@@ -492,9 +502,16 @@ var serverFrameworks = []string{
 	"next",
 	"nuxt",
 	"@sveltejs/kit",
+	"@sveltejs/adapter-auto",
+	"@sveltejs/adapter-node",
+	"@sveltejs/adapter-vercel",
+	"@sveltejs/adapter-netlify",
+	"@sveltejs/adapter-cloudflare",
 	"astro",
 	"@remix-run/dev",
 	"remix",
+	"solid-start",
+	"@solidjs/start",
 	"express",
 	"fastify",
 	"koa",

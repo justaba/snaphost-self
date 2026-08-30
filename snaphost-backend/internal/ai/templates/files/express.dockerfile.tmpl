@@ -1,10 +1,26 @@
 FROM node:{{NODE_VERSION}}-alpine
 WORKDIR /app
 COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
+# A strict install is the right default: it installs exactly what the lock
+# file pins. It also fails outright when that file has drifted from
+# package.json, which is common in a repository nobody has installed in for a
+# while — and whoever is deploying it usually cannot fix the repository. So a
+# strict failure falls back to a resolving install, saying so in the log,
+# rather than ending the deploy.
+#
+# The lock file is also tested before npm ci runs. That command refuses to do
+# anything without one, so a project carrying only a package.json could not be
+# built at all.
 RUN \
-  if [ -f pnpm-lock.yaml ]; then npm install -g pnpm && pnpm install --frozen-lockfile --prod; \
-  elif [ -f yarn.lock ]; then yarn install --frozen-lockfile --production; \
-  else npm ci --omit=dev; \
+  if [ -f pnpm-lock.yaml ]; then \
+    npm install -g pnpm && \
+    { pnpm install --frozen-lockfile --prod || { echo "snaphost: pnpm-lock.yaml is out of sync with package.json; installing without it" >&2; pnpm install --no-frozen-lockfile --prod; }; }; \
+  elif [ -f yarn.lock ]; then \
+    yarn install --frozen-lockfile --production || { echo "snaphost: yarn.lock is out of sync with package.json; installing without it" >&2; yarn install --production; }; \
+  elif [ -f package-lock.json ]; then \
+    npm ci --omit=dev || { echo "snaphost: package-lock.json is out of sync with package.json; installing without it" >&2; npm install --omit=dev; }; \
+  else \
+    npm install --omit=dev; \
   fi
 COPY . .
 ENV NODE_ENV=production

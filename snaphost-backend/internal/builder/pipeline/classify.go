@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"errors"
+	"fmt"
 	"net"
+	"regexp"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -107,5 +109,35 @@ func classifyBuildKitError(err error) error {
 	if st, ok := status.FromError(err); ok && st.Code() == codes.Unavailable {
 		return Transient(err)
 	}
-	return Permanent(err)
+	return Permanent(summariseSolveError(err))
+}
+
+// solveProcessError matches the shape BuildKit uses when a RUN step exits
+// non-zero. The command is captured non-greedily so a Dockerfile with several
+// quoted strings does not swallow the rest of the message.
+var solveProcessError = regexp.MustCompile(`(?s)failed to solve: process ".*?" did not complete successfully: exit code: (\d+)`)
+
+// summariseSolveError replaces BuildKit's process-failure text with something
+// an operator can read.
+//
+// The original embeds the entire shell command, which for a generated
+// Dockerfile is a three-hundred-character if/elif chain, and then ends with
+// "exit code: 1". None of that says what went wrong — the reason is in the
+// step's output, which is already streamed to the build log and archived with
+// the deploy. So the summary keeps the exit code, which is the only fact the
+// message actually carried, and says where to look for the rest.
+//
+// Anything that is not a process failure is returned unchanged: BuildKit's
+// other messages (a Dockerfile that will not parse, a base image that cannot
+// be pulled) name their own problem.
+func summariseSolveError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	match := solveProcessError.FindStringSubmatch(msg)
+	if match == nil {
+		return err
+	}
+	return fmt.Errorf("a build step exited with code %s; its output is in the build log", match[1])
 }

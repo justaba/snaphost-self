@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -147,4 +148,44 @@ func TestClassifyBuildKitError(t *testing.T) {
 			t.Errorf("nil → %v", got)
 		}
 	})
+}
+
+// What an operator saw when a RUN step failed was three hundred characters of
+// generated shell followed by "exit code: 1" — the entire if/elif chain that
+// picks a package manager, and not one word about what went wrong. The reason
+// was in the step's output, which is streamed to the build log and archived
+// with the deploy, so the message was long, useless, and pointing nowhere.
+func TestAFailedBuildStepIsSummarised(t *testing.T) {
+	raw := errors.New(`build: buildkit solve: failed to solve: process "/bin/sh -c if [ -f pnpm-lock.yaml ]; ` +
+		`then npm install -g pnpm && pnpm install --frozen-lockfile;   elif [ -f yarn.lock ]; ` +
+		`then yarn install --frozen-lockfile;   else npm ci;   fi" did not complete successfully: exit code: 1`)
+
+	got := summariseSolveError(raw).Error()
+
+	if strings.Contains(got, "pnpm-lock.yaml") {
+		t.Fatalf("the shell command survived into the message: %q", got)
+	}
+	if !strings.Contains(got, "exited with code 1") {
+		t.Fatalf("the exit code was dropped; it is the one fact the original carried: %q", got)
+	}
+	if !strings.Contains(got, "build log") {
+		t.Fatalf("the message does not say where the output is: %q", got)
+	}
+}
+
+// BuildKit's other failures name their own problem, so rewriting them would
+// lose information rather than add it.
+func TestOtherSolveErrorsSurviveUnchanged(t *testing.T) {
+	cases := []string{
+		"build: buildkit solve: failed to solve: dockerfile parse error on line 4: unknown instruction: RUNN",
+		"build: buildkit solve: failed to solve: failed to resolve source metadata for docker.io/library/nosuchimage:latest",
+	}
+	for _, msg := range cases {
+		if got := summariseSolveError(errors.New(msg)).Error(); got != msg {
+			t.Errorf("summariseSolveError rewrote a message it should not have:\n got %q\nwant %q", got, msg)
+		}
+	}
+	if summariseSolveError(nil) != nil {
+		t.Error("summariseSolveError(nil) is not nil")
+	}
 }
