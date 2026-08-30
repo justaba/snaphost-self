@@ -1,13 +1,23 @@
 FROM nginx:alpine
 COPY . /usr/share/nginx/html
+# The server config is written at build time, into its final location.
+#
+# nginx ships an entrypoint that renders /etc/nginx/templates/*.template into
+# /etc/nginx/conf.d at startup. The runtime starts every user container with a
+# read-only root filesystem, so that render fails on its first write and takes
+# the container down before nginx ever runs.
+#
+# The port is a literal rather than ${PORT} for the same reason it can be: no
+# PORT is injected into a user container. The runtime reads EXPOSE and probes
+# that, so there was never a runtime value for envsubst to substitute.
 ENV PORT=8080
-RUN mkdir -p /etc/nginx/templates && printf '%s\n' \
+RUN printf '%s\n' \
   'server {' \
-  '  listen ${PORT};' \
+  '  listen 8080;' \
   '  root /usr/share/nginx/html;' \
   '  index index.html;' \
   '  location / { try_files $uri $uri/ /index.html; }' \
   '}' \
-  > /etc/nginx/templates/default.conf.template
+  > /etc/nginx/conf.d/default.conf
 EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]

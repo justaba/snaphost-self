@@ -161,7 +161,19 @@ func TestCRAMatcher_AppliesLegacyHeuristic(t *testing.T) {
 	}
 }
 
-func TestNginxStaticTemplatesUseRuntimePort(t *testing.T) {
+// The four nginx templates used to write their server block to
+// /etc/nginx/templates/default.conf.template and let the image's entrypoint
+// render it into /etc/nginx/conf.d at startup. Every container the runtime
+// starts has a read-only root filesystem, so that render failed on its first
+// write and killed the container before nginx ran — every static site this
+// platform could build was undeployable.
+//
+// The test that stood here asserted the broken construct, by name, in all
+// four templates. It is inverted rather than deleted: the property worth
+// holding is that a generated Dockerfile produces a container that needs no
+// writable root, and the envsubst path is the one concrete way these
+// templates got that wrong.
+func TestNginxStaticTemplatesNeedNoWritableRoot(t *testing.T) {
 	vars := map[string]string{
 		"NODE_VERSION": "20",
 		"BUILD_CMD":    "npm run build",
@@ -181,16 +193,29 @@ func TestNginxStaticTemplatesUseRuntimePort(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Render() error = %v", err)
 			}
+
+			// The config lands in its final location during the build, and the
+			// port is a literal: nothing injects PORT into a user container, so
+			// there is no runtime value for envsubst to substitute anyway.
 			for _, want := range []string{
 				"ENV PORT=8080",
-				"listen ${PORT};",
-				"/etc/nginx/templates/default.conf.template",
+				"listen 8080;",
+				"> /etc/nginx/conf.d/default.conf",
 				"EXPOSE 8080",
 			} {
 				if !strings.Contains(rendered, want) {
 					t.Fatalf("rendered template missing %q:\n%s", want, rendered)
 				}
 			}
+
+			// Comment lines are stripped first: the templates explain this very
+			// path in a comment, and a comment is not an instruction.
+			if strings.Contains(withoutComments(rendered), "/etc/nginx/templates") {
+				t.Fatalf("rendered template defers config rendering to startup, which cannot write to a read-only root:\n%s", rendered)
+			}
+
+			// Port 80 needs NET_BIND_SERVICE and collides with the probe, which
+			// reads EXPOSE.
 			for _, forbidden := range []*regexp.Regexp{
 				regexp.MustCompile(`(?m)^\s*listen 80;?\s*$`),
 				regexp.MustCompile(`(?m)^EXPOSE 80\s*$`),
@@ -199,9 +224,19 @@ func TestNginxStaticTemplatesUseRuntimePort(t *testing.T) {
 					t.Fatalf("rendered template contains forbidden pattern %q:\n%s", forbidden.String(), rendered)
 				}
 			}
-			if strings.Contains(rendered, "/etc/nginx/conf.d/default.conf") {
-				t.Fatalf("rendered template writes generated config directly to conf.d:\n%s", rendered)
-			}
 		})
 	}
+}
+
+// withoutComments drops Dockerfile comment lines so an assertion about what a
+// template does is not satisfied, or broken, by what it says about itself.
+func withoutComments(dockerfile string) string {
+	var kept []string
+	for _, line := range strings.Split(dockerfile, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }

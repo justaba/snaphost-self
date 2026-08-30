@@ -83,8 +83,20 @@ func (s *Service) GenerateDockerfile(ctx context.Context, req llm.GenerateReques
 	// 2. Compute cache key before any expensive work.
 	signature := s.cache.ComputeSignature(req)
 
-	// 3. Cache lookup — fast path.
-	if cached, err := s.cache.Get(ctx, signature); err == nil {
+	// 3. Cache lookup — fast path, and only for LLM answers.
+	//
+	// A cached template render is worse than no cache at all. The library is
+	// compiled into this binary, so upgrading the platform is exactly how a
+	// broken template gets fixed — and a cache entry keeps handing out the
+	// broken one for its full TTL afterwards. That is not hypothetical: the
+	// four nginx templates wrote a config the read-only root filesystem
+	// refused, the fix shipped, and the next deploy of the same repository
+	// failed identically because the answer came from here.
+	//
+	// The cache exists to avoid paying for an LLM call. Rendering a template
+	// is local, deterministic and takes microseconds, so there is nothing to
+	// save and an upgrade to lose.
+	if cached, err := s.cache.Get(ctx, signature); err == nil && cached.Source != "template" {
 		_ = s.cache.IncrementUsage(ctx, signature)
 		s.recordUsage(ctx, req, "cache", cached.Source, "", 0, 0, int(time.Since(start).Milliseconds()), true, nil, true)
 		return &ServiceResponse{
@@ -109,7 +121,6 @@ func (s *Service) GenerateDockerfile(ctx context.Context, req llm.GenerateReques
 				zap.Error(err),
 			)
 		} else {
-			_ = s.cache.Store(ctx, signature, rendered, match.Template.ExposePort, match.Template.ID, "template")
 			s.recordUsage(ctx, req, "template", "template", "", 0, 0, int(time.Since(start).Milliseconds()), true, nil, false)
 			return &ServiceResponse{
 				Dockerfile: rendered,

@@ -285,7 +285,8 @@ func (b *DockerBackend) waitForHealthy(ctx context.Context, containerID, deployI
 		select {
 		case <-deadline:
 			// Timed out — collect last 100 lines of logs and clean up.
-			return b.handleUnhealthy(ctx, containerID, deployID, networkName)
+			return b.handleUnhealthy(ctx, containerID, deployID, networkName,
+				"did not stay up for 30 seconds")
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
@@ -295,8 +296,13 @@ func (b *DockerBackend) waitForHealthy(ctx context.Context, containerID, deployI
 			}
 
 			if !info.State.Running {
-				// Container crashed — clean up immediately.
-				return b.handleUnhealthy(ctx, containerID, deployID, networkName)
+				// Container crashed — clean up immediately. The reason names the
+				// exit rather than the deadline: reporting a 30-second timeout
+				// for a container that died in under a second sends whoever reads
+				// it looking for something slow, when the answer is in the last
+				// lines of its log.
+				return b.handleUnhealthy(ctx, containerID, deployID, networkName,
+					fmt.Sprintf("exited with code %d after %s", info.State.ExitCode, sinceStart(info.State.StartedAt)))
 			}
 
 			// Quick crash detection: container must have been running for at least 2 seconds.
@@ -308,9 +314,9 @@ func (b *DockerBackend) waitForHealthy(ctx context.Context, containerID, deployI
 	}
 }
 
-// handleUnhealthy fetches the last 100 lines of logs, publishes them, cleans up,
-// and returns ErrHealthCheckTimeout.
-func (b *DockerBackend) handleUnhealthy(ctx context.Context, containerID, deployID, networkName string) error {
+// handleUnhealthy fetches the last 100 lines of logs, publishes them, cleans
+// up, and returns ErrHealthCheckTimeout with the reason the caller observed.
+func (b *DockerBackend) handleUnhealthy(ctx context.Context, containerID, deployID, networkName, reason string) error {
 	// Fetch last 100 lines of logs.
 	logReader, err := b.cli.ContainerLogs(ctx, containerID, container.LogsOptions{
 		ShowStdout: true,
@@ -332,7 +338,7 @@ func (b *DockerBackend) handleUnhealthy(ctx context.Context, containerID, deploy
 
 	b.publishLog(deployID, "runtime-startup", "container failed health check — removed", "error")
 
-	return fmt.Errorf("%w: container did not become healthy within 30 seconds", backend.ErrHealthCheckTimeout)
+	return fmt.Errorf("%w: container %s", backend.ErrHealthCheckTimeout, reason)
 }
 
 // publishLog is a convenience wrapper around the publisher.
@@ -414,4 +420,14 @@ func (b *DockerBackend) RemoveImage(ctx context.Context, imageRef string) error 
 		return fmt.Errorf("remove image %s: %w", imageRef, err)
 	}
 	return nil
+}
+
+// sinceStart reports how long a container ran, for the failure message. An
+// unparseable start time yields "an unknown time" rather than a wrong number.
+func sinceStart(startedAt string) string {
+	t, err := time.Parse(time.RFC3339Nano, startedAt)
+	if err != nil {
+		return "an unknown time"
+	}
+	return time.Since(t).Round(time.Millisecond).String()
 }
