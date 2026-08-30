@@ -177,7 +177,7 @@ func main() {
 
 	// 5. Components, bottom up.
 	ai := buildAI(pool, aiCfg, log)
-	rt := buildRuntime(pool, rtCfg, bus, log)
+	rt := buildRuntime(pool, rtCfg, ctlCfg, bus, log)
 	bld := buildBuilder(pool, bldCfg, aiCfg, ai, bus, events, uploadsStore, credsStore, rt.loader, log)
 	ctl := buildControl(pool, ctlCfg, bld.enqueuer, rt.service, bus, events, uploadsStore, credsStore, log)
 
@@ -252,12 +252,17 @@ type runtimeParts struct {
 	loader *runtimedocker.DockerBackend
 }
 
-func buildRuntime(pool *sql.DB, cfg *runtimeconfig.Config, bus *logbus.Bus, log *zap.Logger) runtimeParts {
+func buildRuntime(pool *sql.DB, cfg *runtimeconfig.Config, ctlCfg *controlconfig.Config, bus *logbus.Bus, log *zap.Logger) runtimeParts {
 	publisher := &wiring.RuntimeLogPublisher{Bus: bus}
 
 	// The runtime used to reach the control plane over HTTP to check
 	// ownership and record state. Same checks, no hop.
-	billingClient := &wiring.BillingClient{Repo: deployRepo(pool, bus, nil)}
+	//
+	// This one takes the control config rather than nil: it is the repository
+	// the watchdog sweeps with, and the sweep is the only reader of the GC
+	// policy. Without it ALIAS_IDLE_GC_DAYS and PROJECT_DEPLOY_RETENTION are
+	// set, documented, and ignored.
+	billingClient := &wiring.BillingClient{Repo: deployRepo(pool, bus, ctlCfg)}
 
 	var b runtimebackend.Backend
 	var loader *runtimedocker.DockerBackend

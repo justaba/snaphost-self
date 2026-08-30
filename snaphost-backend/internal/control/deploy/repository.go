@@ -426,26 +426,33 @@ LIMIT ?`
 // dead subdomain does. Detaching the pointer is what returns the deploy to
 // ordinary GC.
 const unpinIdleAliasesSQL = `
-UPDATE custom_domains cd
+UPDATE custom_domains
 SET target_deploy_id = NULL,
     last_error = 'unpinned_idle',
     updated_at = ?
-FROM deploys d
-WHERE cd.target_deploy_id = d.id
-  AND cd.status = 'verified'
-  AND coalesce(d.last_request_at, d.updated_at) < ?`
+WHERE status = 'verified'
+  AND target_deploy_id IS NOT NULL
+  AND EXISTS (
+        SELECT 1 FROM deploys d
+        WHERE d.id = custom_domains.target_deploy_id
+          AND coalesce(d.last_request_at, d.updated_at) < ?
+      )`
 
 // FindExpiredWithDetails returns the deploys the watchdog should stop: TTL
 // expiry plus the alias-aware reclaim cases. Idle aliases are unpinned first,
 // in the same sweep, so a released deploy is picked up on this pass.
 func (r *Repository) FindExpiredWithDetails(ctx context.Context, limit int) ([]ExpiredDeploy, error) {
+	now := time.Now()
+
 	if r.gc.AliasIdleDays > 0 {
-		if _, err := r.db.ExecContext(ctx, unpinIdleAliasesSQL, r.gc.AliasIdleDays); err != nil {
+		idleBefore := controldb.FormatTime(now.AddDate(0, 0, -r.gc.AliasIdleDays))
+		if _, err := r.db.ExecContext(ctx, unpinIdleAliasesSQL, controldb.FormatTime(now), idleBefore); err != nil {
 			return nil, fmt.Errorf("unpin idle aliases: %w", err)
 		}
 	}
 
-	rows, err := r.db.QueryContext(ctx, reclaimableSQL, limit, r.gc.KeepPerProject)
+	rows, err := r.db.QueryContext(ctx, reclaimableSQL,
+		controldb.FormatTime(now), r.gc.KeepPerProject, r.gc.KeepPerProject, limit)
 	if err != nil {
 		return nil, fmt.Errorf("find expired deploys with details: %w", err)
 	}

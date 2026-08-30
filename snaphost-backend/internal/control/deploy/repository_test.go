@@ -89,8 +89,11 @@ func TestReclaimNeverTakesAnAliasedDeploy(t *testing.T) {
 		t.Fatalf("reclaim sweep must apply per-project retention: %s", normalized)
 	}
 
+	// No cd. prefix: the statement was written with PostgreSQL's UPDATE ... FROM
+	// and a table alias, which SQLite does not accept here. It is a correlated
+	// EXISTS now, and the alias only survives on the deploys side.
 	unpin := strings.Join(strings.Fields(unpinIdleAliasesSQL), " ")
-	if !strings.Contains(unpin, "cd.status = 'verified'") || !strings.Contains(unpin, "target_deploy_id = NULL") {
+	if !strings.Contains(unpin, "status = 'verified'") || !strings.Contains(unpin, "target_deploy_id = NULL") {
 		t.Fatalf("idle sweep must unpin the alias before its target can be reclaimed: %s", unpin)
 	}
 }
