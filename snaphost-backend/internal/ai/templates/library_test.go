@@ -275,3 +275,133 @@ func TestViteMatchesWhenViteIsADevDependency(t *testing.T) {
 		t.Fatal("a rollup project matched the Vite template")
 	}
 }
+
+// The generic static template exists because the library covered four
+// bundlers and there are dozens. A Svelte project built by rollup matched
+// nothing and went to the LLM, which on an install with no model key means the
+// deploy simply fails.
+//
+// It has to lose to every specific template, and it has to refuse anything
+// that is not a static site — building a server and then serving its source
+// directory would be worse than not matching at all.
+func TestStaticBuildTemplateMatchesUncoveredBundlers(t *testing.T) {
+	cases := []struct {
+		name string
+		pkg  *PackageJSON
+		want string
+	}{
+		{
+			name: "svelte and rollup, the case that prompted this",
+			pkg: &PackageJSON{
+				Scripts:         map[string]string{"build": "rollup -c"},
+				Dependencies:    map[string]string{"sirv-cli": "^0.4.4"},
+				DevDependencies: map[string]string{"rollup": "^1.20.0", "svelte": "^3.0.0"},
+			},
+			want: "static-build",
+		},
+		{
+			name: "vue cli",
+			pkg: &PackageJSON{
+				Scripts:         map[string]string{"build": "vue-cli-service build"},
+				DevDependencies: map[string]string{"@vue/cli-service": "^5.0.0"},
+			},
+			want: "static-build",
+		},
+		{
+			name: "parcel",
+			pkg: &PackageJSON{
+				Scripts:         map[string]string{"build": "parcel build"},
+				DevDependencies: map[string]string{"parcel": "^2.0.0"},
+			},
+			want: "static-build",
+		},
+		{
+			// Vite has its own template, and it is the better answer: it knows
+			// the output directory instead of searching for it.
+			name: "vite still goes to its own template",
+			pkg: &PackageJSON{
+				Scripts:         map[string]string{"build": "vite build"},
+				DevDependencies: map[string]string{"vite": "^7.0.0"},
+			},
+			want: "vite-react",
+		},
+		{
+			name: "next is a server, not a static site",
+			pkg: &PackageJSON{
+				Scripts:      map[string]string{"build": "next build"},
+				Dependencies: map[string]string{"next": "^15.0.0"},
+			},
+			want: "nextjs",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			match, ok := FindMatch(ProjectSignals{PackageJSON: tc.pkg})
+			if !ok {
+				t.Fatalf("no template matched, want %s", tc.want)
+			}
+			if match.Template.ID != tc.want {
+				t.Fatalf("matched %s, want %s", match.Template.ID, tc.want)
+			}
+		})
+	}
+}
+
+// The things it must not claim. Each would build successfully and then serve
+// nothing, which is a worse outcome than falling through to the LLM.
+func TestStaticBuildTemplateRefusesNonStaticProjects(t *testing.T) {
+	cases := map[string]*PackageJSON{
+		"a bundler but no build script": {
+			DevDependencies: map[string]string{"rollup": "^4.0.0"},
+		},
+		"a build script but no bundler": {
+			Scripts:         map[string]string{"build": "tsc -p ."},
+			DevDependencies: map[string]string{"typescript": "^5.0.0"},
+		},
+		"sveltekit emits a server": {
+			Scripts:         map[string]string{"build": "vite build"},
+			DevDependencies: map[string]string{"@sveltejs/kit": "^2.0.0", "vite": "^7.0.0"},
+		},
+		"nuxt emits a server": {
+			Scripts:         map[string]string{"build": "nuxt build"},
+			DevDependencies: map[string]string{"nuxt": "^3.0.0", "vite": "^7.0.0"},
+		},
+	}
+
+	for name, pkg := range cases {
+		t.Run(name, func(t *testing.T) {
+			match, ok := FindMatch(ProjectSignals{PackageJSON: pkg})
+			if ok && match.Template.ID == "static-build" {
+				t.Fatal("static-build claimed a project that does not produce a static site")
+			}
+		})
+	}
+}
+
+// Same read-only-root property the four named nginx templates carry. It is
+// asserted separately because this template was written later and could have
+// reintroduced the construct that made all of them undeployable.
+func TestStaticBuildTemplateNeedsNoWritableRoot(t *testing.T) {
+	var tmpl Template
+	for _, candidate := range Library {
+		if candidate.ID == "static-build" {
+			tmpl = candidate
+			break
+		}
+	}
+	if tmpl.ID == "" {
+		t.Fatal("static-build template not found in Library")
+	}
+
+	rendered, err := Render(&tmpl, map[string]string{"NODE_VERSION": "20", "BUILD_CMD": "npm run build"})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if strings.Contains(withoutComments(rendered), "/etc/nginx/templates") {
+		t.Fatalf("rendered template defers config rendering to startup:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "> /etc/nginx/conf.d/default.conf") {
+		t.Fatalf("rendered template does not write its config at build time:\n%s", rendered)
+	}
+}

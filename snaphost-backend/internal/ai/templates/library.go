@@ -421,6 +421,36 @@ var Library = []Template{
 			return false, nil
 		},
 	},
+	// Last of the Node templates on purpose. Every specific one above is a
+	// better answer when it matches: this is what catches a project built by a
+	// bundler nobody wrote a template for.
+	{
+		ID:          "static-build",
+		DisplayName: "Static site build",
+		FileName:    "static-build.dockerfile.tmpl",
+		ExposePort:  8080,
+		Match: func(input ProjectSignals) (bool, map[string]string) {
+			if input.PackageJSON == nil {
+				return false, nil
+			}
+			if _, ok := input.PackageJSON.Scripts["build"]; !ok {
+				return false, nil
+			}
+			// A framework that emits a server is not a static site, and the
+			// template would build it and then find nothing to serve. Better to
+			// fall through to the LLM, which can at least write a CMD.
+			if hasAnyPackage(input.PackageJSON, serverFrameworks) {
+				return false, nil
+			}
+			if !hasAnyPackage(input.PackageJSON, staticBundlers) {
+				return false, nil
+			}
+			return true, map[string]string{
+				"NODE_VERSION": PickNodeVersion(input, nil),
+				"BUILD_CMD":    "npm run build",
+			}
+		},
+	},
 	{
 		ID:          "static-nginx",
 		DisplayName: "Static Nginx",
@@ -435,4 +465,55 @@ var Library = []Template{
 			return false, nil
 		},
 	},
+}
+
+// staticBundlers are the tools that turn a source tree into files a web
+// server can hand out. The list is what decides whether the generic static
+// template applies at all: a package.json with a build script proves nothing
+// on its own, since a TypeScript backend has one too.
+var staticBundlers = []string{
+	"rollup",
+	"parcel",
+	"parcel-bundler",
+	"webpack",
+	"esbuild",
+	"snowpack",
+	"vite",
+	"@vue/cli-service",
+	"gatsby",
+	"eleventy",
+	"@11ty/eleventy",
+}
+
+// serverFrameworks emit something that has to be run, not something that can
+// be served from disk. Matching one means the static template is wrong even
+// if a bundler is present — these ship a bundler of their own.
+var serverFrameworks = []string{
+	"next",
+	"nuxt",
+	"@sveltejs/kit",
+	"astro",
+	"@remix-run/dev",
+	"remix",
+	"express",
+	"fastify",
+	"koa",
+	"@nestjs/core",
+	"@hapi/hapi",
+}
+
+// hasAnyPackage reports whether any of the named packages appears in either
+// dependency map. Both are checked because where a package lands is a matter
+// of taste for build tools and of necessity for runtime ones, and a matcher
+// that reads only one map misses the projects that chose the other.
+func hasAnyPackage(pkg *PackageJSON, names []string) bool {
+	for _, name := range names {
+		if _, ok := pkg.Dependencies[name]; ok {
+			return true
+		}
+		if _, ok := pkg.DevDependencies[name]; ok {
+			return true
+		}
+	}
+	return false
 }
