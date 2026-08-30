@@ -11,14 +11,13 @@ set -uo pipefail
 # each one is chosen because it exercises something the previous one does not:
 #
 #   1. api /health          — the gateway container answers at all
-#   2. api authenticated 401 — JWT middleware is running, not just the health
+#   2. api authenticated 401 — session/API-key auth is running, not just health
 #                              route that is registered before all middleware
-#   3. dashboard 200        — Caddy and the static release symlink are intact
-#   4. unknown deploy host  — the full runtime path: DNS, the Yandex API
-#      404                    Gateway, router-svc, and its route lookup back
-#                              into user-billing. A 502/504 here means the
-#                              router is down; a 200 would mean it resolved a
-#                              host that does not exist.
+#   3. dashboard 200        — the public edge and embedded panel are intact
+#   4. unknown deploy host  — wildcard DNS and the environment's runtime edge
+#      404                    refuse a host that cannot be a deploy. A 502/504
+#                              means the route is broken; a 200 means an
+#                              impossible host was resolved.
 #   5. certificate expiry   — renewal is automatic and therefore silent when
 #                              it breaks.
 

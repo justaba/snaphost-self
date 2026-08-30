@@ -1,121 +1,25 @@
-# Caddy configuration for the production host (ADR 0007).
+# No production Caddy configuration is currently shipped.
 #
-# This file is a root-owned host prerequisite, not something CD manages: the
-# non-root deployer owns versioned application files and must not be able to
-# change TLS or proxy policy. Install it at /etc/caddy/Caddyfile and reload
-# with `systemctl reload caddy`.
+# The upstream example that used router-svc and Yandex Serverless Containers
+# was removed when Task 1 collapsed the platform to one local Docker runtime.
+# Keeping those directives here would produce a configuration that validates
+# against components which no longer exist.
 #
-# It serves two unrelated things, and the separation is deliberate:
+# Task 4 must implement and document all of the following before this becomes a
+# real example:
 #
-#   1. the control plane — dashboard and API on our own domain, with
-#      certificates for names we own;
-#   2. customer domains — arbitrary hostnames whose certificates are issued
-#      on demand, proxied to router-svc.
+# 1. serve the embedded panel and API from the snaphost process;
+# 2. serve generated DOMAIN_SUFFIX hosts by resolving their running Docker
+#    containers;
+# 3. authorize on-demand certificates only for verified custom_domains rows;
+# 4. route a verified custom hostname to its alias target;
+# 5. expose no broad /internal surface.
 #
-# A failure in (2) must not affect (1), and neither may affect deploys served
-# on generated `*.snaphost.pw` hostnames, which do not pass through here at
-# all — they go through the Yandex API Gateway.
-
-{
-	# No admin API. Configuration changes go through this file and a reload,
-	# which keeps the deployer account unable to alter TLS policy.
-	admin off
-
-	email {$ACME_EMAIL}
-
-	# On-demand issuance is only safe because of `ask`. Without it, any
-	# hostname anyone points at this address would trigger an ACME request,
-	# burning rate limits shared across everything we serve and making us ask
-	# for certificates covering names we have no relationship with.
-	#
-	# The gate is served by router-svc rather than user-billing, and that is
-	# not arbitrary: Caddy's `ask` is a bare URL with no way to attach a
-	# header, so the endpoint cannot require the shared secret. router-svc is
-	# published on loopback only, so that unauthenticated surface never leaves
-	# the host, and the secret-bearing call to user-billing — which keeps no
-	# host port at all — happens behind it.
-	#
-	# user-billing answers 200 only for a custom_domains row that has proven
-	# ownership through its TXT challenge, and both hops fail closed.
-	#
-	# Caddy 2.11 removed the `interval`/`burst` rate limit from this block, so
-	# `ask` is the only bound on issuance here. That puts real weight on the
-	# limits behind it: MAX_DOMAINS_PER_USER and DOMAIN_ATTACH_PER_HOUR are
-	# what stop an authorised account from spending the ACME budget, and they
-	# should be reviewed as ACME controls, not just as product limits.
-	on_demand_tls {
-		ask http://127.0.0.1:{$ROUTER_BIND_PORT}/internal/tls/authorize
-	}
-}
-
-# --- Control plane -----------------------------------------------------------
-# Named sites, certificates for domains we own. Unchanged by ADR 0007.
-
-api.snaphost.ru {
-	reverse_proxy 127.0.0.1:{$API_GATEWAY_PORT}
-}
-
-snaphost.ru {
-	root * /opt/snaphost/frontend/current
-	encode gzip
-
-	@frontendAssets path /assets/*
-	header @frontendAssets Cache-Control "public, max-age=31536000, immutable"
-
-	@frontendDocuments not path /assets/*
-	header @frontendDocuments Cache-Control "no-cache"
-
-	try_files {path} /index.html
-	file_server
-}
-
-www.snaphost.ru {
-	redir https://snaphost.ru{uri} permanent
-}
-
-# --- Customer domains --------------------------------------------------------
-# Everything else that resolves here. `tls { on_demand }` makes the certificate
-# conditional on the `ask` gate above, so this block does not weaken anything:
-# a hostname nobody verified gets no certificate and therefore no TLS
-# handshake.
+# The existing /internal/tls/authorize handler is protected by WEBHOOK_SECRET,
+# while standard Caddy ask cannot add that header. Do not bypass the protection
+# globally merely to make ask work.
 #
-# This block must stay last. Caddy prefers the most specific matching site, so
-# the named blocks above continue to win for our own hostnames.
-:443 {
-	tls {
-		on_demand
-	}
-
-	# The Host header is forwarded unchanged: it is the only thing router-svc
-	# has to resolve which deploy answers. `header_up Host {host}` is explicit
-	# rather than relying on the default, because a future `reverse_proxy`
-	# option change silently breaking host resolution would be very hard to
-	# diagnose from the symptom (every custom domain 404s at once).
-	reverse_proxy 127.0.0.1:{$ROUTER_BIND_PORT} {
-		header_up Host {host}
-		header_up X-Forwarded-Proto https
-
-		# A cold Serverless Container start is the slow case. Failing fast
-		# here would show the visitor an error while the container is still
-		# coming up.
-		transport http {
-			dial_timeout 10s
-			response_header_timeout 60s
-		}
-	}
-
-	# Logging goes to stderr and therefore to journald, deliberately rather than
-	# to a file. A file destination adds a host prerequisite and a way for Caddy
-	# to refuse to start — it did, on 2026-08-04, with "permission denied" on a
-	# directory that looked correctly owned. Everything that diagnoses this path
-	# reads `journalctl -u caddy` anyway.
-	log
-}
-
-# Plain HTTP for customer domains. Caddy redirects to HTTPS by default for
-# named sites; this makes the behaviour explicit for on-demand ones and keeps
-# the ACME HTTP-01 challenge path working, which Caddy handles internally
-# before this route is consulted.
-:80 {
-	redir https://{host}{uri} permanent
-}
+# See docs/operations/custom-domains.md and
+# docs/decisions/0007-custom-domain-tls-edge.md.
+#
+# This comments-only file is intentionally not installable.

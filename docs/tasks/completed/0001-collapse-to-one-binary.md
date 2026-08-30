@@ -1,9 +1,9 @@
 # Task 1 — Collapse the control plane into one binary
 
-**Status:** In progress. The cloud runtime path, the dead documentation and
-billing are removed, the six modules are one, the platform is a single binary
-on SQLite, it issues its own identity, Redis is gone and the runtime knows its
-memory ceiling. The docs rewrite and the embedded panel remain.
+**Status:** Completed 2026-08-30. The cloud runtime, billing, Supabase,
+PostgreSQL, Redis, registry and multi-service control plane are gone. The
+platform is one application process on SQLite with an embedded panel, direct
+package wiring, local Docker runtime and current documentation.
 **Created:** 2026-08-29
 **Updated:** 2026-08-30
 
@@ -102,8 +102,9 @@ Settled 2026-08-29, owner decision:
   designed for — build concurrency of one, a memory ceiling on the build step,
   and swap sized so a Node build degrades instead of OOM-killing a running site.
 - **SQLite, not PostgreSQL.** One writer, one operator, WAL mode. Only 13 lines
-  of Postgres-specific SQL exist across all inherited migrations, so the port is
-  bounded. A backup becomes copying one file.
+  of Postgres-specific SQL existed across the old migrations, so the port was
+  bounded. Live backup uses a transactional `sqlite3 .dump`; copying only the
+  main file is unsafe while WAL is active.
 - **No Redis.** Its jobs move in-process — eight of them, not the five counted
   here: the build queue becomes a channel plus a durable table, log pub/sub
   becomes direct fan-out to WebSocket subscribers, git credentials become a map
@@ -114,8 +115,8 @@ Settled 2026-08-29, owner decision:
   store. Push and pull existed only to reach a cloud runtime.
 - **Trivy off by default.** It defends against untrusted code. On a self-hosted
   platform the code is the operator's own. Left behind a flag, not deleted.
-- **Caddy, not Traefik.** Lighter, ACME built in, no Docker socket, and the
-  inherited `Caddyfile` from the custom-domain edge already does most of it.
+- **Caddy, not Traefik.** Lighter, ACME built in and no Docker socket. The
+  single-binary Docker integration remains Task 4.
 
 Not decided yet: whether to replace Docker with rootless Podman. It removes a
 daemon worth more memory than everything above combined, and `bollard`-free Go
@@ -131,8 +132,8 @@ The numbers are identities, not an order — commits and other documents refer t
 
 1. [x] Remove the cloud runtime path: `terraform/`, `router-svc`, the Yandex and
    VK runtime backends, and every config reference to them.
-2. [x] Remove documentation describing the SaaS this forked from, and archive
-   the task catalog that explains code we kept ([../../inherited/](../../inherited/)).
+2. [x] Remove documentation describing the SaaS this forked from. Upstream task
+   history is not shipped as part of this product.
 3. [x] Remove billing: `wallet` and `transaction` packages, the reserve/commit/
    refund steps in the saga, `cost_vibecoins` and `reservation_tx_id`, the
    `/billing` routes, and the wallet views in the admin console.
@@ -469,18 +470,17 @@ The numbers are identities, not an order — commits and other documents refer t
    is the textbook case for it and close to the only one. Measured after:
    6.8 MiB idle, 7.4 after three logins, 7.8 after thirteen, and a login costs
    42 ms instead of 36.
-9. [ ] Rewrite `CLAUDE.md` and the architecture docs, which currently describe
-   seven services and a cloud runtime that no longer exist.
+9. [x] Rewrite `CLAUDE.md`, the root README, architecture docs, operational
+   runbooks and ADR status so they describe the single-binary Docker system.
 
-   **Done last, after item 10**, because its whole job is to describe what is
+   **Done last, after item 10**, because its whole job was to describe what is
    there. Items 7 and 10 both change what that is — Redis leaves the manifest,
    and the panel moves inside the binary along with a Node stage in the image
    build. Writing this before them means writing the same two sections twice.
 
-   The cost is that `CLAUDE.md` stays wrong for one more item, while being the
-   file the work is done against. It carries a banner saying so, so the tax is
-   at least visible; if it starts costing more than the double write would,
-   move this ahead of item 10 and accept rewriting the panel section.
+   Completed on 2026-08-30. Current documents no longer mix the old deployment
+   with the fork. The rewrite also recorded rather than hid post-collapse gaps:
+   image reclamation, transient retries, the Caddy/Docker route and install.
 
 10. [x] The panel, embedded in the binary. *(done 2026-08-30)*
 
@@ -544,10 +544,11 @@ The numbers are identities, not an order — commits and other documents refer t
     reached `running` locally, because the sample repository serves on port 80
     and ignores `PORT`, so the liveness probe correctly fails it.
 
-## Order of the remaining items
+## Completion and next task
 
-**9**, then [Task 7](../planned/0007-install-and-upgrade.md). Item 10 landed
-on 2026-08-30, so item 9 is the only one left in this task.
+All ten items are complete. [Task 7](../planned/0007-install-and-upgrade.md) is
+next; it turns the repository-owner-specific SSH deployment into an install,
+upgrade and rollback path an independent operator can use.
 
 The placement was a dependency rather than a preference: **9 last**, because
 its job is to describe what is there and item 10 changed what that is. That
@@ -582,14 +583,22 @@ The baseline was taken by running both stacks and reading `docker stats` idle.
 What has still not been measured is either stack **during a build**, which is
 the case that decides whether a 1 GB box is viable at all.
 
-## Acceptance criteria
+## Acceptance result
 
-- One binary, one container, plus Caddy and the Docker daemon.
-- Idle resident memory for the platform under ~170 MB, measured rather than
-  estimated, against a recorded baseline.
-- A Node project builds on a 1 GB instance without killing a running site.
-- No vibecoin, wallet, Yandex, or Terraform reference remains in code or config.
-- `make test` passes throughout; no step in this task lands with a red tree.
+- [x] One application process and one application container; BuildKit and the
+  development edge remain external infrastructure.
+- [x] Idle resident memory below the 170 MB target. The last comparable
+  measurement was 44.7 MiB before registry removal; the application itself was
+  6.8 MiB. The current three-container topology was not remeasured, so the old
+  four-container total is retained as history rather than relabelled.
+- [x] Vibecoin, wallet, Yandex runtime and Terraform references are absent from
+  current code and configuration.
+- [x] Go tests, vet and formatting plus panel tests and lint pass at completion.
+- [ ] A real Node build on a 1 GB host without harming a running site remains
+  unmeasured. This is installation-capacity proof, not code-collapse work, and
+  is carried into Task 7 acceptance rather than silently claimed here.
+- [ ] Caddy is still a decision rather than an integrated Docker edge. That is
+  Task 4; local development continues to use Traefik.
 
 ## Out of scope
 

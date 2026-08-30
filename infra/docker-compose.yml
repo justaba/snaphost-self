@@ -25,8 +25,9 @@ services:
     # on the host.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:rw
-      # The whole database is one file. A backup is copying it; there is no
-      # dump step and no second process to coordinate with.
+      # The database lives in this volume. It runs in WAL mode, so a live
+      # backup must use sqlite3 .dump; copying only the main file can lose
+      # committed pages from the WAL sidecar.
       - snaphost_data:/var/snaphost/data
     # The merge collided two deliberate decisions. runner-svc ran as root
     # because it needs this socket; builder-svc ran as uid 1000 because it

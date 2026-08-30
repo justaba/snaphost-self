@@ -22,6 +22,11 @@ name: snaphost-self
 # its own operator. Rewriting the deployment story is its own task; this file
 # is kept correct in the meantime rather than left referencing infrastructure
 # that no longer exists.
+#
+# Public routing is also incomplete after the collapse. The old Caddy example
+# depended on the removed router-svc/cloud path, while Docker currently emits
+# Traefik labels only for local generated hostnames. Do not treat this manifest
+# as a complete third-party production install until Tasks 4 and 7 land.
 
 services:
   snaphost:

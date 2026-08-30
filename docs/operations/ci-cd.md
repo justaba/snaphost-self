@@ -1,123 +1,95 @@
-# CI/CD contract
+# CI and deployment
 
 Status: Current
 Type: Operations
-Updated: 2026-08-12
+Updated: 2026-08-30
 
-## Linting
+## CI contract
 
-Until 2026-08-07 no workflow ran a linter at all. `make lint` covered three of
-the seven Go modules, there was no `.golangci.yml`, and golangci-lint's default
-set excludes `gofmt` — so formatting drift and unchecked errors accumulated
-without anything failing.
+.github/workflows/pipeline.yml runs on pull requests and pushes to main.
 
-The `go` matrix now runs `golangci-lint` for every module, including the
-`yandex`-tagged runner build. Configuration is
-[snaphost-backend/.golangci.yml](../../snaphost-backend/.golangci.yml), which
-the tool finds by walking up from each module directory — the services are
-separate modules, so one file at that level covers all of them.
+The Go job, from the single snaphost-backend module, runs:
 
-The version is pinned to **v1.64.8** in both the workflow and the documented
-local requirement. The v2 config schema is incompatible with that file; moving
-to it means changing the config and the pin in the same commit, or CI and
-workstations stop agreeing about what passes.
+- go test ./...;
+- go vet ./...;
+- golangci-lint v1.64.8 built with the job's Go toolchain.
 
-This document records the CI/CD scope implemented in July 2026. The active CI
-and staging workflow is
-`.github/workflows/pipeline.yml`; the old `.github/workflows/ci.yml` has no
-triggers and is retained only because the workspace ACL prevented deletion.
-Manual production deployment is defined by
-`.github/workflows/production-deploy.yml`.
+The shell job checks syntax and ShellCheck diagnostics for deployment, backup
+and uptime scripts, runs the fake-command deployment and backup suites, and
+verifies the systemd backup unit syntax.
 
-## Problem to solve
+After those jobs pass, one Docker image is built. On main it is published as:
 
-The previous workflow represented the old three-service architecture. It did
-not run Go tests or lint checks, omitted `user-billing`, `ai-orchestrator`,
-`router-svc`, and `shared`, and used invalid Docker contexts for services that
-depend on the shared Go module.
+~~~text
+ghcr.io/<owner>/<repository>/snaphost:<40-character-git-sha>
+~~~
 
-Its SSH step referenced nonexistent Compose services named `builder-svc` and
-`runner-svc`. Local Compose instead has API/worker pairs and uses `build:`
-rather than the GHCR images produced by CI. The step could therefore report a
-deployment without deploying the triggering commit.
+The Docker build compiles the React panel and embeds it in the binary. CI does
+not currently run the panel's Vitest, ESLint or Prettier commands separately;
+a successful asset build is therefore weaker than the local panel verification
+contract.
 
-## Implemented
+The old .github/workflows/ci.yml is an inert manual tombstone.
 
-Every pull request and push to `main` now runs:
+## Staging and production workflows
 
-- `go test ./...`, `go vet ./...`, and `golangci-lint run` for every Go module;
-- an additional runner pass with the `yandex` build tag;
-- Terraform formatting, initialization without a backend, and validation;
-- Docker builds for all six deployable backend images using correct contexts;
-- a Yandex-enabled production runner image build.
+The optional staging job verifies and deploys the exact image SHA over SSH only
+when STAGING_DEPLOY_ENABLED is true. It is currently disabled because there is
+no staging host.
 
-After a successful push to `main`, the six backend images are published to GHCR
-with immutable commit SHA tags. Pull requests do not publish or deploy
-anything. Frontend validation and artifacts are owned by the separate
-[`justaba/snaphost-ui`](https://github.com/justaba/snaphost-ui) repository.
+.github/workflows/production-deploy.yml is a manual exact-SHA deployment. It
+requires the requested commit to be an ancestor of main, verifies the image,
+uses a pre-verified SSH host key and delegates to
+.github/scripts/deploy-remote.sh.
 
-## Backend CD contract
+Both workflows are deployments for the repository owner's existing machines.
+They do not provision a host, install Docker or Caddy, create DNS, generate
+production secrets, configure backups or define a stable public release
+channel. They must not be presented as a third-party installer. Task 7 owns
+that replacement.
 
-After all six `images` matrix entries succeed on a push to `main`, the staging
-job verifies that all six GHCR manifests exist at `github.sha`, prepares an
-immutable release directory on the staging VDS, runs remote preflight, switches
-to the exact release for deployment, and updates the `current` symlink
-atomically only after success. Pull requests run CI but cannot reach the staging
-job.
+## Production manifest
 
-Production is a separate `workflow_dispatch` workflow. It rejects non-40-hex
-inputs, checks out that exact SHA, and requires it to be an ancestor of
-`origin/main` before image verification or SSH. A branch/PR-only commit cannot
-be deployed even if an image happens to exist. The job verifies the same six
-manifests and uses the `production` GitHub Environment. Required reviewers on
-that Environment are an external GitHub setting and must be configured before
-enabling production.
+infra/docker-compose.prod.yml runs:
 
-Both deployment jobs use environment-scoped concurrency groups with
-`cancel-in-progress: false`; a newer run queues rather than cancelling an active
-deployment. The top-level CI cancellation policy only cancels pull-request
-runs, not push/staging deployments.
+- snaphost from the exact GHCR SHA;
+- snaphost-migrate as a profile-only one-shot using the same SQLite volume;
+- rootless buildkitd.
 
-Each GitHub Environment supplies a stable `DEPLOY_COMPOSE_PROJECT`. The remote
-helper validates it and maps it to `SNAPHOST_COMPOSE_PROJECT`; changing release
-SHA never changes the Compose stack identity.
+The manifest publishes only the application port. TLS, firewall policy and the
+routing edge are host prerequisites. It contains no PostgreSQL, Redis, registry
+or Traefik service.
 
-Native OpenSSH uses a pre-verified `known_hosts` environment secret with
-`StrictHostKeyChecking=yes` and never calls `ssh-keyscan`. The remote account is
-validated as non-root. The workflow transfers only `deploy.sh`,
-`docker-compose.prod.yml`, and `buildkitd.prod.toml`. Production/staging env,
-GHCR token, and Yandex keys already exist as protected files on their respective
-VDS and never cross the SSH command line.
+The production env example is exhaustive for this environment, not a promise
+that all of those variables belong in the future installer.
 
-## Required repository settings
+## Release behavior
 
-- GitHub Actions needs repository package write permission.
-- Create separate `staging` and `production` GitHub Environments with the
-  environment-scoped deployment values listed in
-  [staging deployment](staging-deployment.md). Configure required reviewers
-  when the repository plan supports protected Environments.
-- Branch protection should require Terraform, all Go matrix checks, all Image
-  matrix checks, and Deployment scripts.
+infra/deploy.sh provides preflight, deploy and rollback operations. A deploy:
 
-As of 2026-08-12, the current private-repository plan exposes neither required
-reviewers nor branch protection through GitHub's API. Exact-SHA validation and
-manual production dispatch remain active safeguards, but they are not a
-substitute for an independent reviewer. Enable those protections after a plan
-upgrade.
+1. validates the SHA, environment and rendered Compose;
+2. takes an exclusive lock;
+3. records in-progress state;
+4. creates and verifies a transactional SQLite dump;
+5. pulls the exact application image;
+6. runs the one-shot migrator;
+7. updates snaphost and checks readiness and public smoke;
+8. records current and previous release state atomically.
 
-Repository-side workflows do not create VDS, GitHub settings, DNS, firewall, or
-Yandex resources and never run Terraform apply.
+Migration rollback is never assumed. Once migrations begin, application
+rollback requires MIGRATIONS_BACKWARD_COMPATIBLE=true after an operator reviews
+the schema delta. Database restore is always a separate manual action.
 
-## Frontend CD boundary
+See [rollback](rollback.md) and [backup and restore](backups.md).
 
-The frontend repository builds with its own environment-specific `VITE_*`
-variables and deploys an exact frontend SHA through a dedicated non-root SSH
-identity. It owns `/opt/snaphost/frontend/` only. This repository's deployment
-identity continues to own backend releases, Docker, protected env files, and
-database backups. A backend workflow must never update the frontend symlink,
-and a frontend workflow must never restart backend containers.
+## Repository settings
 
-Production records the two SHAs independently. A breaking API change is
-released additively in the backend first, then consumed by the frontend; the
-old API shape stays available while an older frontend release remains a valid
-rollback target.
+The current workflows require:
+
+- GitHub Actions package write permission;
+- environment-scoped SSH host, verified known_hosts and private-key secrets;
+- the matching deployment user, root path, Compose project and smoke URL;
+- a GHCR token already installed on the target host.
+
+Production Environment reviewers and branch protection are external repository
+settings. Workflow checks do not create them.

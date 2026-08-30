@@ -2,37 +2,94 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-07-03
+Updated: 2026-08-30
 
-SnapHost builds a public Git repository into a container image and runs it on a
-selected runtime backend. Docker is the local development backend. Yandex
-Serverless Containers are the first production runtime adapter.
+snaphost-self builds a Git repository or uploaded archive into a Docker image
+and runs it on the same Docker host. It is a single-operator application, not a
+multi-tenant billing platform.
 
-```text
-Browser
-  |
-  v
-API Gateway ---> user-billing / deploy saga
-                     |             |
-                     v             v
-                builder-svc    runner-svc
-                     |             |
-                     v             v
-                BuildKit +      Docker or Yandex
-                Registry        Serverless Containers
-                                      |
-                                      v
-                              router-svc + API Gateway
-```
+## Runtime shape
 
-Redis carries build jobs, build events, and deploy lifecycle logs. PostgreSQL
-stores users, wallets, deploy records, saga state, transactions, and AI cache
-data. Internal HTTP calls use `X-Webhook-Secret`; public calls use Supabase JWT
-authentication through the API gateway.
+~~~text
+browser / API client
+        |
+        v
++---------------------- snaphost process ----------------------+
+| Gin HTTP API and WebSocket logs                              |
+| local sessions, API keys and Casbin RBAC                     |
+| projects, deploys, custom domains and durable saga state     |
+| build queue, project detection, Dockerfile generation        |
+| Docker runtime, liveness probe and TTL watchdog              |
+| embedded React operator panel                                |
++-----------------------+-------------------+-------------------+
+                        |                   |
+                        v                   v
+                 rootless BuildKit     Docker daemon
+                                            |
+                                            v
+                                      user containers
+~~~
 
-The provider boundary is deliberate: core billing, build, and saga logic must
-not depend directly on Yandex APIs. Provider-specific behavior lives behind
-runner backend and registry boundaries.
+All application packages share one process and call each other through direct
+adapters in internal/wiring. There is no internal HTTP hop for the normal build
+or deploy flow.
 
-See [services.md](services.md), [deploy-lifecycle.md](deploy-lifecycle.md), and
-[security.md](security.md) for details.
+External infrastructure is deliberately small:
+
+- Docker owns images, networks and running user containers;
+- BuildKit performs builds;
+- local development uses Traefik to route generated hostnames;
+- the production edge is not yet a portable, integrated part of the product.
+
+PostgreSQL, Redis, a local image registry, Supabase, Terraform, billing and the
+cloud runtime are not part of the current system.
+
+## State
+
+SQLite is the only durable application store. It runs in WAL mode at
+DATABASE_PATH and contains users, sessions, API keys, projects, deploys, saga
+state, domains, AI cache entries and AI usage records.
+
+The following state is intentionally process-local:
+
+- build and saga queues;
+- live build events and WebSocket fan-out;
+- short-lived Git credentials;
+- the in-memory login failure limiter.
+
+Uploaded archives are staged as files, not held in memory. A restart loses
+queued messages and credentials, but durable deploy_sagas rows are rewound and
+resumed so interrupted work does not silently disappear.
+
+Docker images and containers are durable outside SQLite. The database stores
+their identifiers; the runtime verifies stored ownership before lifecycle
+operations.
+
+## HTTP boundary
+
+The registration order in cmd/snaphost/main.go is part of the security
+contract:
+
+1. health, metrics and the self-authenticating WebSocket log route;
+2. internal routes protected by the webhook secret;
+3. recovery, CORS, request ID, logging and the embedded panel;
+4. session/API-key authentication, Casbin, identity enrichment and upload limit;
+5. public API handlers under /api/v1.
+
+The panel middleware must run before authentication so the login page is
+reachable. It never claims API, WebSocket, internal, health or metrics paths, so
+a missing API route remains a JSON 404 rather than an SPA response.
+
+## Deployment topologies
+
+Local Compose runs three services: snaphost, buildkitd and Traefik. The
+application mounts the host Docker socket and joins the shared snaphost-net
+network used by deployed containers.
+
+The current production manifest runs snaphost plus buildkitd and expects an
+edge on the host. It publishes one application image pinned to an exact Git
+SHA. This manifest and the SSH release scripts are environment-specific
+carry-overs; general installation and upgrade are Task 7.
+
+See [packages and external components](services.md),
+[deploy lifecycle](deploy-lifecycle.md), and [security](security.md).

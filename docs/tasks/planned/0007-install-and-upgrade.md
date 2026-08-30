@@ -1,7 +1,7 @@
 # Task 7 — Install and upgrade without us
 
-**Status:** Planned. Nothing started. Blocked on one decision (below), and
-deliberately ordered after Task 1 finishes.
+**Status:** Planned. Nothing started. Task 1 is complete; this task remains
+blocked on the version and registry decision below.
 **Created:** 2026-08-29
 **Updated:** 2026-08-30
 
@@ -85,7 +85,7 @@ decides the validation, the rollback target resolution, and the CI trigger.
    the operator password once. Item 6a of Task 1 already generates that
    password; this is the same idea applied to the rest of the install.
 
-4. [ ] **Shrink the environment surface.** `.env.production.example` is 166
+4. [ ] **Shrink the environment surface.** `.env.production.example` is 179
    lines and `preflight` requires fifty-nine variables. That is a SaaS
    operator's configuration file, not an installer's. Most already have sane
    defaults in the Go config packages — the work is deciding which are genuinely
@@ -127,25 +127,16 @@ decides the validation, the rollback target resolution, and the CI trigger.
 
 ## Ordering
 
-**After Task 1, not before** — after its items 10 and 9, in that order
-(see [Order of the remaining items](../active/0001-collapse-to-one-binary.md#order-of-the-remaining-items)).
-Item 10 touches the same three files this task rewrites, and items 7 and 8
-already did on 2026-08-30 — one removed Redis from the manifest, taking
-`INFRA_SERVICES`, `EXPECTED_SERVICES`, the health dependencies and both test
-suites with it, and the other made the container memory limit the single place
-the ceiling is written:
+**After Task 1, not before.** That dependency is now satisfied; see the
+[completed task](../completed/0001-collapse-to-one-binary.md#completion-and-next-task).
+The application shape, embedded panel, SQLite store, memory-limit derivation
+and production manifest are now settled inputs. This task can change the
+release model and shrink the environment surface once instead of tracking a
+moving multi-service collapse.
 
-- item 10 embeds the panel, which adds a Node stage to the image build and may
-  change how it is tagged.
-
-Doing this first means rewriting `docker-compose.prod.yml`, `deploy.sh` and
-`deploy_test.sh` once more. Work plan item 4 below has the same problem
-from the other end: shrinking the environment surface wants a settled set of
-variables, and item 10 may still move one.
-
-The argument against waiting is that the product stays uninstallable by anyone
-else for longer. It is weaker than it looks: finishing this before Task 1's
-item 10 would deliver an install procedure for a platform with no interface.
+Task 4 may still change the edge artifacts, but that is not a reason to keep
+installation blocked: Task 7 must define an explicit edge prerequisite and can
+hand the final integrated Caddy configuration to Task 4 when it lands.
 
 ## Acceptance criteria
 
@@ -157,6 +148,9 @@ item 10 would deliver an install procedure for a platform with no interface.
   predates the collapse to one service and SQLite, and the path it exercised
   was broken shortly afterwards.
 - A restore drill against a SQLite dump, which has never been run.
+- A representative Node application builds on the minimum supported host
+  without OOM-killing the control plane or an already running site. Record host
+  RAM, swap, BuildKit limit, peak usage and build duration.
 - No SSH key, deploy secret, or GitHub environment is required to run the
   product.
 - The shell test suites still pass, and their fakes still refuse what the real

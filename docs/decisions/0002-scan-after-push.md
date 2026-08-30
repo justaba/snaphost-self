@@ -1,28 +1,36 @@
 # ADR 0002 — Scan after push with cleanup
 
-Status: Accepted
+Status: Superseded by the local-image pipeline
 Date: 2026-05-16
+Superseded: 2026-08-30
 
-## Context
+## Original context
 
-The builder must prevent critically vulnerable images from remaining usable.
-Scanning a local OCI export before push was preferable in theory, but five
-implementation attempts exposed unstable BuildKit filesync and OCI/Trivy
-integration behavior.
+The upstream builder pushed images to a registry before the runtime could use
+them. Attempts to scan an OCI export directly were unreliable, so the accepted
+path was push once, scan the registry reference and delete its manifest when a
+critical vulnerability failed the gate.
 
-## Decision
+## Why it no longer applies
 
-Build and push once, scan the registry image, and delete it through a registry
-client when Trivy reports critical vulnerabilities and the gate is enabled.
-The local Docker Registry implementation resolves a manifest digest and deletes
-by digest.
+snaphost-self builds and runs on one Docker host. Task 1 removed both the cloud
+runtime and the registry. BuildKit now streams its Docker exporter into
+ImageLoad on the host daemon.
+
+## Current decision
+
+After a successful load, Trivy scans the local image with the Docker image
+source. When SCAN_FAIL_ON_CRITICAL is true and a critical finding is reported,
+the build fails and the newly loaded image is removed from the daemon.
+
+Trivy currently runs on every build. The product decision is to make scanning
+optional by an explicit flag because this installation builds the operator's
+own code, but that switch is not implemented yet.
 
 ## Consequences
 
-- The pipeline is operationally simpler and uses normal registry behavior.
-- A short image-existence window remains during scanning.
-- Runner validation prevents an image from being deployed before the owning
-  deploy reaches the correct state.
-- Yandex Registry deletion remains a separate backlog implementation.
-
-Detailed experiments are preserved in the implementation archive.
+- There is no network push, pull, registry credential or pre-scan exposure
+  window.
+- Runtime can inspect and start the exact local image without a registry.
+- Trivy and Docker daemon failures remain part of the build path.
+- Image cleanup on ordinary deploy deletion or expiry is still missing.

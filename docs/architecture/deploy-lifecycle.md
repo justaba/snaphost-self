@@ -2,45 +2,88 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-07-03
+Updated: 2026-08-30
 
-1. The authenticated user creates a deploy through `user-billing`.
-2. Billing reserves coins and records the deploy.
-3. The saga submits a build job and waits for a Redis build event.
-4. Builder securely clones, detects, validates, builds, and scans the project.
-5. The successful event carries image reference, commit SHA, and port.
-6. Runner verifies registry prefix, deploy tag, ownership, image reference,
-   and deploy state before starting a backend.
-7. Docker creates a local container, or Yandex deploys a Serverless Container.
-8. Billing records runtime ID, endpoint, subdomain, TTL, and running state.
-9. Delete or TTL expiry verifies the stored mapping before removing resources.
+## Create and build
 
-The reasoning behind this split is recorded in
-[ADR 0006](../decisions/0006-project-deployment-alias.md).
+1. An authenticated operator uploads an archive or submits a Git source to
+   POST /api/v1/deploys.
+2. Control resolves or creates the permanent project, then writes both the
+   deploy and deploy_sagas rows before placing work on the in-process saga
+   queue.
+3. The saga enqueues one build job. Git sources are validated against the host
+   allowlist and private or metadata addresses; archives are unpacked with path
+   containment and size limits.
+4. Builder detects the project. A built-in Dockerfile template wins when it
+   matches; OpenRouter is used only as a fallback.
+5. The Dockerfile is validated against the configured base-image policy.
+   BuildKit builds it and streams Docker exporter output into ImageLoad on the
+   host daemon.
+6. Trivy scans the local image. With SCAN_FAIL_ON_CRITICAL enabled, critical
+   findings fail the build and the newly loaded image is removed.
 
-Since Task 16a a deploy also belongs to a **project**: a permanent,
-owner-scoped publish target resolved from the deploy's source. A deploy stays
-immutable and addressable at its own subdomain; a **custom domain** is an alias
-row pointing at one deploy of the project. Publishing and rollback are the same
-operation — moving that pointer — and neither rebuilds anything.
+Images are named snaphost/proj-<owner-hash>:<deploy-id>. No push or pull occurs.
 
-This changes what the watchdog may reap. `GET /internal/deploys/expired` now
-returns three kinds of deploy, and never one an alias points at:
+## Start and publish
 
-1. un-aliased deploys past `ttl_expires_at` (unchanged behavior),
-2. deploys whose alias was unpinned by the idle sweep after `ALIAS_IDLE_GC_DAYS`
-   without a single request — a hard timer cannot express "live but quiet",
-3. deploys beyond `PROJECT_DEPLOY_RETENTION` newest per project.
+7. Runtime verifies the deploy owner, expected image name, tag and state before
+   creating a container.
+8. The container receives resource limits, read-only root filesystem, tmpfs
+   mounts, dropped capabilities, no-new-privileges and isolated networking. It
+   also joins snaphost-net so the control plane and local edge can reach it.
+9. Runtime waits for the container to stay up, then explicitly probes the
+   detected application port. A started container that does not answer is
+   stopped and the deploy fails.
+10. Runtime stores the container identifier, endpoint, generated subdomain and
+    expiry. The saga records terminal success and best-effort repoints verified
+    custom-domain aliases for the project to the new deploy.
 
-Route resolution has two branches that converge on the same condition. Hosts
-under `${DOMAIN_SUFFIX}` resolve through `deploys.subdomain` as before; any
-other host resolves through a `verified` row in `custom_domains`. Unknown,
-unverified, and revoked hosts are `404`.
+The alias move occurs only after the probe succeeds, so a failed build or
+startup leaves the previously published deploy selected.
 
-Two state machines exist:
+## State machines
 
-- `deploys.status` is user-facing: `pending`, `reserved`, `building`,
-  `provisioning`, `running`, and terminal states.
-- `deploys.current_step` tracks saga internals and includes `built`.
+deploys.status is the user-visible lifecycle:
 
-Build completion is a Redis event. It is not a user-facing `status='built'`.
+~~~text
+pending -> building -> provisioning -> running
+   \           \            \
+    +-----------+------------+-> failed
+running -> stopped
+~~~
+
+deploy_sagas.current_step is the durable orchestration state:
+
+~~~text
+pending -> building -> built -> provisioning -> running
+                              \-> compensating -> compensated
+                               \----------------> failed
+~~~
+
+Built exists only in saga state. It is not a public deploy status.
+
+## Failure and restart behavior
+
+Permanent failures compensate immediately: a partially started container is
+removed and the deploy receives a user-visible reason. A retry budget for
+transient BuildKit, network and Trivy failures is not implemented.
+
+Queues and live events are in memory. At process startup, sagas interrupted
+during a build are rewound to pending, and a periodic sweeper resumes old
+non-terminal rows. An uploaded archive or short-lived Git credential may no
+longer exist after a restart; in that case the resumed deploy fails explicitly
+rather than disappearing.
+
+## Expiry and deletion
+
+The watchdog finds expired or excess deploys through the control repository and
+stops their stored container IDs. A deploy selected by a verified domain alias
+is not reclaimed. Retention and idle-alias rules are controlled by
+DEPLOY_TTL_MIN, DEPLOY_TTL_MAX_MIN, ALIAS_IDLE_GC_DAYS and
+PROJECT_DEPLOY_RETENTION.
+
+Stopping or deleting a deploy does not currently remove its Docker image. Image
+garbage collection is a known disk-growth gap.
+
+The data model behind publishing is documented in
+[projects, deploys and routing](deployment-model.md).

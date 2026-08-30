@@ -1,91 +1,132 @@
 # snaphost-self
 
-Self-hosted deployment platform for one operator. Point it at a repository or a
-local folder, get a running site with a domain, a database, and authentication —
-on the cheapest VPS tier a provider sells.
+Self-hosted deployment platform for one operator. Give it a Git repository or
+an uploaded archive and it builds a container image, starts the application on
+the same Docker host, verifies that it answers on the injected port, and exposes
+it through the operator panel.
 
-Working name. Forked from [SnapHost](https://github.com/justaba/snaphost), a
-multi-tenant hosting SaaS, on 2026-08-29.
+The project was forked from [SnapHost](https://github.com/justaba/snaphost), a
+multi-tenant hosting SaaS, on 2026-08-29. The SaaS control plane has since been
+collapsed into one Go process; the completed work and its measurements are in
+[Task 1](docs/tasks/completed/0001-collapse-to-one-binary.md).
 
 ## Status
 
-**Mid-refactor. Not installable yet.**
+The single-binary architecture is implemented and tested. The repository is
+usable for development, but it is **not yet a generally installable self-hosted
+product**: the production manifest and SSH deployment workflow still describe
+the original operator's hosts. Installation, upgrades and a supported release
+contract are [Task 7](docs/tasks/planned/0007-install-and-upgrade.md).
 
-The fork inherited a working build and runtime pipeline and is being reduced to
-one binary — see [Task 1](docs/tasks/active/0001-collapse-to-one-binary.md) for
-what is done and what is not. Until it lands, the tree still starts as the
-inherited multi-service stack.
+Current limitations that matter operationally:
 
-## Why not Dokploy or Coolify
+- deployed sites are previews with a TTL; long-lived environments and volumes
+  are future work;
+- Caddy is the chosen production edge, but the Docker/Caddy integration and
+  installation flow are not implemented yet; local development uses Traefik;
+- Docker images are not reclaimed when a deploy is removed or expires;
+- managed databases and application authentication are not implemented.
 
-Both want ~2 GB before they host anything, because both carry a language runtime
-and a framework plus PostgreSQL, Redis, and a reverse proxy. This targets under
-170 MB idle by being a single static Go binary with an embedded store, so the
-memory goes to the sites instead of the panel.
+## Architecture
 
-What it keeps from the fork and they do not have: a build pipeline that clones or
-unpacks an untrusted project, generates a Dockerfile with an LLM when the repo
-has none, and refuses to report a deploy healthy until something actually answers
-on the injected port.
+The application is one Go process with an embedded React panel and SQLite
+store. Redis, PostgreSQL, the local registry, Supabase, Terraform and the cloud
+runtime were removed.
+
+```text
+browser / API client
+        |
+        v
+  snaphost binary
+  + auth and RBAC
+  + projects, deploys, domains and saga
+  + build pipeline and AI Dockerfile generation
+  + Docker runtime and watchdog
+  + embedded React panel
+        |                 |
+        v                 v
+    BuildKit         Docker daemon
+                          |
+                          v
+                    user containers
+```
+
+The local Compose topology has three services: `snaphost`, rootless `buildkitd`
+and Traefik. The production manifest has `snaphost` and `buildkitd`; its edge is
+currently a host prerequisite rather than part of the product.
+
+See [the architecture overview](docs/architecture/overview.md) and
+[deployment lifecycle](docs/architecture/deploy-lifecycle.md) for the detailed
+contract.
 
 ## Requirements
 
-- Docker 24+
-- Go 1.25+ (to build)
+- Docker 24+ with Compose v2
+- Go version from `snaphost-backend/go.mod` for local Go builds
+- Node.js and pnpm 11 only when developing the panel outside the image build
 
 ## Project structure
 
-```
+```text
 snaphost-self/
-├── snaphost-backend/      one Go module
-│   ├── cmd/               snaphost, plus two migrators
+├── snaphost-backend/
+│   ├── cmd/
+│   │   ├── snaphost/          application entry point
+│   │   └── control-migrate/   one-shot SQLite migrator
 │   ├── internal/
-│   │   ├── gateway/       JWT auth, RBAC, rate limiting
-│   │   ├── control/       deploys, projects, domains, saga orchestration
-│   │   ├── builder/       clone/unpack → Dockerfile → BuildKit → image
-│   │   ├── runtime/       starts containers on Docker, probes them, enforces TTL
-│   │   ├── ai/            generates a Dockerfile when the repo has none
-│   │   └── shared/        webhook auth and Dockerfile validation
-│   └── docker/            the image
-├── infra/                 Compose manifests, Caddy, deploy and backup scripts
-└── docs/
-    ├── architecture/      how the system works
-    ├── decisions/         ADRs worth keeping from upstream
-    ├── operations/        runbooks
-    ├── tasks/             current work
-    └── inherited/         the SaaS task catalog this forked from
+│   │   ├── gateway/           HTTP middleware, RBAC and WebSocket logs
+│   │   ├── control/           auth, projects, deploys, domains and saga
+│   │   ├── builder/           clone/unpack, detection, build and scan
+│   │   ├── runtime/           Docker lifecycle, probe and watchdog
+│   │   ├── ai/                templates and LLM fallback
+│   │   ├── panel/             embedded panel assets
+│   │   └── wiring/            direct adapters between packages
+│   ├── web/                   React/Vite operator panel
+│   └── docker/                application image
+├── infra/                     Compose, deployment and backup tooling
+└── docs/                      architecture, operations, decisions and tasks
 ```
 
-The platform is one process. What is left beside it in Compose is
-infrastructure it does not implement itself — PostgreSQL, Redis, BuildKit and
-a registry. [Task 1](docs/tasks/active/0001-collapse-to-one-binary.md) removes
-Redis and the registry too.
+## Local development
 
-## Commands
+```bash
+cp infra/.env.example infra/.env
+make dev
+make logs-svc SVC=snaphost
+```
 
+On the first start, the application creates the operator account and writes a
+generated one-time password to the `snaphost` container log. Open
+`http://localhost:8080` and sign in with `OPERATOR_EMAIL` (by default
+`operator@localhost`) and that password.
+
+For panel hot reload, keep the stack running and start:
+
+```bash
+make dev-panel
 ```
-make dev-backend    bring the stack up locally
-make test           go test ./... across the module
-make lint           golangci-lint (needs v1.64.x)
-make logs           tail compose logs
+
+Then open `http://localhost:5173`. Vite proxies `/api` and `/ws` to the Go
+process.
+
+Useful commands:
+
+```text
+make dev                 app + BuildKit + Traefik
+make dev-backend         app + BuildKit
+make build               build the application image and embedded panel
+make test                Go tests
+make lint                Go lint
+make test-panel          Vitest suite
+make lint-panel          ESLint
+make logs                follow Compose logs
+make clean               remove containers, networks and local volumes
 ```
+
+`make clean` deletes the local SQLite and BuildKit volumes.
 
 ## Relationship to upstream
 
-`git remote` is deliberately empty: this repository must never push to SnapHost.
-
-**The history starts here.** Upstream's 128 commits are not carried over — they
-belong to a different product, and they are still in the SnapHost repository
-for anyone who needs them. The initial commit is the upstream tree as it stood
-at `c07c252d`, so every commit after it is a real diff showing what this fork
-removed and why.
-
-The cost is `git blame`: on the build and runtime paths it now stops at the
-initial commit rather than reaching the production incidents that shaped them —
-the `PORT` liveness probe, the registry authentication boundary, the Dockerfile
-cache schema bump. Those are documented instead, in
-[docs/inherited/](docs/inherited/), which exists for exactly this reason.
-
-Upstream fixes are not automatically relevant here. The two products diverge on
-their first premise: SnapHost runs other people's code and charges for it; this
-runs the operator's own and charges nobody.
+This repository is a separate product and has no configured upstream push
+remote. Upstream-specific documentation is not shipped in this tree; repository
+history remains available through Git when old context is needed.
