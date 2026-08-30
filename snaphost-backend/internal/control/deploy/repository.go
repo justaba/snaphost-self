@@ -313,21 +313,57 @@ const updateStatusSQL = `UPDATE deploys
      updated_at = ?
  WHERE id = ?`
 
-// SetRunning transitions a deploy to running status with its runtime details.
+// SetRunning atomically publishes the runtime details to both durable views of
+// a deployment. The deploy row is what the API and router read; the saga row is
+// what resume and compensation read. Committing only one of them can either
+// expose an untracked container or make a saga terminal while the deploy still
+// appears to be provisioning.
 func (r *Repository) SetRunning(ctx context.Context, deployID uuid.UUID, imageRef, endpointURL, subdomain, containerID string, ttlExpiresAt time.Time) error {
-	result, err := r.db.ExecContext(ctx,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin set deploy running: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := controldb.Now()
+	result, err := tx.ExecContext(ctx,
 		`UPDATE deploys
 		 SET status = 'running', image_ref = ?, endpoint_url = ?, subdomain = ?,
 		     container_id = ?, ttl_expires_at = ?, updated_at = ?
-		 WHERE id = ?`,
+		 WHERE id = ? AND status IN ('building', 'provisioning', 'running')`,
 		imageRef, endpointURL, subdomain, containerID,
-		controldb.NullTime(ttlExpiresAt), controldb.Now(), deployID.String(),
+		controldb.NullTime(ttlExpiresAt), now, deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("set deploy running: %w", err)
 	}
 	if rowsAffected(result) == 0 {
-		return fmt.Errorf("deploy not found: %s", deployID)
+		return fmt.Errorf("deploy not found or not runnable: %s", deployID)
+	}
+
+	// Keep an already-finalized saga terminal on an idempotent call. For the
+	// normal built -> provisioning transition, persist the runtime handle before
+	// returning success so a crash can resume at stepFinalize without starting a
+	// second container.
+	result, err = tx.ExecContext(ctx,
+		`UPDATE deploy_sagas
+		 SET current_step = CASE WHEN current_step = 'running' THEN 'running' ELSE 'provisioning' END,
+		     container_running = 1,
+		     container_id = ?,
+		     endpoint_url = ?,
+		     started_at = COALESCE(started_at, ?)
+		 WHERE deploy_id = ? AND current_step IN ('built', 'provisioning', 'running')`,
+		containerID, endpointURL, now, deployID.String(),
+	)
+	if err != nil {
+		return fmt.Errorf("record running container in saga: %w", err)
+	}
+	if rowsAffected(result) == 0 {
+		return fmt.Errorf("runnable saga not found: %s", deployID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set deploy running: %w", err)
 	}
 	return nil
 }

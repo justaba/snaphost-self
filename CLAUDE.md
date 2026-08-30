@@ -221,7 +221,9 @@ Orchestrated in `internal/control/saga`, in-process, over a buffered channel.
    matches — builds with BuildKit, loads the image into Docker, and runs Trivy
    against that local image.
 3. On success the runtime starts the container, attaches it to `snaphost-net`,
-   waits for the liveness probe, and reports the URL.
+   waits for the liveness probe, and atomically stores the running deploy plus
+   saga runtime handle before reporting the URL. A failed final write stops the
+   uncommitted container and leaves the deploy retryable.
 4. Failure at any step compensates and marks the deploy failed with a reason.
 
 Interrupted sagas are rewound at startup: `RewindInterruptedBuilds` resets rows

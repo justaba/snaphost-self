@@ -63,8 +63,11 @@ func (p *recordingPublisher) Publish(deployID string, line logs.LogLine) error {
 func (p *recordingPublisher) Close() error { return nil }
 
 type deployBilling struct {
-	info *billing.DeployInfo
-	err  error
+	info                 *billing.DeployInfo
+	err                  error
+	setRunningErr        error
+	statuses             []string
+	setRunningContextErr *error
 }
 
 func (b *deployBilling) GetDeploy(context.Context, string) (*billing.DeployInfo, error) {
@@ -73,20 +76,29 @@ func (b *deployBilling) GetDeploy(context.Context, string) (*billing.DeployInfo,
 	}
 	return b.info, nil
 }
-func (b *deployBilling) UpdateDeployStatus(context.Context, string, string, *string) error {
+func (b *deployBilling) UpdateDeployStatus(_ context.Context, _ string, status string, _ *string) error {
+	b.statuses = append(b.statuses, status)
 	return nil
 }
-func (b *deployBilling) SetDeployRunning(context.Context, string, billing.SetRunningRequest) error {
-	return nil
+func (b *deployBilling) SetDeployRunning(ctx context.Context, _ string, _ billing.SetRunningRequest) error {
+	if b.setRunningContextErr != nil {
+		*b.setRunningContextErr = ctx.Err()
+	}
+	return b.setRunningErr
 }
 
 type fakeBackend struct {
-	runErr    error
-	stopErr   error
-	stopCalls *int
+	runErr         error
+	stopErr        error
+	stopCalls      *int
+	stopContextErr *error
+	onRun          func()
 }
 
 func (b fakeBackend) Run(context.Context, backend.RunRequest) (*backend.RunResult, error) {
+	if b.onRun != nil {
+		b.onRun()
+	}
 	if b.runErr != nil {
 		return nil, b.runErr
 	}
@@ -98,9 +110,12 @@ func (b fakeBackend) Run(context.Context, backend.RunRequest) (*backend.RunResul
 		TTLExpiresAt: now.Add(time.Minute),
 	}, nil
 }
-func (b fakeBackend) Stop(context.Context, string, string) error {
+func (b fakeBackend) Stop(ctx context.Context, _ string, _ string) error {
 	if b.stopCalls != nil {
 		(*b.stopCalls)++
+	}
+	if b.stopContextErr != nil {
+		*b.stopContextErr = ctx.Err()
 	}
 	return b.stopErr
 }
@@ -416,6 +431,56 @@ func TestDeployPublishesBackendFailureLog(t *testing.T) {
 	}
 
 	assertLogContains(t, pub.lines, "backend run failed: provider failed with token=[redacted]")
+}
+
+func TestDeployRollsBackContainerWhenRunningStateCannotPersist(t *testing.T) {
+	pub := &recordingPublisher{}
+	stopCalls := 0
+	var stopContextErr error
+	var persistContextErr error
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	bill := &deployBilling{
+		info:                 deployableInfo(),
+		setRunningErr:        errors.New("database is busy"),
+		setRunningContextErr: &persistContextErr,
+	}
+	svc := NewService(
+		fakeBackend{
+			stopCalls:      &stopCalls,
+			stopContextErr: &stopContextErr,
+			onRun:          cancelRequest,
+		},
+		bill,
+		pub,
+		strictCfg(),
+		zap.NewNop(),
+	)
+
+	result, err := svc.Deploy(requestCtx, req())
+	if result != nil {
+		t.Fatalf("Deploy() result = %#v, want nil", result)
+	}
+	if !errors.Is(err, ErrTransient) {
+		t.Fatalf("Deploy() error = %v, want transient", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("backend Stop calls = %d, want 1", stopCalls)
+	}
+	if persistContextErr != nil {
+		t.Fatalf("SetDeployRunning inherited cancelled request context: %v", persistContextErr)
+	}
+	if stopContextErr != nil {
+		t.Fatalf("cleanup inherited cancelled request context: %v", stopContextErr)
+	}
+	if got, want := strings.Join(bill.statuses, ","), "provisioning,building"; got != want {
+		t.Fatalf("status updates = %q, want %q", got, want)
+	}
+	assertLogContains(t, pub.lines, "could not persist the running deployment")
+	for _, line := range pub.lines {
+		if strings.Contains(line.Text, "public URL ready") {
+			t.Fatalf("uncommitted deployment was published as ready: %q", line.Text)
+		}
+	}
 }
 
 func TestUserVisibleErrorCompactsAndTruncates(t *testing.T) {

@@ -31,6 +31,11 @@ type BillingClient interface {
 // returns ErrAlreadyRunning so the HTTP layer can map it to 409.
 const statusRunning = "running"
 
+const (
+	runningPersistenceTimeout = 10 * time.Second
+	runningCleanupTimeout     = 30 * time.Second
+)
+
 // deployableStatuses lists statuses in which the saga is allowed to invoke
 // runner-svc for a deploy. Currently only "building" — saga moves the deploy
 // into this status at reservation time and calls runner-svc concurrently with
@@ -90,9 +95,9 @@ func NewService(b backend.Backend, billingClient BillingClient, pub logs.Publish
 	}
 }
 
-// Deploy runs a container for the given deploy request. On success it updates
-// billing status to "running" and starts a background log-forwarding goroutine.
-// On failure it updates billing status to "failed" with the error reason.
+// Deploy runs a container for the given deploy request. On success it persists
+// the control-plane running state and starts a background log-forwarding
+// goroutine. On failure it stores the failed status and reason.
 func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
 	s.publishLog(req.DeployID, "runtime-startup", "deploy accepted by runner")
 	if err := s.validateDeployRequest(ctx, req); err != nil {
@@ -152,16 +157,27 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult,
 		return nil, err
 	}
 
-	// Update billing to running.
-	if err := s.billing.SetDeployRunning(ctx, req.DeployID, billing.SetRunningRequest{
+	// Persist the successful side effect on a fresh bounded context. The client
+	// can disconnect after the container starts; cancellation of that request
+	// must not prevent the control plane from recording what now exists.
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), runningPersistenceTimeout)
+	err = s.billing.SetDeployRunning(persistCtx, req.DeployID, billing.SetRunningRequest{
 		ImageRef:     req.ImageRef,
 		EndpointURL:  result.EndpointURL,
 		Subdomain:    subdomain,
 		ContainerID:  result.ContainerID,
 		TTLExpiresAt: result.TTLExpiresAt,
-	}); err != nil {
-		s.log.Error("failed to report running status to billing", zap.Error(err))
-		// Container is running but billing doesn't know — log but don't fail the deploy.
+	})
+	persistCancel()
+	if err != nil {
+		s.log.Error("failed to persist running deployment", zap.Error(err))
+		s.publishLogLevel(req.DeployID, "runtime-startup",
+			"could not persist the running deployment; stopping the uncommitted container", "error")
+		persistErr := fmt.Errorf("persist running deployment: %w", err)
+		if cleanupErr := s.rollbackUncommittedRuntime(req.DeployID, result.ContainerID); cleanupErr != nil {
+			persistErr = errors.Join(persistErr, cleanupErr)
+		}
+		return nil, wrapTransient(persistErr)
 	}
 
 	s.publishLog(req.DeployID, "runtime-startup", "public URL ready: "+result.EndpointURL)
@@ -185,6 +201,35 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult,
 		EndpointURL: result.EndpointURL,
 		ContainerID: result.ContainerID,
 	}, nil
+}
+
+// rollbackUncommittedRuntime reverses a container start whose durable running
+// state could not be committed. It deliberately does not inherit the request
+// context: by this point the side effect exists even if the caller has gone
+// away, so cleanup has to get its own bounded opportunity to finish.
+func (s *Service) rollbackUncommittedRuntime(deployID, containerID string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), runningCleanupTimeout)
+	defer cancel()
+
+	if err := s.backend.Stop(cleanupCtx, deployID, containerID); err != nil {
+		s.log.Error("failed to stop uncommitted container",
+			zap.String("deploy_id", deployID),
+			zap.String("container_id", containerID),
+			zap.Error(err),
+		)
+		return fmt.Errorf("stop uncommitted container: %w", err)
+	}
+
+	// Strict validation only permits a fresh run from building. Reset the
+	// transient provisioning marker after the container has actually gone.
+	if err := s.billing.UpdateDeployStatus(cleanupCtx, deployID, "building", nil); err != nil {
+		s.log.Error("failed to restore deploy status after running-state failure",
+			zap.String("deploy_id", deployID),
+			zap.Error(err),
+		)
+		return fmt.Errorf("restore deploy status after cleanup: %w", err)
+	}
+	return nil
 }
 
 // probeFailureReason is what the user sees when the probe finds nothing

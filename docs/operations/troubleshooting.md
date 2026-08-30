@@ -105,12 +105,17 @@ Verification alone does not make the site reachable. The single-binary
 Docker/Caddy routing path is incomplete; see
 [custom domains](custom-domains.md).
 
-## Deploy and saga disagree
+## Running-state persistence fails
 
-If a container is running but the API still shows provisioning, inspect logs
-around failed to report running status. Runtime currently logs that persistence
-failure and returns success, so saga and deploy state can diverge. Do not move a
-domain alias until the deploy row is confirmed running.
+The transition to a live deployment updates deploys and deploy_sagas in one
+SQLite transaction. If that transaction fails, runtime returns a transient
+error, stops the uncommitted container and restores the deploy to building so
+the saga can retry. It does not publish the URL as ready.
+
+Inspect logs around failed to persist running deployment, failed to stop
+uncommitted container and failed to restore deploy status. The latter two mean
+automatic cleanup did not complete and require checking the container and
+deploy row before re-enqueueing the saga.
 
 ## TTL cleanup or disk use
 

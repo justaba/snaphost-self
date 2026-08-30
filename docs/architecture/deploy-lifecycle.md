@@ -35,8 +35,9 @@ Images are named snaphost/proj-<owner-hash>:<deploy-id>. No push or pull occurs.
    detected application port. A started container that does not answer is
    stopped and the deploy fails.
 10. Runtime stores the container identifier, endpoint, generated subdomain and
-    expiry. The saga records terminal success and best-effort repoints verified
-    custom-domain aliases for the project to the new deploy.
+    expiry while moving the saga to provisioning in the same SQLite
+    transaction. The saga then records terminal success and best-effort
+    repoints verified custom-domain aliases for the project to the new deploy.
 
 The alias move occurs only after the probe succeeds, so a failed build or
 startup leaves the previously published deploy selected.
@@ -67,6 +68,12 @@ Built exists only in saga state. It is not a public deploy status.
 Permanent failures compensate immediately: a partially started container is
 removed and the deploy receives a user-visible reason. A retry budget for
 transient BuildKit, network and Trivy failures is not implemented.
+
+If the final running-state transaction fails, runtime treats it as transient,
+stops the container and restores the deploy to building. Both persistence and
+cleanup use bounded contexts independent of a disconnected caller, so request
+cancellation cannot leave a successful side effect unrecorded merely by
+cancelling the final database write.
 
 Queues and live events are in memory. At process startup, sagas interrupted
 during a build are rewound to pending, and a periodic sweeper resumes old

@@ -99,6 +99,3 @@ Do not rely on the inherited router-svc or cloud-gateway documentation.
 - Caddy custom-domain routing and portable TLS installation are incomplete.
 - Real build memory on a 1 GB host and a restore from encrypted off-host backup
   have not been proven.
-- A failure while persisting the final running deploy state is currently logged
-  by runtime without failing the operation, which can leave deploy and saga
-  state inconsistent.
