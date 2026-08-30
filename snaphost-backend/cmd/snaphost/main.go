@@ -71,6 +71,7 @@ import (
 	"snaphost/internal/gitcreds"
 	"snaphost/internal/logbus"
 	"snaphost/internal/memlimit"
+	"snaphost/internal/panel"
 	runtimebackend "snaphost/internal/runtime/backend"
 	runtimedocker "snaphost/internal/runtime/backend/docker"
 	runtimeconfig "snaphost/internal/runtime/config"
@@ -505,6 +506,24 @@ func buildEngine(
 	r.Use(middleware.CORS())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger(log))
+
+	// The panel, before authentication and before every API route. It only
+	// answers GET and HEAD for paths outside the API prefixes, so nothing below
+	// is shadowed — and serving the login page cannot require a session.
+	//
+	// A binary built without running the frontend build carries no panel. That
+	// is a supported state rather than a broken one: the API is unaffected, and
+	// this says so once at startup instead of refusing to start.
+	switch assets, err := panel.Assets(); {
+	case err == nil:
+		r.Use(panel.Middleware(assets))
+		log.Info("panel served from this binary")
+	case errors.Is(err, panel.ErrNotBuilt):
+		log.Warn("no panel in this binary; the API is unaffected", zap.Error(err))
+	default:
+		return nil, err
+	}
+
 	r.Use(middleware.Auth(sessions, &wiring.KeyVerifier{Repo: ctl.apikeyRepo, Log: log}))
 	r.Use(middleware.Casbin(enforcer))
 	r.Use(middleware.Enrich())

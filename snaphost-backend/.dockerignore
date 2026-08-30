@@ -1,0 +1,26 @@
+# The build context is this module. Everything below is either produced by a
+# build or produced by a build machine, and shipping it into the context makes
+# every image build slower and less reproducible.
+#
+# web/node_modules is the reason this file exists at all: it is hundreds of
+# megabytes, it is reinstalled from the lockfile inside the panel stage anyway,
+# and a host-installed tree can carry platform-specific binaries that do not
+# run in the image.
+web/node_modules
+web/dist
+web/*.tsbuildinfo
+
+# The panel build output. The image builds it from source in its own stage, so
+# a copy left on the host must not leak in and silently become what ships.
+internal/panel/dist
+
+# Local binaries.
+snaphost
+snaphost.exe
+*.test
+
+# Local state.
+*.db
+*.db-wal
+*.db-shm
+.env

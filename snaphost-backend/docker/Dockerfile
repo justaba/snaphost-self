@@ -14,7 +14,34 @@
 # Build context is snaphost-backend/, the module root.
 
 # ---------------------------------------------------------------------------
-# Stage 1: build
+# Stage 1: panel
+# ---------------------------------------------------------------------------
+#
+# The operator UI is compiled into the Go binary, so it has to exist before
+# the Go stage runs. Building it here rather than trusting a directory on the
+# host is the whole point: an image must not ship whatever happened to be
+# lying in internal/panel/dist on somebody's workstation.
+#
+# Dependencies are installed from the lockfile in their own layer, before the
+# sources are copied, so editing a component does not reinstall node_modules.
+FROM node:22-bookworm-slim AS panel
+
+WORKDIR /panel
+
+RUN corepack enable
+
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY web/ ./
+
+# vite.config.ts writes to ../internal/panel/dist, which is where the Go
+# stage expects it — the path is the contract between the two, and it is set
+# there rather than here so that a local build and an image build agree.
+RUN pnpm build
+
+# ---------------------------------------------------------------------------
+# Stage 2: build
 # ---------------------------------------------------------------------------
 FROM golang:1.25-bookworm AS builder
 
@@ -25,6 +52,10 @@ RUN go mod download
 
 COPY . .
 
+# After the sources, so it is not overwritten by the .gitkeep the repository
+# carries to make //go:embed compile in a fresh checkout.
+COPY --from=panel /internal/panel/dist ./internal/panel/dist
+
 RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/snaphost ./cmd/snaphost
 # The migrator stays a separate binary: a deployment may need to apply a
 # schema change as its own step, before the service that would otherwise do it
@@ -32,7 +63,7 @@ RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/snaphost ./cmd/snaphost
 RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/control-migrate ./cmd/control-migrate
 
 # ---------------------------------------------------------------------------
-# Stage 2: runtime
+# Stage 3: runtime
 # ---------------------------------------------------------------------------
 FROM debian:12-slim
 
