@@ -253,16 +253,37 @@ func (c *Client) classifyError(err error) error {
 		return fmt.Errorf("%w: %v", ErrTimeout, err)
 	}
 
+	// The client library reports a failure two ways. It parses the provider's
+	// JSON error body into an APIError when it can, and falls back to a bare
+	// RequestError when it cannot — which is what a provider returns for a
+	// rejected key, since there is nothing to say about the request.
+	//
+	// Only APIError used to be classified. A 403 therefore skipped the auth
+	// branch below and surfaced as "upstream error: error, status code: 403,
+	// message:" — the provider's empty body, verbatim, telling the operator
+	// nothing about the one thing that was wrong.
+	var status int
+	var detail string
+
 	var apiErr *openai.APIError
-	if errors.As(err, &apiErr) {
-		switch {
-		case apiErr.HTTPStatusCode == http.StatusTooManyRequests:
-			return fmt.Errorf("%w: %s", ErrRateLimited, apiErr.Message)
-		case apiErr.HTTPStatusCode == http.StatusUnauthorized || apiErr.HTTPStatusCode == http.StatusForbidden:
-			return fmt.Errorf("%w: auth failed (%d)", ErrUpstream, apiErr.HTTPStatusCode)
-		case apiErr.HTTPStatusCode >= 500:
-			return fmt.Errorf("%w: server error %d: %s", ErrUpstream, apiErr.HTTPStatusCode, apiErr.Message)
-		}
+	var reqErr *openai.RequestError
+	switch {
+	case errors.As(err, &apiErr):
+		status, detail = apiErr.HTTPStatusCode, apiErr.Message
+	case errors.As(err, &reqErr):
+		status = reqErr.HTTPStatusCode
+	}
+
+	switch {
+	case status == http.StatusTooManyRequests:
+		return fmt.Errorf("%w: %s", ErrRateLimited, detail)
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		// Named for what the operator has to do. This platform is self-hosted:
+		// nobody else can look at the account, and the provider's own body is
+		// usually empty here.
+		return fmt.Errorf("%w: the model provider rejected the API key (%d) — check OPENROUTER_API_KEY", ErrUpstream, status)
+	case status >= 500:
+		return fmt.Errorf("%w: server error %d: %s", ErrUpstream, status, detail)
 	}
 
 	return fmt.Errorf("%w: %v", ErrUpstream, err)

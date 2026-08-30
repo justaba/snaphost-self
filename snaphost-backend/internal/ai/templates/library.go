@@ -283,7 +283,14 @@ var Library = []Template{
 			if input.PackageJSON == nil {
 				return false, nil
 			}
-			if _, ok := input.PackageJSON.Dependencies["vite"]; ok {
+			// devDependencies too, and that is where it almost always is:
+			// `npm create vite` puts vite there, so matching only
+			// dependencies missed essentially every Vite project and sent it
+			// to the LLM instead — a paid call to generate a Dockerfile this
+			// template already had.
+			_, inDeps := input.PackageJSON.Dependencies["vite"]
+			_, inDevDeps := input.PackageJSON.DevDependencies["vite"]
+			if inDeps || inDevDeps {
 				return true, map[string]string{
 					"NODE_VERSION": PickNodeVersion(input, nil),
 					"BUILD_CMD":    "npm run build",

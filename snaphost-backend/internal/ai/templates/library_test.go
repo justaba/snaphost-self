@@ -240,3 +240,38 @@ func withoutComments(dockerfile string) string {
 	}
 	return strings.Join(kept, "\n")
 }
+
+// `npm create vite` writes vite into devDependencies, and every project
+// scaffolded that way keeps it there. The matcher looked only at dependencies,
+// so it missed essentially every Vite project — which then fell through to the
+// LLM, paying for a generated Dockerfile that this template already had, and
+// failing outright on an install with no model key.
+func TestViteMatchesWhenViteIsADevDependency(t *testing.T) {
+	var vite Template
+	for _, tmpl := range Library {
+		if tmpl.ID == "vite-react" {
+			vite = tmpl
+			break
+		}
+	}
+	if vite.ID == "" {
+		t.Fatal("vite-react template not found in Library")
+	}
+
+	cases := map[string]ProjectSignals{
+		"devDependencies": {PackageJSON: &PackageJSON{DevDependencies: map[string]string{"vite": "^7.0.0"}}},
+		"dependencies":    {PackageJSON: &PackageJSON{Dependencies: map[string]string{"vite": "^7.0.0"}}},
+	}
+	for name, signals := range cases {
+		t.Run(name, func(t *testing.T) {
+			if matched, _ := vite.Match(signals); !matched {
+				t.Fatalf("vite in %s did not match", name)
+			}
+		})
+	}
+
+	noVite := ProjectSignals{PackageJSON: &PackageJSON{DevDependencies: map[string]string{"rollup": "^4.0.0"}}}
+	if matched, _ := vite.Match(noVite); matched {
+		t.Fatal("a rollup project matched the Vite template")
+	}
+}
