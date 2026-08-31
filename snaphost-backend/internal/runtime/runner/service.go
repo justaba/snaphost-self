@@ -24,6 +24,7 @@ import (
 type BillingClient interface {
 	UpdateDeployStatus(ctx context.Context, deployID string, status string, failureReason *string) error
 	SetDeployRunning(ctx context.Context, deployID string, req billing.SetRunningRequest) error
+	MarkDeployImageDeleted(ctx context.Context, deployID string) error
 	GetDeploy(ctx context.Context, deployID string) (*billing.DeployInfo, error)
 }
 
@@ -47,6 +48,12 @@ const (
 // for the full allowed list.
 var deployableStatuses = map[string]bool{
 	"building": true,
+	// A restart of a stopped deploy claims the row by moving it here before
+	// it calls in, so the runtime sees 'provisioning' rather than 'stopped'.
+	// The claim is what stops two clicks starting two containers for a row
+	// that records one, and it means this check still refuses a deploy nobody
+	// has claimed.
+	"provisioning": true,
 }
 
 // DeployRequest is the input for Service.Deploy, coming from the HTTP handler.
@@ -153,7 +160,7 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult,
 	// answered every request with UserCodeError. Nothing may report running
 	// before something answers on the port we injected.
 	if err := s.probeRuntime(ctx, req, result); err != nil {
-		s.teardownAfterProbeFailure(ctx, req.DeployID, result.ContainerID)
+		s.teardownAfterProbeFailure(ctx, req.DeployID, result.ContainerID, req.ImageRef)
 		return nil, err
 	}
 
@@ -278,11 +285,18 @@ func (s *Service) probeRuntime(ctx context.Context, req DeployRequest, result *b
 // records the failure, so the saga's compensation only has to refund. Both
 // steps are best-effort: the deploy is already failing, and the watchdog and
 // the saga's own status write are the backstops.
-func (s *Service) teardownAfterProbeFailure(ctx context.Context, deployID, containerID string) {
+func (s *Service) teardownAfterProbeFailure(ctx context.Context, deployID, containerID, imageRef string) {
 	if err := s.backend.Stop(ctx, deployID, containerID); err != nil {
 		s.log.Error("failed to stop container after probe failure",
 			zap.String("deploy_id", deployID),
 			zap.String("container_id", containerID),
+			zap.Error(err),
+		)
+	}
+	if err := s.RemoveImage(ctx, deployID, imageRef); err != nil {
+		s.log.Error("failed to remove image after probe failure",
+			zap.String("deploy_id", deployID),
+			zap.String("image_ref", imageRef),
 			zap.Error(err),
 		)
 	}
@@ -293,11 +307,19 @@ func (s *Service) teardownAfterProbeFailure(ctx context.Context, deployID, conta
 	}
 }
 
-// Undeploy stops a running deployment and updates billing status.
+// Undeploy stops a running deployment and records the stopped status.
+//
+// It deliberately leaves the image alone. A stopped deploy is one somebody
+// turned off or whose TTL ran out, and Start brings it back by re-running that
+// image — seconds instead of a rebuild. Releasing it here would make every
+// stop irreversible, which is the whole reason the image sweep skips 'stopped'
+// and takes 'failed' and 'deleted' instead. Deleting the deploy is what
+// releases the disk, and the retention sweep is what eventually deletes an
+// old one.
 func (s *Service) Undeploy(ctx context.Context, deployID, containerID string) error {
 	s.publishLog(deployID, "runtime-shutdown", "stopping deployment")
 
-	if err := s.validateUndeployRequest(ctx, deployID, containerID); err != nil {
+	if _, err := s.validateUndeployRequest(ctx, deployID, containerID); err != nil {
 		s.publishLogLevel(deployID, "runtime-shutdown", "stop rejected: "+userVisibleError(err), "error")
 		return err
 	}
@@ -311,13 +333,11 @@ func (s *Service) Undeploy(ctx context.Context, deployID, containerID string) er
 		)
 		return fmt.Errorf("stop container: %w", err)
 	}
-
-	// Report stopped to billing.
 	if err := s.billing.UpdateDeployStatus(ctx, deployID, "stopped", nil); err != nil {
 		s.log.Warn("failed to report stopped status to billing", zap.Error(err))
 	}
 
-	s.publishLog(deployID, "runtime-shutdown", "stopped cleanly")
+	s.publishLog(deployID, "runtime-shutdown", "stopped cleanly, image kept for restart")
 
 	s.log.Info("undeploy succeeded",
 		zap.String("deploy_id", deployID),
@@ -327,22 +347,44 @@ func (s *Service) Undeploy(ctx context.Context, deployID, containerID string) er
 	return nil
 }
 
-func (s *Service) validateUndeployRequest(ctx context.Context, deployID, containerID string) error {
+// RemoveImage idempotently releases one deploy artifact and records that fact
+// only after the backend confirms it is absent.
+func (s *Service) RemoveImage(ctx context.Context, deployID, imageRef string) error {
+	imageRef = strings.TrimSpace(imageRef)
+	if imageRef == "" {
+		return nil
+	}
+	if err := s.backend.RemoveImage(ctx, imageRef); err != nil {
+		s.log.Error("failed to remove deploy image",
+			zap.String("deploy_id", deployID),
+			zap.String("image_ref", imageRef),
+			zap.Error(err),
+		)
+		return fmt.Errorf("remove deploy image: %w", err)
+	}
+	if err := s.billing.MarkDeployImageDeleted(ctx, deployID); err != nil {
+		return wrapTransient(fmt.Errorf("record deploy image cleanup: %w", err))
+	}
+	s.log.Info("deploy image removed", zap.String("deploy_id", deployID), zap.String("image_ref", imageRef))
+	return nil
+}
+
+func (s *Service) validateUndeployRequest(ctx context.Context, deployID, containerID string) (*billing.DeployInfo, error) {
 	info, err := s.billing.GetDeploy(ctx, deployID)
 	if err != nil {
 		if errors.Is(err, billing.ErrDeployNotFound) {
-			return &ValidationError{Err: errors.New("deploy not found in billing")}
+			return nil, &ValidationError{Err: errors.New("deploy not found in billing")}
 		}
-		return wrapTransient(fmt.Errorf("get deploy from billing: %w", err))
+		return nil, wrapTransient(fmt.Errorf("get deploy from billing: %w", err))
 	}
 
 	if strings.TrimSpace(info.ContainerID) == "" {
-		return &ValidationError{Err: errors.New("deploy has no stored container mapping")}
+		return nil, &ValidationError{Err: errors.New("deploy has no stored container mapping")}
 	}
 	if info.ContainerID != containerID {
-		return &ValidationError{Err: errors.New("container_id does not match billing deploy mapping")}
+		return nil, &ValidationError{Err: errors.New("container_id does not match billing deploy mapping")}
 	}
-	return nil
+	return info, nil
 }
 
 // StopExpired is used by runner-watchdog for TTL cleanup. It publishes

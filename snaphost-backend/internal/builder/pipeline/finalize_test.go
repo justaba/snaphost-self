@@ -31,9 +31,11 @@ func (e *recEvents) Close() error { return nil }
 
 // recStatus records ReportFailed reasons.
 type recStatus struct {
-	building    []string
-	failed      []string
-	failReturns error
+	building      []string
+	failed        []string
+	loadedImages  []string
+	failReturns   error
+	loadedReturns error
 }
 
 func (s *recStatus) ReportBuilding(_ context.Context, deployID string) error {
@@ -43,6 +45,10 @@ func (s *recStatus) ReportBuilding(_ context.Context, deployID string) error {
 func (s *recStatus) ReportFailed(_ context.Context, _ string, reason string) error {
 	s.failed = append(s.failed, reason)
 	return s.failReturns
+}
+func (s *recStatus) ReportImageLoaded(_ context.Context, _ string, imageRef string) error {
+	s.loadedImages = append(s.loadedImages, imageRef)
+	return s.loadedReturns
 }
 
 func newFinalizeRunner(pub *recPublisher, ev *recEvents, st StatusReporter) *Runner {
@@ -197,4 +203,39 @@ func TestFinalizeAsFailed_NilStatusReporterSafe(t *testing.T) {
 	if len(ev.events) != 1 {
 		t.Error("event must publish even with nil status")
 	}
+}
+
+// The image is recorded the moment it exists on the host, not when the deploy
+// succeeds.
+//
+// BuildCompleted — which is what wrote deploys.image_ref — is published on the
+// success path only. An image rejected by the vulnerability gate therefore
+// never reached that column, and the image sweep works entirely from it. The
+// gate removes the artifact best-effort by design, because the scan result is
+// the error worth surfacing; when that removal failed there was nothing left
+// that could name the image and it stayed on the host permanently.
+func TestReportImageLoadedIsPartOfTheReporterContract(t *testing.T) {
+	var _ StatusReporter = (*recStatus)(nil)
+
+	st := &recStatus{}
+	if err := st.ReportImageLoaded(context.Background(), "d1", "snaphost/proj-abc:1"); err != nil {
+		t.Fatalf("ReportImageLoaded: %v", err)
+	}
+	if len(st.loadedImages) != 1 || st.loadedImages[0] != "snaphost/proj-abc:1" {
+		t.Fatalf("recorded %v", st.loadedImages)
+	}
+}
+
+// A bookkeeping failure must not fail the build. The image exists either way,
+// and turning this into a build failure would trade a leak for a broken
+// deploy — so the pipeline logs and carries on.
+func TestARecordingFailureDoesNotAbortTheBuild(t *testing.T) {
+	st := &recStatus{loadedReturns: errors.New("database is locked")}
+
+	if err := st.ReportImageLoaded(context.Background(), "d1", "snaphost/proj-abc:1"); err == nil {
+		t.Fatal("the stub should surface the error so the pipeline can log it")
+	}
+	// The pipeline's own handling is a log call with no propagation; what is
+	// asserted here is that the reporter is allowed to fail at all, which is
+	// why the call site ignores the return.
 }

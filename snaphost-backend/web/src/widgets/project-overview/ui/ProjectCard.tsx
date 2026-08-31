@@ -7,8 +7,13 @@ import {
   useUptime,
   type DeploySummary,
 } from '@/entities/deploy';
+import {
+  startDeployMessage,
+  stopDeployMessage,
+  useStartDeploy,
+  useStopDeploy,
+} from '@/features/control-deploy';
 import { useDeleteDeploy } from '@/features/delete-deploy';
-import { useRestartDeploy } from '@/features/monitor-deploy';
 import { Button } from '@/shared/ui/button';
 import { useToast } from '@/shared/ui/toast';
 import styles from './ProjectCard.module.css';
@@ -35,7 +40,8 @@ function parseRepoName(repoUrl: string): string {
 function ProjectCard({ deploy, onOpen }: ProjectCardProps) {
   const { uptime, isLive } = useUptime(deploy.created_at, deploy.status, deploy.stopped_at);
   const deleteMut = useDeleteDeploy();
-  const restartMut = useRestartDeploy();
+  const startMut = useStartDeploy();
+  const stopMut = useStopDeploy();
   const { toast } = useToast();
   const repoName = parseRepoName(deploy.repo_url);
   const inTransition = isTransitionalStatus(deploy.status);
@@ -46,17 +52,30 @@ function ProjectCard({ deploy, onOpen }: ProjectCardProps) {
     e.stopPropagation();
     if (deleteMut.isPending) return;
     deleteMut.mutate(deploy.id, {
-      onSuccess: () => toast('Деплой удалён', 'success'),
+      onSuccess: () => toast('Деплой удалён вместе с образом', 'success'),
       onError: (err) => toast(err.message || 'Не удалось удалить деплой', 'error'),
     });
   };
 
-  const handleRestart = (e: MouseEvent) => {
+  // Stopping and deleting used to be the same call wired to two buttons, so
+  // "Остановить" destroyed the deploy. They are different operations now:
+  // stopping tears the container down and keeps the image so the deploy can
+  // come back, deleting releases the disk and cannot be undone.
+  const handleStop = (e: MouseEvent) => {
     e.stopPropagation();
-    if (restartMut.isPending) return;
-    restartMut.mutate(deploy.id, {
-      onSuccess: () => toast('Деплой перезапущен', 'success'),
-      onError: (err) => toast(err.message || 'Не удалось перезапустить', 'error'),
+    if (stopMut.isPending) return;
+    stopMut.mutate(deploy.id, {
+      onSuccess: () => toast('Деплой остановлен, образ сохранён', 'success'),
+      onError: (err) => toast(stopDeployMessage(err), 'error'),
+    });
+  };
+
+  const handleStart = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (startMut.isPending) return;
+    startMut.mutate(deploy.id, {
+      onSuccess: () => toast('Деплой запущен', 'success'),
+      onError: (err) => toast(startDeployMessage(err), 'error'),
     });
   };
 
@@ -64,7 +83,7 @@ function ProjectCard({ deploy, onOpen }: ProjectCardProps) {
     if (deploy.status === 'running') {
       return (
         <>
-          <Button variant="ghost" size="sm" onClick={handleDelete} loading={deleteMut.isPending}>
+          <Button variant="secondary" size="sm" onClick={handleStop} loading={stopMut.isPending}>
             Остановить
           </Button>
           <Button variant="danger" size="sm" onClick={handleDelete} loading={deleteMut.isPending}>
@@ -73,16 +92,14 @@ function ProjectCard({ deploy, onOpen }: ProjectCardProps) {
         </>
       );
     }
-    if (deploy.status === 'failed' || deploy.status === 'stopped') {
+    // A stopped deploy still has its image, so starting it is a container run
+    // rather than a build. A failed one has no working image at all — the
+    // sweep reclaims those — so there is nothing to start.
+    if (deploy.status === 'stopped') {
       return (
         <>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={handleRestart}
-            loading={restartMut.isPending}
-          >
-            Перезапустить
+          <Button variant="primary" size="sm" onClick={handleStart} loading={startMut.isPending}>
+            Запустить
           </Button>
           <Button variant="danger" size="sm" onClick={handleDelete} loading={deleteMut.isPending}>
             Удалить
@@ -90,9 +107,16 @@ function ProjectCard({ deploy, onOpen }: ProjectCardProps) {
         </>
       );
     }
+    if (deploy.status === 'failed') {
+      return (
+        <Button variant="danger" size="sm" onClick={handleDelete} loading={deleteMut.isPending}>
+          Удалить
+        </Button>
+      );
+    }
     return (
-      <Button variant="ghost" size="sm" disabled>
-        Отменить
+      <Button variant="ghost" size="sm" disabled title="Сборка ещё идёт">
+        В процессе
       </Button>
     );
   };

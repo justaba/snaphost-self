@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { ExternalLink, GitBranch, Globe, Layers } from 'lucide-react';
+import { ExternalLink, GitBranch, Globe, Layers, Trash2 } from 'lucide-react';
 
 import {
   DeployStatusBadge as ProjectStatusBadge,
@@ -14,6 +14,9 @@ export interface ProjectSummaryCardProps {
   project: ProjectGroup;
   /** Verified domains attached to this project, if any. */
   domains: CustomDomain[];
+  /** Deleting the whole project, not one of its builds. Absent for the
+   *  ungrouped legacy deploys, which have no project to delete. */
+  onDelete?: (projectId: string) => void;
 }
 
 function parseRepoName(repoUrl: string): string {
@@ -52,7 +55,7 @@ function publicAddress(
  * 24-hour TTL and per-project retention, several of them are alive at once, and
  * showing each as its own tile made one piece of work look like many.
  */
-function ProjectSummaryCard({ project, domains }: ProjectSummaryCardProps) {
+function ProjectSummaryCard({ project, domains, onDelete }: ProjectSummaryCardProps) {
   const latest = project.deploys[0];
   const running = project.deploys.filter((d) => d.status === 'running').length;
   const { uptime, isLive } = useUptime(latest.created_at, latest.status, latest.stopped_at);
@@ -113,13 +116,26 @@ function ProjectSummaryCard({ project, domains }: ProjectSummaryCardProps) {
             'последняя сборка'
           )}
         </span>
-        <Link
-          to={`/dashboard/projects/${project.projectId}`}
-          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-sm font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200 transition-colors"
-        >
-          <Layers size={15} />
-          Открыть
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            to={`/dashboard/projects/${project.projectId}`}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-sm font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200 transition-colors"
+          >
+            <Layers size={15} />
+            Открыть
+          </Link>
+          {onDelete && (
+            <button
+              type="button"
+              onClick={() => onDelete(project.projectId)}
+              aria-label={`Удалить проект ${parseRepoName(latest.repo_url)}`}
+              title="Удалить проект со всеми сборками и доменами"
+              className="inline-flex items-center justify-center h-8 w-8 rounded-lg text-red-600 hover:bg-red-50 transition-colors"
+            >
+              <Trash2 size={15} />
+            </button>
+          )}
+        </div>
       </div>
     </article>
   );

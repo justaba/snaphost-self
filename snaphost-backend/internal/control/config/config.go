@@ -90,6 +90,11 @@ type Config struct {
 	// AliasIdleGCDays is how long an alias-pinned deploy may serve no
 	// traffic before the alias is unpinned and the runtime reclaimed.
 	AliasIdleGCDays int
+	// StoppedImageGraceHours is how long a stopped deploy keeps the image it
+	// can be started from before the watchdog gives up on it and reclaims the
+	// disk. Zero disables the sweep, which means stopped images are kept
+	// indefinitely.
+	StoppedImageGraceHours int
 	// ProjectDeployRetention is how many superseded deploys per project
 	// stay running as rollback targets.
 	ProjectDeployRetention int
@@ -235,6 +240,12 @@ func Load() (*Config, error) {
 		{"DEPLOY_TTL_MAX_MIN", 1440, &cfg.DeployTTLMaxMin},
 		{"ALIAS_IDLE_GC_DAYS", 30, &cfg.AliasIdleGCDays},
 		{"PROJECT_DEPLOY_RETENTION", 3, &cfg.ProjectDeployRetention},
+		// A stopped deploy keeps the image it can be restarted from, which is
+		// what makes starting one a container run rather than a rebuild. The
+		// favour has to expire or every expired preview leaks a build's worth
+		// of disk forever. A week is long enough that restarting last week's
+		// site still works and short enough that the host does not fill.
+		{"STOPPED_IMAGE_GRACE_HOURS", 168, &cfg.StoppedImageGraceHours},
 		{"MAX_DOMAINS_PER_USER", 1, &cfg.MaxDomainsPerUser},
 		{"DOMAIN_ATTACH_PER_HOUR", 5, &cfg.DomainAttachPerHour},
 		{"DOMAIN_VERIFY_INTERVAL_SEC", 60, &cfg.DomainVerifyIntervalSec},

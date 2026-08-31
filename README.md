@@ -24,7 +24,8 @@ Current limitations that matter operationally:
   are future work;
 - Caddy is the chosen production edge, but the Docker/Caddy integration and
   installation flow are not implemented yet; local development uses Traefik;
-- Docker images are not reclaimed when a deploy is removed or expires;
+- the BuildKit cache volume is not reclaimed automatically, although deploy
+  images now are;
 - managed databases and application authentication are not implemented.
 
 ## Architecture

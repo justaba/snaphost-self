@@ -42,10 +42,19 @@ func (f *fakeRepo) UpdateStatus(context.Context, uuid.UUID, string, *string) err
 func (f *fakeRepo) SetRunning(context.Context, uuid.UUID, string, string, string, string, time.Time) error {
 	panic("not used")
 }
-func (f *fakeRepo) MarkDeleted(context.Context, uuid.UUID) error { panic("not used") }
+func (f *fakeRepo) MarkDeleted(context.Context, uuid.UUID) error      { panic("not used") }
+func (f *fakeRepo) MarkImageDeleted(context.Context, uuid.UUID) error { panic("not used") }
 func (f *fakeRepo) FindExpiredWithDetails(context.Context, int) ([]ExpiredDeploy, error) {
 	panic("not used")
 }
+func (f *fakeRepo) FindImagesPendingCleanup(context.Context, int) ([]ImageCleanup, error) {
+	panic("not used")
+}
+func (f *fakeRepo) BeginRestart(context.Context, uuid.UUID, int) (*RestartTarget, error) {
+	panic("not used")
+}
+func (f *fakeRepo) AbandonRestart(context.Context, uuid.UUID, string) error { panic("not used") }
+func (f *fakeRepo) GetSaga(context.Context, uuid.UUID) (*SagaView, error)   { return nil, nil }
 func (f *fakeRepo) FindRouteByHost(ctx context.Context, host string) (*RouteInfo, error) {
 	return f.findRouteByHost(ctx, host)
 }

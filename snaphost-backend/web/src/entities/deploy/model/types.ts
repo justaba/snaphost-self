@@ -22,11 +22,21 @@ export type LogStage =
 
 export type LogLevel = 'info' | 'warn' | 'error';
 
+/** The orchestration state behind a deploy — what actually happened, as
+ *  against `status`, which is what the operator is shown. It is the only
+ *  answer to "why is this stuck": a saga at `compensating` with a retry count
+ *  is a different problem from one that never left `pending`.
+ *
+ *  `current_step` is not a DeployStatus. The saga has `built` and
+ *  `compensating`/`compensated` steps that are not deploy statuses, and typing
+ *  it as one is what made this field look interchangeable with `status`. */
 export interface DeploySaga {
-  current_step: DeployStatus;
+  current_step: string;
   image_built: boolean;
   container_running: boolean;
   retry_count: number;
+  app_port?: number;
+  failure_reason?: string;
 }
 
 export interface DeploySummary {
@@ -47,7 +57,11 @@ export interface DeployDetail extends DeploySummary {
   user_id: string;
   image_ref: string | null;
   failure_reason: string | null;
-  saga: DeploySaga;
+  /** Absent for rows that predate the orchestrator, so the section is
+   *  omitted rather than rendered empty. */
+  saga?: DeploySaga;
+  image_deleted_at?: string | null;
+  container_id?: string | null;
   updated_at: string;
 }
 

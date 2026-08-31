@@ -9,14 +9,7 @@ describe('DeployForm', () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
 
-    render(
-      <DeployForm
-        submitting={false}
-        error={null}
-        onSubmit={onSubmit}
-        onCancel={vi.fn()}
-      />,
-    );
+    render(<DeployForm submitting={false} error={null} onSubmit={onSubmit} onCancel={vi.fn()} />);
 
     await user.type(screen.getByLabelText('URL репозитория'), 'https://github.com/acme/app');
     await user.click(screen.getByRole('button', { name: 'Деплой' }));
@@ -31,14 +24,7 @@ describe('DeployForm', () => {
   it('shows validation feedback for an unsupported repository', async () => {
     const user = userEvent.setup();
 
-    render(
-      <DeployForm
-        submitting={false}
-        error={null}
-        onSubmit={vi.fn()}
-        onCancel={vi.fn()}
-      />,
-    );
+    render(<DeployForm submitting={false} error={null} onSubmit={vi.fn()} onCancel={vi.fn()} />);
 
     await user.type(screen.getByLabelText('URL репозитория'), 'https://example.com/acme/app');
     await user.click(screen.getByRole('button', { name: 'Деплой' }));

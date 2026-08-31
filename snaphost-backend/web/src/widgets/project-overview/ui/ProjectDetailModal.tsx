@@ -2,8 +2,13 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ExternalLink, GitBranch, Layers } from 'lucide-react';
 import { DeployStatusBadge as ProjectStatusBadge, useDeployDetail } from '@/entities/deploy';
+import {
+  startDeployMessage,
+  stopDeployMessage,
+  useStartDeploy,
+  useStopDeploy,
+} from '@/features/control-deploy';
 import { useDeleteDeploy } from '@/features/delete-deploy';
-import { useRestartDeploy } from '@/features/monitor-deploy';
 import { Button } from '@/shared/ui/button';
 import { Modal } from '@/shared/ui/modal';
 import { Spinner } from '@/shared/ui/spinner';
@@ -40,7 +45,8 @@ function ProjectDetailModal({ deployId, isOpen, onClose }: ProjectDetailModalPro
   const [tab, setTab] = useState<TabKey>('stats');
   const detailQuery = useDeployDetail(isOpen ? deployId : null);
   const deleteMut = useDeleteDeploy();
-  const restartMut = useRestartDeploy();
+  const startMut = useStartDeploy();
+  const stopMut = useStopDeploy();
   const { toast } = useToast();
   const deploy = detailQuery.data;
 
@@ -48,18 +54,28 @@ function ProjectDetailModal({ deployId, isOpen, onClose }: ProjectDetailModalPro
     if (!deploy) return;
     deleteMut.mutate(deploy.id, {
       onSuccess: () => {
-        toast('Деплой удалён', 'success');
+        toast('Деплой удалён вместе с образом', 'success');
         onClose();
       },
       onError: (err) => toast(err.message || 'Не удалось удалить', 'error'),
     });
   };
 
-  const handleRestart = () => {
+  // Stopping keeps the image so the deploy can be started again; deleting is
+  // what releases the disk. They used to be the same call.
+  const handleStop = () => {
     if (!deploy) return;
-    restartMut.mutate(deploy.id, {
-      onSuccess: () => toast('Перезапуск начат', 'success'),
-      onError: (err) => toast(err.message || 'Не удалось перезапустить', 'error'),
+    stopMut.mutate(deploy.id, {
+      onSuccess: () => toast('Деплой остановлен, образ сохранён', 'success'),
+      onError: (err) => toast(stopDeployMessage(err), 'error'),
+    });
+  };
+
+  const handleStart = () => {
+    if (!deploy) return;
+    startMut.mutate(deploy.id, {
+      onSuccess: () => toast('Деплой запущен', 'success'),
+      onError: (err) => toast(startDeployMessage(err), 'error'),
     });
   };
 
@@ -146,13 +162,15 @@ function ProjectDetailModal({ deployId, isOpen, onClose }: ProjectDetailModalPro
         {deploy && (
           <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-zinc-200">
             {deploy.status === 'running' && (
-              <Button variant="ghost" onClick={handleDelete} loading={deleteMut.isPending}>
+              <Button variant="secondary" onClick={handleStop} loading={stopMut.isPending}>
                 Остановить
               </Button>
             )}
-            {(deploy.status === 'failed' || deploy.status === 'stopped') && (
-              <Button variant="primary" onClick={handleRestart} loading={restartMut.isPending}>
-                Перезапустить
+            {/* Only a stopped deploy can start: it kept its image. A failed
+                one never had a working one. */}
+            {deploy.status === 'stopped' && (
+              <Button variant="primary" onClick={handleStart} loading={startMut.isPending}>
+                Запустить
               </Button>
             )}
             {deploy.status !== 'deleted' && (

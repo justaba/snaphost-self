@@ -32,8 +32,12 @@ func CreateIsolatedNetwork(ctx context.Context, cli *client.Client, deployID str
 
 // DestroyNetwork removes a Docker network by name. Best-effort — errors are
 // returned so callers can decide whether to log-and-continue or fail.
-func DestroyNetwork(ctx context.Context, cli *client.Client, networkName string) error {
-	if err := cli.NetworkRemove(ctx, networkName); err != nil {
+// A network that is not there is the outcome the caller wanted. Compensation,
+// the watchdog and project deletion all re-run this path, and a deploy whose
+// network was never created — or was removed by an earlier attempt — must not
+// look like a failure.
+func DestroyNetwork(ctx context.Context, cli NetworkRemover, networkName string) error {
+	if err := cli.NetworkRemove(ctx, networkName); err != nil && !client.IsErrNotFound(err) {
 		return fmt.Errorf("remove network %s: %w", networkName, err)
 	}
 	return nil
@@ -47,4 +51,10 @@ func ConnectToTraefikNetwork(ctx context.Context, cli *client.Client, containerI
 		return fmt.Errorf("connect container %s to %s: %w", containerID, config.TraefikNetwork, err)
 	}
 	return nil
+}
+
+// NetworkRemover is the one method DestroyNetwork needs. Taking an interface
+// rather than *client.Client is what lets the teardown path be tested.
+type NetworkRemover interface {
+	NetworkRemove(ctx context.Context, networkID string) error
 }

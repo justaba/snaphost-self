@@ -23,6 +23,63 @@ high-value boundary.
   clears the limiter.
 - CORS restricts browser origins but is not an authentication control.
 
+## Destructive operator actions
+
+There is no separate admin surface. /api/v1/admin was removed along with the
+console it fed: it existed so one role could read across every account, which is
+a multi-tenant problem, and here the operator's own projects are all the
+projects. Every path under it is refused by Casbin, and a test asserts that
+absence rather than trusting the deletion.
+
+DELETE /api/v1/projects/:id removes a project, its deploys, its sagas, its
+domains, its containers and its images. Two properties make it admissible:
+
+- host state is removed before the rows that name it, and a cleanup failure
+  aborts with 502 having deleted nothing, because after the commit there is
+  nothing left to find a stranded container or image with;
+- an admin_audit_log row naming the operator is committed by the same
+  transaction as the deletion, so the record cannot be lost while the effect
+  survives. A request with no identifiable actor is refused with 401 rather
+  than attributed to nobody.
+
+Deletion is refused with 409 while any deploy or saga of the project is still
+in flight. That check runs twice — once when the cleanup plan is loaded and
+again inside the deleting transaction — because the build queue is in-process
+and could otherwise create a container in the window between them.
+
+The second check compares against the exact deploy set the cleanup acted on,
+rather than filtering statuses. A build that completes during the cleanup
+window ends at a status and a saga step that are both terminal, so a status
+filter saw nothing wrong and deleted rows naming a container that was still
+running. The cleanup window is up to five minutes.
+
+The runtime call used here is the strict one. The ordinary stop reports success
+for a deploy the runtime declines to recognise — which is what makes saga
+compensation safe to repeat — and the Docker backend used to swallow a failed
+container removal on top of that. Both now surface, because this is the caller
+that destroys the only record of what it was stopping. The per-deploy network
+is reported the same way and for the same reason: its name derives from the
+deploy id, so once the rows are gone nothing can reconstruct it. The network is
+removed even when the container is already absent, because that is the state a
+second attempt finds after a first one removed the container and then failed.
+
+The comparison against the planned set has a separate branch for an empty plan.
+`id NOT IN (NULL)` evaluates to NULL in SQLite rather than TRUE, so the clause
+would have matched nothing and a project with no deploys at plan time would
+have accepted any deploy created during the window.
+
+The collection path GET /api/v1/projects carries its own policy line. keyMatch2
+does not let it inherit the item path's DELETE, and a test pins that:
+addressing the list must not become a way to delete.
+
+GET /api/v1/audit stays behind the admin role even though everything it records
+is now on the user surface. Reading a record of destructive actions is a
+different privilege from performing them.
+
+The deletion is not recoverable from the panel: rows are hard-deleted rather
+than marked, and the images are gone from the daemon. A SQLite backup restores
+the records; it does not rebuild an image.
+
 Internal HTTP routes require WEBHOOK_SECRET using constant-time comparison and
 are registered before user authentication. Most package-to-package calls are
 now direct and never traverse those routes. The TLS authorization handler is
@@ -94,7 +151,9 @@ Do not rely on the inherited router-svc or cloud-gateway documentation.
 
 ## Known gaps
 
-- Docker images are not reclaimed after deploy deletion or expiry.
+- The BuildKit cache volume is not reclaimed; deploy images now are.
+- a failed deploy cannot be retried from the panel; the only way forward is
+  deploying the project again.
 - Transient build failures have no retry budget.
 - Caddy custom-domain routing and portable TLS installation are incomplete.
 - Real build memory on a 1 GB host and a restore from encrypted off-host backup

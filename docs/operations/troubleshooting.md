@@ -122,9 +122,83 @@ deploy row before re-enqueueing the saga.
 Check WATCHDOG_INTERVAL_SEC, the deploy's stored container ID, alias target and
 expiry fields. Aliased deploys are intentionally retained.
 
-The watchdog does not remove Docker images. Use docker system df to measure the
-leak, but do not automate docker image prune until the product records a safe
-image-retention policy.
+The watchdog runs three sweeps per tick: expiry stops deploys past their TTL,
+reclamation moves deploys stopped for longer than STOPPED_IMAGE_GRACE_HOURS to
+deleted, and the image sweep releases the images of failed and deleted rows.
+
+A stopped deploy keeps its image on purpose so it can be started again, so
+disk held by stopped deploys is expected until the grace expires. Setting
+STOPPED_IMAGE_GRACE_HOURS to 0 disables reclamation entirely and those images
+are then kept indefinitely.
+
+One image can exist that no sweep will ever find, and there is exactly one way
+to produce it: the build recorded the artifact, could not write it to the
+database after two attempts, and could not remove it from the daemon either —
+both are unreachable at once. Nothing durable can be written in that state, so
+the record is a log line. Search for it:
+
+~~~bash
+docker compose -f infra/docker-compose.yml logs snaphost \
+  | grep "could not be recorded or removed"
+~~~
+
+It carries remove_image_command with the exact docker image rm to run.
+
+A deploy with an image_ref, a status of failed or deleted and a null
+image_deleted_at is work the sweep still owes; the row stays queued until
+Docker confirms the image is gone, so a backlog that only grows means removals
+are being refused. Read the watchdog image cleanup complete log line for the
+checked and removed counts, and look for failed to remove deploy image above it.
+
+The two sweeps are independent, so an expiry failure does not explain an image
+one, and neither does the reverse. Do not automate docker image prune: a
+blanket prune also removes the images of running and alias-published deploys.
+docker builder prune is the manual step for the BuildKit cache, which nothing
+reclaims.
+
+## Deleting a project is refused
+
+DELETE /api/v1/projects/:id answers with a specific reason and the panel shows
+it verbatim:
+
+| Code | Meaning |
+| --- | --- |
+| project_busy (409) | A deploy or saga of the project is still building or provisioning. The refusal exists because that work runs in-process and could create a container after the cleanup plan was taken. Wait for it, or let it fail. |
+| cleanup_failed (502) | A container would not stop or an image would not go. Nothing was deleted. Check the Docker daemon and repeat. |
+| runtime_unavailable (503) | The project holds a container or image and no runtime client is configured. |
+| project_not_found (404) | Already gone. |
+
+A 409 that never clears usually means a saga stranded in a non-terminal step
+rather than a build actually running. Inspect deploy_sagas.current_step for the
+project's deploys; the resume sweeper should move it, and a saga sitting at
+compensating is the one case that needs looking at.
+
+Every successful deletion writes an admin_audit_log row, shown in the panel
+under Настройки and readable through GET /api/v1/audit.
+
+## A deploy will not start
+
+POST /api/v1/deploys/:id/start re-runs the image a stopped deploy kept. It
+refuses in three ways:
+
+| Code | Meaning |
+| --- | --- |
+| image_reclaimed (409) | The image is gone. Only stopped deploys keep one; retention eventually moves an old deploy to deleted and the sweep takes it. Deploy the project again. |
+| not_stopped (409) | The deploy is running, failed, mid-build, or another start already claimed it. |
+| start_failed (502) | The container did not come up or did not answer on its port. Read the deploy logs. |
+
+A deploy stuck at provisioning with nothing building is a leaked start claim:
+the handler moves the row there before calling the runtime and releases it on
+failure. Nothing sweeps that status, so if it persists, check the logs for
+"failed to release a restart claim" and reset the row to stopped by hand.
+
+Check whether the artifact is still there before assuming a bug:
+
+~~~bash
+sqlite3 /var/snaphost/data/snaphost.db \
+  "select status, image_ref, image_deleted_at from deploys where id = '<uuid>';"
+docker images | grep snaphost/proj
+~~~
 
 ## SQLite and backup failures
 

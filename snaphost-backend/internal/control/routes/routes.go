@@ -4,11 +4,11 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 
-	"snaphost/internal/control/admin"
 	"snaphost/internal/control/apikey"
 	"snaphost/internal/control/auth"
 	"snaphost/internal/control/deploy"
 	"snaphost/internal/control/domain"
+	"snaphost/internal/control/project"
 	"snaphost/internal/shared"
 )
 
@@ -17,7 +17,7 @@ import (
 // or API key.
 //
 // domainHandler may be nil when custom domains are not configured.
-func Register(r *gin.Engine, authHandler *auth.Handler, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, domainHandler *domain.Handler, adminHandler *admin.Handler) {
+func Register(r *gin.Engine, authHandler *auth.Handler, deployHandler *deploy.Handler, apikeyHandler *apikey.Handler, domainHandler *domain.Handler, projectHandler *project.Handler) {
 	// The identity headers are written by Enrich, which runs last in the
 	// middleware chain and deletes them when the request is unauthenticated.
 	api := r.Group("/api/v1")
@@ -41,6 +41,8 @@ func Register(r *gin.Engine, authHandler *auth.Handler, deployHandler *deploy.Ha
 		api.GET("/deploys", deployHandler.ListDeploys)
 		api.GET("/deploys/:id", deployHandler.GetDeploy)
 		api.DELETE("/deploys/:id", deployHandler.DeleteDeploy)
+		api.POST("/deploys/:id/start", deployHandler.StartDeploy)
+		api.POST("/deploys/:id/stop", deployHandler.StopDeploy)
 		api.GET("/deploys/:id/logs", deployHandler.GetLogs)
 
 		// Custom domains — the alias layer. Attach returns the DNS records
@@ -51,29 +53,19 @@ func Register(r *gin.Engine, authHandler *auth.Handler, deployHandler *deploy.Ha
 			api.DELETE("/domains/:id", domainHandler.Detach)
 			api.POST("/domains/:id/target", domainHandler.SetTarget)
 		}
-	}
 
-	// Operator read surface. Authorised twice: api-gateway's Casbin policy
-	// covers these paths for the admin role, and RequireAdmin re-checks the
-	// forwarded role here so a missing policy line cannot expose every
-	// account's data. Read-only by design — operator actions get their own
-	// pass with an audit trail.
-	if adminHandler != nil {
-		adm := r.Group("/api/v1/admin", admin.RequireAdmin())
-		{
-			adm.GET("/overview", adminHandler.Overview)
-
-			adm.GET("/users", adminHandler.ListUsers)
-			adm.GET("/users/:id", adminHandler.GetUser)
-			adm.GET("/users/:id/deploys", adminHandler.UserDeploys)
-			adm.GET("/users/:id/domains", adminHandler.UserDomains)
-			adm.GET("/users/:id/projects", adminHandler.UserProjects)
-			adm.GET("/users/:id/keys", adminHandler.UserKeys)
-
-			adm.GET("/deploys", adminHandler.ListDeploys)
-			adm.GET("/deploys/:id", adminHandler.GetDeploy)
-
-			adm.GET("/domains", adminHandler.ListDomains)
+		// Projects — the permanent publish targets, and the one destructive
+		// action the panel has.
+		//
+		// There is no separate /api/v1/admin surface any more. It existed to
+		// let one role read across every account, which is a multi-tenant
+		// SaaS's problem: here there is one operator, so their own projects
+		// are all the projects and a second, role-gated copy of the same data
+		// was two screens showing the same rows.
+		if projectHandler != nil {
+			api.GET("/projects", projectHandler.List)
+			api.DELETE("/projects/:id", projectHandler.Delete)
+			api.GET("/audit", projectHandler.Audit)
 		}
 	}
 }
@@ -101,7 +93,9 @@ func RegisterInternal(r *gin.Engine, deployHandler *deploy.Handler, apikeyHandle
 		// Deploy lifecycle endpoints called by runner-svc / builder-svc.
 		internal.POST("/deploys/:id/status", deployHandler.UpdateStatus)
 		internal.POST("/deploys/:id/running", deployHandler.SetRunning)
+		internal.POST("/deploys/:id/image-deleted", deployHandler.MarkImageDeleted)
 		internal.GET("/deploys/expired", deployHandler.ListExpired)
+		internal.GET("/deploy-images/pending", deployHandler.ListImagesPendingCleanup)
 		internal.GET("/deploys/:id", deployHandler.GetDeployInternal)
 		internal.GET("/routes", deployHandler.LookupRouteByHost)
 

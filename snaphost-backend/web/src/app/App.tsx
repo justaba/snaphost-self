@@ -32,28 +32,6 @@ const DomainsPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('@/pages/settings').then(({ SettingsPage: Page }) => ({ default: Page })),
 );
-const AdminLayout = lazy(() =>
-  import('@/widgets/admin-layout').then(({ AdminLayout: Layout }) => ({ default: Layout })),
-);
-const AdminOverviewPage = lazy(() =>
-  import('@/pages/admin-overview').then(({ AdminOverviewPage: Page }) => ({ default: Page })),
-);
-const AdminUsersPage = lazy(() =>
-  import('@/pages/admin-users').then(({ AdminUsersPage: Page }) => ({ default: Page })),
-);
-const AdminUserPage = lazy(() =>
-  import('@/pages/admin-user').then(({ AdminUserPage: Page }) => ({ default: Page })),
-);
-const AdminDeploysPage = lazy(() =>
-  import('@/pages/admin-deploys').then(({ AdminDeploysPage: Page }) => ({ default: Page })),
-);
-const AdminDeployPage = lazy(() =>
-  import('@/pages/admin-deploy').then(({ AdminDeployPage: Page }) => ({ default: Page })),
-);
-const AdminDomainsPage = lazy(() =>
-  import('@/pages/admin-domains').then(({ AdminDomainsPage: Page }) => ({ default: Page })),
-);
-
 function RouteFallback() {
   return (
     <div
@@ -93,19 +71,13 @@ function App() {
                     <Route path="domains" element={<DomainsPage />} />
                     <Route path="settings" element={<SettingsPage />} />
 
-                    {/* Operator screens. The role gate here only hides the UI —
-                      api-gateway's Casbin policy and user-billing's own role
-                      check are what actually refuse the data. */}
-                    <Route element={<ProtectedRoute requiredRole="admin" />}>
-                      <Route path="admin" element={<AdminLayout />}>
-                        <Route index element={<AdminOverviewPage />} />
-                        <Route path="users" element={<AdminUsersPage />} />
-                        <Route path="users/:userId" element={<AdminUserPage />} />
-                        <Route path="deploys" element={<AdminDeploysPage />} />
-                        <Route path="deploys/:deployId" element={<AdminDeployPage />} />
-                        <Route path="domains" element={<AdminDomainsPage />} />
-                      </Route>
-                    </Route>
+                    {/* There is no separate operator console. It was a second,
+                        role-gated copy of these same screens, and it existed
+                        because the platform this forked from had many accounts
+                        and one administrator over them. Here those are the same
+                        person, so the dashboard is the console: projects are
+                        managed on the Projects screen and nowhere else. */}
+                    <Route path="admin/*" element={<Navigate to="/dashboard/projects" replace />} />
                   </Route>
                 </Route>
               </Routes>

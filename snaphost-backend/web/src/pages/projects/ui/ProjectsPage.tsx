@@ -4,7 +4,8 @@ import { useMemo, useState } from 'react';
 import { Plus, FolderOpen, RefreshCw } from 'lucide-react';
 import { useDeploys, type DeployStatus, type DeploySummary } from '@/entities/deploy';
 import type { CustomDomain } from '@/entities/domain';
-import { groupDeploysByProject } from '@/entities/project';
+import { groupDeploysByProject, useProjects, type ProjectSummary } from '@/entities/project';
+import { DeleteProjectDialog } from '@/features/delete-project';
 import { useDomains } from '@/features/manage-domain';
 import { Button } from '@/shared/ui/button';
 import { EmptyState } from '@/shared/ui/empty-state';
@@ -51,8 +52,15 @@ function ProjectsPage() {
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [detailDeployId, setDetailDeployId] = useState<string | null>(null);
 
+  const [projectToDelete, setProjectToDelete] = useState<ProjectSummary | null>(null);
+
   const deploysQuery = useDeploys({ limit: 100 });
   const domainsQuery = useDomains();
+  // The cards are grouped client-side from the deploy list, which cannot know
+  // a project's own counters. The confirmation dialog needs them — how many
+  // builds are running is what says whether deleting takes a site down — so
+  // the server's project list is fetched alongside and looked up by id.
+  const projectsQuery = useProjects();
   const items = deploysQuery.data?.deploys ?? EMPTY_DEPLOYS;
   const filtered = useMemo(() => applyFilter(items, filter), [items, filter]);
 
@@ -164,6 +172,10 @@ function ProjectsPage() {
               key={project.projectId}
               project={project}
               domains={domainsByProject.get(project.projectId) ?? []}
+              onDelete={(id) => {
+                const summary = projectsQuery.data?.items.find((p) => p.id === id);
+                if (summary) setProjectToDelete(summary);
+              }}
             />
           ))}
         </div>
@@ -184,6 +196,11 @@ function ProjectsPage() {
         isOpen={detailDeployId !== null}
         deployId={detailDeployId}
         onClose={() => setDetailDeployId(null)}
+      />
+      <DeleteProjectDialog
+        project={projectToDelete}
+        isOpen={projectToDelete !== null}
+        onClose={() => setProjectToDelete(null)}
       />
     </div>
   );

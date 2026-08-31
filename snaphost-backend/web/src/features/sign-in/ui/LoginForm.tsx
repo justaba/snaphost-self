@@ -4,9 +4,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useState } from 'react';
 import { useForm, type SubmitHandler } from 'react-hook-form';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { ArrowRight, AtSign, KeyRound } from 'lucide-react';
 import { z } from 'zod';
 
 import { signIn, useSessionDispatch } from '@/entities/session';
+import { Button } from '@/shared/ui/button';
+import { Input } from '@/shared/ui/input';
 
 /**
  * The address is a login identifier, not a mailbox.
@@ -41,6 +44,12 @@ interface LocationState {
  * redirect to and no mail to send a reset through — an operator who has lost
  * the password changes it against the database, which is a procedure in the
  * runbook rather than a screen.
+ *
+ * It is built from the panel's own Input and Button rather than bare markup.
+ * The markup it replaced carried `auth-form`, `auth-input`, `auth-submit` and
+ * friends — global classes from the stylesheet the marketing site owned, which
+ * left with it. Nothing defined them any more, so this screen rendered as
+ * unstyled browser defaults: the one screen every operator sees first.
  */
 export function LoginForm() {
   const dispatch = useSessionDispatch();
@@ -67,41 +76,51 @@ export function LoginForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className={`${styles.root} auth-form`} noValidate>
+    <form
+      onSubmit={handleSubmit(onSubmit)}
+      className={`${styles.root} flex flex-col gap-4`}
+      noValidate
+    >
       {toast && (
-        <div role="alert" className="auth-message auth-message-error">
+        <div
+          role="alert"
+          className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+        >
           {toast}
         </div>
       )}
 
-      <label htmlFor="email">Email</label>
-      <div className="auth-input">
-        <input
-          id="email"
-          type="email"
-          autoComplete="username"
-          {...register('email')}
-          placeholder="operator@localhost"
-        />
-        <span aria-hidden="true">@</span>
-      </div>
-      {errors.email && <p className="auth-field-error">{errors.email.message}</p>}
+      <Input
+        id="email"
+        label="Email"
+        type="email"
+        autoComplete="username"
+        placeholder="operator@localhost"
+        iconLeft={<AtSign size={16} />}
+        error={errors.email?.message}
+        {...register('email')}
+      />
 
-      <label htmlFor="password">Пароль</label>
-      <div className="auth-input">
-        <input
-          id="password"
-          type="password"
-          autoComplete="current-password"
-          {...register('password')}
-        />
-        <span aria-hidden="true">••</span>
-      </div>
-      {errors.password && <p className="auth-field-error">{errors.password.message}</p>}
+      <Input
+        id="password"
+        label="Пароль"
+        type="password"
+        autoComplete="current-password"
+        iconLeft={<KeyRound size={16} />}
+        error={errors.password?.message}
+        {...register('password')}
+      />
 
-      <button type="submit" disabled={isSubmitting} className="auth-submit">
-        {isSubmitting ? 'Входим…' : 'Войти'} <span aria-hidden="true">→</span>
-      </button>
+      <Button
+        type="submit"
+        variant="primary"
+        size="lg"
+        loading={isSubmitting}
+        iconRight={<ArrowRight size={16} />}
+        className="mt-1 w-full"
+      >
+        {isSubmitting ? 'Входим…' : 'Войти'}
+      </Button>
     </form>
   );
 }

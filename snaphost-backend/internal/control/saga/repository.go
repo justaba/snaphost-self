@@ -120,15 +120,33 @@ func (r *Repository) UpdateStep(ctx context.Context, deployID uuid.UUID, step St
 	return nil
 }
 
-// MarkImageBuilt records the build output. Pass port=0 when the build
-// event did not include one — the saga will then fall back to its
-// configured default at run-container time.
+// MarkImageBuilt records the build output on both durable views.
+//
+// The image reference goes to deploys as well as to the saga, and that is the
+// point of the transaction. The saga row is orchestration state; deploys.image_ref
+// is what the image sweep reads, and it used to be written only by SetRunning
+// — so a build that succeeded and then failed to start left an image on the
+// host with nothing in the swept table naming it. The eager removal on the
+// probe-failure path covered the common case and nothing covered the rest: a
+// container that could not be created, a compensating saga, or an eager
+// removal that itself failed. Those images were unreclaimable for the life of
+// the installation.
+//
+// Writing it here means the artifact is nameable from the moment it exists,
+// whatever happens next.
 func (r *Repository) MarkImageBuilt(ctx context.Context, deployID uuid.UUID, imageRef, commitSHA string, port int) error {
 	var portArg any
 	if port > 0 {
 		portArg = port
 	}
-	_, err := r.db.ExecContext(ctx,
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin mark image built: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE deploy_sagas
 		    SET image_built = 1,
 		        image_ref   = ?,
@@ -136,9 +154,28 @@ func (r *Repository) MarkImageBuilt(ctx context.Context, deployID uuid.UUID, ima
 		        app_port    = COALESCE(?, app_port)
 		  WHERE deploy_id = ?`,
 		imageRef, commitSHA, portArg, deployID.String(),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("mark image built: %w", err)
+	}
+
+	// commit_sha rides along because the build is where it becomes known, and
+	// a deploy that never started should still say what it was built from.
+	// image_deleted_at is cleared: this is a freshly built artifact, and a
+	// stale marker from a reused row would hide it from the sweep.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE deploys
+		    SET image_ref = ?,
+		        commit_sha = COALESCE(NULLIF(?, ''), commit_sha),
+		        image_deleted_at = NULL,
+		        updated_at = ?
+		  WHERE id = ?`,
+		imageRef, commitSHA, controldb.Now(), deployID.String(),
+	); err != nil {
+		return fmt.Errorf("record built image on deploy: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit mark image built: %w", err)
 	}
 	return nil
 }

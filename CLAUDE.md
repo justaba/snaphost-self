@@ -38,7 +38,7 @@ network between them:
 | Package | Responsibility |
 | --- | --- |
 | `gateway` | Middleware chain, RBAC, WebSocket log endpoint. No business logic. |
-| `control` | Sessions, API keys, deploys, projects, custom domains, the saga, admin read surface. Owns the schema. |
+| `control` | Sessions, API keys, deploys, projects, custom domains, the saga, the operator audit log. Owns the schema. |
 | `builder` | Clone or unpack, detect, generate a Dockerfile, scan, build. |
 | `runtime` | Starts and stops user containers; the TTL watchdog. |
 | `ai` | Dockerfile templates first, an LLM when none match. |
@@ -117,10 +117,25 @@ a volume mount needs `MSYS_NO_PATHCONV=1` in front of it.
 ## SQLite — three rules, each of which fails silently
 
 The store is one SQLite file (`modernc.org/sqlite`, pure Go, `CGO_ENABLED=0`,
-WAL). The schema is a single migration, `0001_baseline`, in
+WAL). Migrations live in
 [internal/control/db/migrations/](snaphost-backend/internal/control/db/migrations/).
-**Nobody has this installed, so a new column goes into the baseline**, not into a
-migration on top of it.
+
+**A schema change is a new migration. Never edit an applied one.** This rule
+replaced the opposite one, and the reversal is worth understanding rather than
+just obeying. The old rule — "nobody has this installed, so a new column goes
+into the baseline" — was true while every database was built from nothing. It
+stopped being true the first time a database recorded version 1, which now
+includes the development one.
+
+`golang-migrate` applies only migrations *above* the stored version, so an
+edited `0001` never runs again. The failure is not a startup error: the process
+comes up cleanly and the first request touching the changed table answers
+`no such column: image_deleted_at`. Nothing in a from-scratch test can see it,
+because there an edited baseline and a real migration are indistinguishable —
+which is why
+[upgrade_test.go](snaphost-backend/internal/control/db/upgrade_test.go) migrates
+to a specific version first and then upgrades. **A schema change needs a test
+in that file**, or it is only tested on installs that do not exist yet.
 
 1. **Timestamps are TEXT, RFC 3339, always UTC.** Compute every comparison in Go
    with `controldb.Now()` / `controldb.FormatTime()`. **Never write
@@ -139,7 +154,8 @@ against a real migrated database — `controldb.Open` plus `controldb.RunMigrati
 in a `t.TempDir()` is three lines.
 
 Tables: `users`, `sessions`, `projects`, `deploys`, `deploy_sagas`,
-`custom_domains`, `api_keys`, `ai_dockerfile_cache`, `ai_usage_log`.
+`custom_domains`, `api_keys`, `ai_dockerfile_cache`, `ai_usage_log`,
+`admin_audit_log`.
 
 ## Request lifecycle — the order is load-bearing
 
@@ -206,6 +222,77 @@ Enforcement is against `c.Request.URL.Path` — the real URL with IDs substitute
 — not Gin's `FullPath`; the policy file uses `:id` placeholders that `keyMatch2`
 resolves. **Adding a route means adding a policy line**, or it is refused for
 every role.
+
+## Projects, and why there is no admin console
+
+**There is no `/api/v1/admin` surface and no Администрирование section.** Both
+existed because the platform this forked from had many accounts and one
+administrator over them; here those are the same person, so the console was a
+second, role-gated copy of the dashboard's own screens. `internal/control/admin`
+is deleted and every `admin` policy line went with it — a request to one of
+those paths is a Casbin `403`. The one thing that survived the role gate is
+`GET /api/v1/audit`, because reading a record of destructive actions is not the
+same as performing them.
+
+Project management lives on the ordinary dashboard, in
+`internal/control/project`: `GET /api/v1/projects` for the list with its
+counters, `DELETE /api/v1/projects/:id` for the one destructive action. That
+deletion is the shape every future one follows:
+
+1. **Host state goes before the rows that name it.** `PrepareProjectDeletion`
+   loads a plan, the handler stops containers and removes images, and only then
+   does the transaction run. After the commit there is nothing left to find a
+   stranded container with, so the order cannot be the other way round.
+2. **`StopStrict` and `RemoveImage` are both called, never one or the other.**
+   Stopping does not release the image at all now — a stopped deploy has to
+   stay startable. And `RunnerClient.Stop` reports success for a deploy the
+   runtime refuses to recognise, which is the swallow that makes saga
+   compensation safe to repeat and is exactly wrong here, so this caller uses
+   `StopStrict`. `DockerBackend.Stop` propagates a failed `ContainerRemove` for
+   the same reason: it used to log and return nil, which put two layers of "it
+   probably worked" in front of an irreversible delete.
+3. **The commit re-check is a whole-project assertion, not a status filter.**
+   `Delete` takes the deploy set the plan enumerated and refuses if the project
+   has gained anything outside it, or if any deploy is still `running`. A
+   status filter missed the build that *completed* during the cleanup window —
+   deploy and saga both end at `running`, which is terminal, so nothing matched
+   it and its rows were deleted while its container ran. That window is up to
+   five minutes of stopping containers and removing images.
+
+   **The empty plan is a separate branch and has to be.** `id NOT IN (NULL)` is
+   NULL in SQLite, not TRUE, so the clause silently matches nothing — a project
+   with no deploys at plan time would have accepted any latecomer. The clause
+   is dropped entirely when the plan is empty.
+4. **`Stop` reports the network too, and reaches it even when the container is
+   already gone.** The network name derives from the deploy id, so once the
+   rows are gone nothing can reconstruct it and no sweep can find it. An
+   absent container used to return success immediately — which is exactly the
+   state a retry after a partial cleanup finds, so the attempt that *could*
+   have removed the network was the one that skipped it. `DestroyNetwork`
+   treats a missing network as success, so compensation still re-runs safely.
+
+   The teardown path sits behind `teardownClient` in
+   [teardown.go](snaphost-backend/internal/runtime/backend/docker/teardown.go)
+   so it can be tested. It has produced three leaks — a swallowed container
+   removal, a swallowed network removal, and a network never attempted — and
+   none were visible until the Docker client had a seam.
+5. **The audit row is written by the same transaction as the deletion**, into
+   `admin_audit_log`, with the counts and slug the deleted rows would otherwise
+   take with them. There is no window where the rows are gone and the record of
+   who removed them is not.
+6. **The cleanup context is `context.Background()` with a timeout**, not the
+   request's. A browser disconnect must not abandon a half-finished teardown.
+
+The screen it lives on is **Проекты** — the dashboard's own, and the only place
+projects are managed. The list carries `running_count`, because that number is
+the difference between deletion reclaiming disk and deletion taking a live site
+down, and the confirmation dialog says so.
+
+The collection and the item need separate policy lines — `keyMatch2` does not
+let `/api/v1/projects` borrow the `DELETE` on `/api/v1/projects/:id`, which is
+the behaviour the RBAC test pins. There is also a test asserting the absence of
+every `/api/v1/admin` path: a policy line outliving its handler is exactly how
+the panel ended up with a Транзакции tab pointing at a deleted page.
 
 ## The deploy saga
 
@@ -297,6 +384,98 @@ whose alias went idle past `ALIAS_IDLE_GC_DAYS`, and deploys beyond
 `PROJECT_DEPLOY_RETENTION` per project. A deploy an alias points at is never
 reclaimed.
 
+**The same watchdog reclaims images, and the two sweeps are deliberately
+independent.** With no registry the disk that fills is the one the platform
+runs on. The second sweep asks for deploys at `failed` or `deleted` that still
+hold an `image_ref` with no `image_deleted_at`, and removes each from the
+daemon.
+
+**`stopped` is not in that list, and that omission is a feature with a
+deadline.** A stopped deploy is one somebody paused or whose TTL ran out, and
+its image is what makes `POST /api/v1/deploys/:id/start` a container run rather
+than a rebuild. Reclaiming it would make every stop irreversible.
+
+The deadline is `sweepStopped`, the third sweep, and it exists because without
+it the favour never expires. `MarkDeleted` has exactly one caller — the delete
+button — so nothing automatic moved a deploy out of `stopped`, and the TTL and
+retention sweeps both *end* there. Sparing `stopped` and having no way out of
+it is a disk leak with no ceiling: every preview that ever expired keeps a
+container image forever, which is the problem image GC was added to solve.
+`STOPPED_IMAGE_GRACE_HOURS` (default 168) is how long the image is kept; an
+alias-published deploy is never touched.
+
+The grace is measured from `stopped_at`, and two things about that column are
+load-bearing:
+
+- **not `COALESCE(stopped_at, updated_at)`** — a trigger rewrites `updated_at`
+  on every write, so a row touched for any reason would have its clock reset
+  and might never age out;
+- **`SetRunning` clears it.** `stopped_at` is written with its own `COALESCE`,
+  so it records the *first* stop and never moves — correct when nothing could
+  restart a deploy, wrong the moment something can. A deploy stopped in
+  January, restarted, and stopped again in June would be measured from January
+  and lose its image on the next tick.
+
+Three more things about it are load-bearing:
+
+- **`deploys.image_deleted_at` is the marker, not a nulled `image_ref`.** The
+  reference stays for diagnostics, so the column pair says both "what was
+  built" and "is it still on disk". A `COALESCE` keeps the first timestamp, so
+  a retry does not restamp the row.
+- **It is written only after Docker confirms the image is gone.** A marker
+  ahead of the removal is disk that is recorded as reclaimed and is not, and no
+  sweep will ever look at that row again.
+- **The moment an image exists on the host, the database says so.** The
+  pipeline calls `ReportImageLoaded` immediately after the daemon load, before
+  the Trivy scan and before anything else that can reject the deploy;
+  `saga.MarkImageBuilt` then records it again on the success path. Both write
+  `deploys.image_ref`, which is the only column the sweep reads. It used to be
+  written by `SetRunning` alone, so an image rejected by the vulnerability gate
+  was never named anywhere — and the gate's own removal is best-effort by
+  design, because the scan result is the error worth surfacing. When that
+  removal failed the artifact stayed on the host permanently.
+- **The invariant is: either the database names the image, or the image is not
+  on the host.** `recordLoadedImage` retries on a fresh bounded context — the
+  likely reason the first attempt fails is a cancelled build context, and
+  retrying on that same context cannot help — and if that also fails it
+  *removes the image*, on a third bounded context, before failing the build
+  Permanently.
+
+  Two earlier answers were wrong and are worth not repeating. Logging and
+  continuing put the leak straight back: the scan failed next, its own
+  best-effort removal failed, and the artifact was orphaned. Returning
+  `Transient` was worse, because it reasoned from machinery that does not
+  exist — **nothing retries a build.** `runBuildWorker` logs `IsTransient` and
+  calls `FinalizeAsFailed` either way; a retry budget is still unimplemented.
+  Any code here that assumes a retry will happen is wrong.
+
+  The residual: if the database and the Docker daemon are both unreachable,
+  nothing durable can be written anywhere — a deferred-cleanup row would need
+  the database that just refused — so the image is orphaned and an ERROR line
+  names it with the exact `docker image rm` to run.
+- **The three sweeps do not share a failure path.** A broken expiry query
+  would otherwise silently take image reclamation with it, and this repository
+  has already shipped a reclaim statement that never once executed.
+
+**Stopping and deleting are different endpoints, and conflating them is the
+bug this design keeps inviting.** `POST /deploys/:id/stop` tears the container
+down and records `stopped`, keeping the image. `DELETE /deploys/:id` marks the
+row `deleted` and releases it. The panel had one button wired to `DELETE` and
+labelled «Остановить», so pausing a site destroyed it — and once image GC
+landed, destroyed the artifact `start` needs. If a caller ever routes a stop
+through `DELETE` again, `start` begins answering `image_reclaimed` for
+everything and the button silently becomes decoration.
+
+`start` claims the row by moving it `stopped` → `provisioning` with a guarded
+`UPDATE` before it calls the runtime. That claim is what stops two clicks
+starting two containers for a row that records one, and it is why
+`provisioning` is in the runtime's `deployableStatuses`. A refusal after the
+claim must call `AbandonRestart`: nothing sweeps `provisioning`, so a leaked
+claim leaves the deploy looking like it is starting forever.
+
+Nothing removes the BuildKit cache; that is still a manual `docker builder
+prune`.
+
 ## Projects, deploys and domains
 
 A **project** is the permanent publish target. A **deploy** is one immutable
@@ -339,7 +518,12 @@ because a `rollback_to` naming seven deleted services once passed the suite.
 
 Written down rather than fixed, so nobody rediscovers them:
 
-- **Built images are never reclaimed.** See above.
+- **The BuildKit cache still grows without bound.** Deploy images are reclaimed
+  now; the build cache volume is not, and nothing measures it.
+- **A failed deploy cannot be retried from the panel.** Its image was never
+  usable and the sweep reclaims it, so the only way forward is deploying the
+  project again. The button that used to say «Перезапустить» called an endpoint
+  this backend has never had.
 - **Traefik, not Caddy.** Caddy is the recorded direction, but dynamic routing
   from a verified alias to a Docker container has not been implemented.
 - **No end-to-end custom-domain TLS.** The verification handler exists, but its

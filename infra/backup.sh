@@ -86,7 +86,18 @@ DATABASE_PATH=${SNAPHOST_DATABASE_PATH:-/var/snaphost/data/snaphost.db}
 # test suite passed because its fake dump was written from this same list.
 # `users` is here in their place: it is where the operator's password hash
 # lives, and losing it means losing the ability to log in.
-REQUIRED_TABLES=(users deploys deploy_sagas api_keys projects custom_domains)
+#
+# `admin_audit_log` is here because it is the only record of destructive
+# operator actions, and a project deletion is not recoverable from the panel.
+# A backup that silently lost it would keep the effect and drop the account of
+# who caused it, which is the one thing an audit row exists to prevent.
+#
+# Note the shape of the hazard this list keeps re-creating: the suite's fake
+# dump is written from this same list by hand, so the check and its fixture
+# agree with each other and nothing else. Changing this line means changing
+# `write_tables` in infra/tests/backup_test.sh, and the fact that both have to
+# move together is the weakness, not the procedure.
+REQUIRED_TABLES=(users deploys deploy_sagas api_keys projects custom_domains admin_audit_log)
 
 TEMP_FILES=()
 

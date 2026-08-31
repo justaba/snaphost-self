@@ -55,8 +55,30 @@ At minimum alert on:
 - container and host memory pressure during builds;
 - TLS expiry once an edge is installed.
 
-Disk monitoring is especially important because deploy expiry currently removes
-containers but not their images.
+Deploy expiry now removes the image as well as the container, so the disk
+signal that matters has shifted. Watch the BuildKit cache volume, which nothing
+reclaims, and watch for images that stay queued: a deploy with an image_ref, a
+terminal status and a null image_deleted_at is cleanup the watchdog owes and
+has not managed. A count that only grows means the daemon is refusing removals.
+
+~~~bash
+sqlite3 /var/snaphost/data/snaphost.db \
+  "select count(*) from deploys
+   where status in ('failed','deleted')
+     and image_ref is not null and image_deleted_at is null;"
+~~~
+
+Stopped deploys keep their images on purpose, so they are not a backlog until
+STOPPED_IMAGE_GRACE_HOURS has passed. Their footprint is worth watching
+separately, because it is bounded by that setting rather than by anything the
+platform does:
+
+~~~bash
+sqlite3 /var/snaphost/data/snaphost.db \
+  "select count(*) from deploys
+   where status = 'stopped'
+     and image_ref is not null and image_deleted_at is null;"
+~~~
 
 Useful incident commands:
 
@@ -67,9 +89,11 @@ docker stats --no-stream
 docker system df
 ~~~
 
-Do not run broad Docker prune commands as an automatic response: the platform
-does not yet distinguish reclaimable images from those needed for rollback or
-running deploy records.
+Do not run broad Docker prune commands as an automatic response. The platform
+reclaims the images of terminal deploys itself; a blanket prune also removes
+the images of running and alias-published deploys, which is a site taken down
+rather than disk recovered. docker builder prune is the safe one, and it is
+manual because nothing tracks what the cache is worth.
 
 ## Backup heartbeat
 
@@ -85,7 +109,10 @@ run, not that a future run remains scheduled.
 ## Gaps
 
 - metrics are exposed but not scraped;
-- no alert exists for image accumulation or stuck sagas;
+- no alert exists for a growing image-cleanup backlog, BuildKit cache growth or
+  stuck sagas;
+- the audit log is readable in the panel but is not exported anywhere, so
+  operator actions are not an alertable signal;
 - the uptime probe does not create a real deploy;
 - no 1 GB build-pressure baseline is recorded;
 - no portable edge health contract exists before Task 4 and Task 7.

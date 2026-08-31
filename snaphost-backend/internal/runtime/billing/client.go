@@ -78,6 +78,12 @@ type ExpiredDeploy struct {
 	ContainerID string `json:"container_id"`
 }
 
+// ImageCleanup is a terminal deploy artifact waiting to be removed locally.
+type ImageCleanup struct {
+	ID       string `json:"id"`
+	ImageRef string `json:"image_ref"`
+}
+
 // UpdateDeployStatus updates the status and optional failure reason for a deploy.
 func (c *Client) UpdateDeployStatus(ctx context.Context, deployID string, status string, failureReason *string) error {
 	body := map[string]interface{}{
@@ -99,6 +105,15 @@ func (c *Client) SetDeployRunning(ctx context.Context, deployID string, req SetR
 	url := fmt.Sprintf("%s/internal/deploys/%s/running", c.baseURL, deployID)
 	if err := c.doPost(ctx, url, req); err != nil {
 		return fmt.Errorf("set deploy running: %w", err)
+	}
+	return nil
+}
+
+// MarkDeployImageDeleted stores the durable completion marker for image GC.
+func (c *Client) MarkDeployImageDeleted(ctx context.Context, deployID string) error {
+	url := fmt.Sprintf("%s/internal/deploys/%s/image-deleted", c.baseURL, deployID)
+	if err := c.doPost(ctx, url, struct{}{}); err != nil {
+		return fmt.Errorf("mark deploy image deleted: %w", err)
 	}
 	return nil
 }
@@ -168,6 +183,33 @@ func (c *Client) ListExpiredDeploys(ctx context.Context, limit int) ([]ExpiredDe
 	}
 
 	return deploys, nil
+}
+
+// ListImagesPendingCleanup returns terminal images without a cleanup marker.
+func (c *Client) ListImagesPendingCleanup(ctx context.Context, limit int) ([]ImageCleanup, error) {
+	url := fmt.Sprintf("%s/internal/deploy-images/pending?limit=%d", c.baseURL, limit)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("X-Webhook-Secret", c.secret)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list images pending cleanup: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list images pending cleanup: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var images []ImageCleanup
+	if err := json.NewDecoder(resp.Body).Decode(&images); err != nil {
+		return nil, fmt.Errorf("decode images pending cleanup: %w", err)
+	}
+	return images, nil
 }
 
 // doPost performs a POST request with JSON body and the webhook secret header.

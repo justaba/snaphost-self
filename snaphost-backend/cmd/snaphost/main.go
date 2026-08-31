@@ -54,7 +54,6 @@ import (
 	builderscan "snaphost/internal/builder/scan"
 	builderunpack "snaphost/internal/builder/unpack"
 	"snaphost/internal/buildevents"
-	"snaphost/internal/control/admin"
 	"snaphost/internal/control/apikey"
 	"snaphost/internal/control/auth"
 	controlconfig "snaphost/internal/control/config"
@@ -353,7 +352,7 @@ type controlParts struct {
 	apikey     *apikey.Handler
 	domain     *domain.Handler
 	tls        *domain.TLSHandler
-	admin      *admin.Handler
+	project    *project.Handler
 	apikeyRepo *apikey.Repository
 }
 
@@ -373,7 +372,6 @@ func buildControl(
 	apikeyRepo := apikey.NewRepository(pool)
 	projectRepo := project.NewRepository(pool)
 	domainRepo := domain.NewRepository(pool)
-	adminRepo := admin.NewRepository(pool)
 
 	sagaQueue := saga.NewQueue(0, log)
 	sagaRepo := saga.NewRepository(pool)
@@ -386,7 +384,8 @@ func buildControl(
 
 	deployHandler := deploy.NewHandler(dRepo, projectRepo, log, sagaQueue, runnerClient, logReader,
 		uploadStore, int64(cfg.MaxUploadSizeMB)*1024*1024, time.Duration(cfg.UploadTTLMin)*time.Minute,
-		credStore, time.Duration(cfg.GitCredTTLMin)*time.Minute)
+		credStore, time.Duration(cfg.GitCredTTLMin)*time.Minute,
+		deploy.WithRestartDefaults(cfg.DeployDefaultPort, cfg.DeployTTLMin))
 
 	attachLimiter := domain.Limiter(domain.NewMemoryLimiter(cfg.DomainAttachPerHour, time.Hour))
 	domainHandler := domain.NewHandler(domainRepo, attachLimiter, domain.Config{
@@ -431,7 +430,7 @@ func buildControl(
 		apikey:     apikey.NewHandler(apikeyRepo, log),
 		domain:     domainHandler,
 		tls:        domain.NewTLSHandler(domainRepo, log),
-		admin:      admin.NewHandler(adminRepo, log),
+		project:    project.NewHandler(projectRepo, runnerClient, log),
 		apikeyRepo: apikeyRepo,
 	}
 }
@@ -452,8 +451,9 @@ func deployRepo(pool *sql.DB, bus *logbus.Bus, cfg *controlconfig.Config) *deplo
 	return deploy.NewRepository(pool, append(opts,
 		deploy.WithDomainSuffix(cfg.DomainSuffix),
 		deploy.WithGCPolicy(deploy.GCPolicy{
-			AliasIdleDays:  cfg.AliasIdleGCDays,
-			KeepPerProject: cfg.ProjectDeployRetention,
+			AliasIdleDays:          cfg.AliasIdleGCDays,
+			KeepPerProject:         cfg.ProjectDeployRetention,
+			StoppedImageGraceHours: cfg.StoppedImageGraceHours,
 		}),
 	)...)
 }
@@ -536,7 +536,7 @@ func buildEngine(
 	// The application routes, registered directly rather than proxied. They
 	// read X-User-ID from the request headers Enrich just wrote, so the
 	// contract between the two halves is unchanged.
-	controlroutes.Register(r, ctl.auth, ctl.deploy, ctl.apikey, ctl.domain, ctl.admin)
+	controlroutes.Register(r, ctl.auth, ctl.deploy, ctl.apikey, ctl.domain, ctl.project)
 	aiHandler.Register(r.Group("/api/v1/ai"))
 
 	return r, nil

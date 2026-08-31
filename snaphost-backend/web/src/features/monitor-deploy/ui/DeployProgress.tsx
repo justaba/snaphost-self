@@ -4,7 +4,6 @@ import { ExternalLink } from 'lucide-react';
 import { useDeployDetail, useDeployLogs, type DeployDetail } from '@/entities/deploy';
 import { Button } from '@/shared/ui/button';
 import { Spinner } from '@/shared/ui/spinner';
-import { useRestartDeploy } from '../api/use-restart-deploy';
 import { deriveDeploySteps } from '../model/deploy-progress';
 import DeployStepper from './DeployStepper';
 import LogsTerminal from './LogsTerminal';
@@ -20,7 +19,6 @@ export interface DeployProgressProps {
 function DeployProgress({ deployId, websocketUrl, onClose, onSuccess }: DeployProgressProps) {
   const detailQuery = useDeployDetail(deployId);
   const logs = useDeployLogs(deployId, websocketUrl);
-  const restartDeploy = useRestartDeploy();
   const deploy = detailQuery.data;
   const steps = useMemo(() => deriveDeploySteps(deploy), [deploy]);
 
@@ -69,15 +67,12 @@ function DeployProgress({ deployId, websocketUrl, onClose, onSuccess }: DeployPr
               {deploy.failure_reason ?? 'Неизвестная ошибка'}
             </div>
           </div>
+          {/* There is no restart here. A failed build produced no working
+              image — the sweep reclaims those — so the only way forward is a
+              new deploy of the project, which is a different button on a
+              different screen. The one that used to be here called an endpoint
+              that has never existed in this backend. */}
           <div className={styles.failureActions}>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => restartDeploy.mutate(deployId)}
-              loading={restartDeploy.isPending}
-            >
-              Перезапустить
-            </Button>
             <Button variant="ghost" size="sm" onClick={onClose}>
               Закрыть
             </Button>

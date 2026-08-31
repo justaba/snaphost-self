@@ -60,6 +60,7 @@ func TestBaselineApplies(t *testing.T) {
 
 	// schema_migrations is golang-migrate's own bookkeeping table.
 	want := []string{
+		"admin_audit_log",
 		"ai_dockerfile_cache", "ai_usage_log", "api_keys", "custom_domains",
 		"deploy_sagas", "deploys", "projects", "schema_migrations", "sessions",
 		"users",

@@ -94,6 +94,11 @@ type Backend interface {
 	// lines to the Redis publisher with stage="runtime".
 	StreamLogs(ctx context.Context, containerID string) (<-chan string, error)
 
+	// RemoveImage releases the deploy artifact from the backend's local image
+	// store. It must be idempotent: cleanup retries after a crash may ask for an
+	// image that was already removed.
+	RemoveImage(ctx context.Context, imageRef string) error
+
 	// Name returns the backend identifier for logging.
 	Name() string
 }

@@ -148,6 +148,28 @@ func (c *RunnerClient) Stop(ctx context.Context, deployID, containerID string) e
 	return err
 }
 
+// StopStrict tears the runtime down and reports every refusal, including the
+// ownership-validation ones Stop swallows.
+//
+// Stop's swallow is correct for compensation, which must be safe to run twice
+// and treats "the runtime does not recognise this deploy" as already-done.
+// There is one caller for which that answer is unsafe: project deletion, which
+// hard-deletes the rows naming the container immediately afterwards. If the
+// runtime refused because the stored container id did not match, the container
+// is still there and the only record of it is about to be destroyed.
+//
+// A container that is genuinely absent still succeeds — the backend treats
+// not-found as done — so this is stricter about refusals, not about outcomes.
+func (c *RunnerClient) StopStrict(ctx context.Context, deployID, containerID string) error {
+	return c.Service.Undeploy(ctx, deployID, containerID)
+}
+
+// RemoveImage releases a deploy artifact that has no container to stop, such
+// as a failed build or a deploy already stopped before image GC was enabled.
+func (c *RunnerClient) RemoveImage(ctx context.Context, deployID, imageRef string) error {
+	return c.Service.RemoveImage(ctx, deployID, imageRef)
+}
+
 // ---------------------------------------------------------------------------
 // builder → control
 // ---------------------------------------------------------------------------
@@ -161,6 +183,17 @@ type StatusReporter struct {
 
 func (r *StatusReporter) ReportBuilding(ctx context.Context, deployID string) error {
 	return r.updateStatus(ctx, deployID, "building", nil)
+}
+
+// ReportImageLoaded records the artifact on the deploy row the moment it
+// exists in the daemon, so the image sweep can name it even if everything
+// after the build rejects the deploy.
+func (r *StatusReporter) ReportImageLoaded(ctx context.Context, deployID, imageRef string) error {
+	id, err := uuid.Parse(deployID)
+	if err != nil {
+		return fmt.Errorf("invalid deploy id %q: %w", deployID, err)
+	}
+	return r.Repo.SetImageRef(ctx, id, imageRef)
 }
 
 func (r *StatusReporter) ReportFailed(ctx context.Context, deployID, reason string) error {
@@ -259,6 +292,14 @@ func (c *BillingClient) SetDeployRunning(ctx context.Context, deployID string, r
 	return c.Repo.SetRunning(ctx, id, req.ImageRef, req.EndpointURL, req.Subdomain, req.ContainerID, req.TTLExpiresAt)
 }
 
+func (c *BillingClient) MarkDeployImageDeleted(ctx context.Context, deployID string) error {
+	id, err := uuid.Parse(deployID)
+	if err != nil {
+		return fmt.Errorf("invalid deploy id %q: %w", deployID, err)
+	}
+	return c.Repo.MarkImageDeleted(ctx, id)
+}
+
 // GetDeploy returns the stored deploy. A missing row is billing.ErrDeployNotFound
 // so the runtime's ownership checks keep distinguishing "unknown deploy" from
 // "lookup failed" — the first is a refusal, the second is worth retrying.
@@ -307,6 +348,22 @@ func (c *BillingClient) ListExpiredDeploys(ctx context.Context, limit int) ([]bi
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+func (c *BillingClient) ListImagesPendingCleanup(ctx context.Context, limit int) ([]billing.ImageCleanup, error) {
+	rows, err := c.Repo.FindImagesPendingCleanup(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]billing.ImageCleanup, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, billing.ImageCleanup{ID: row.ID.String(), ImageRef: row.ImageRef})
+	}
+	return out, nil
+}
+
+func (c *BillingClient) ReclaimStoppedDeploys(ctx context.Context, limit int) (int, error) {
+	return c.Repo.ReclaimStoppedDeploys(ctx, limit)
 }
 
 // ---------------------------------------------------------------------------

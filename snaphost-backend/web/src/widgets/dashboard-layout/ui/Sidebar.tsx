@@ -1,14 +1,7 @@
 import styles from './Sidebar.module.css';
 
-import {
-  LayoutGrid,
-  Globe,
-  KeyRound,
-  Settings,
-  ShieldCheck,
-} from 'lucide-react';
+import { LayoutGrid, Globe, KeyRound, Settings } from 'lucide-react';
 import SidebarItem from './SidebarItem';
-import { useAuth } from '@/entities/session';
 
 const VERSION = (import.meta.env.VITE_APP_VERSION as string | undefined) ?? '0.1.0';
 
@@ -16,13 +9,11 @@ export interface SidebarProps {
   onNavigate?: () => void;
 }
 
+/** There is no Администрирование entry any more, and no role check to decide
+ *  whether to draw one. The operator console was a second copy of these
+ *  screens for someone administering other people's accounts; a self-hosted
+ *  install has one account, so this navigation is the console. */
 function Sidebar({ onNavigate }: SidebarProps) {
-  // The claim comes from the Supabase access token. Hiding the link is a
-  // convenience only — the gateway refuses the data regardless of what the
-  // browser renders.
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
-
   return (
     <aside className={`${styles.root} w-60 h-full bg-white border-r border-zinc-200 flex flex-col`}>
       <div className="h-16 flex items-center px-6 border-b border-zinc-200 shrink-0">
@@ -53,17 +44,6 @@ function Sidebar({ onNavigate }: SidebarProps) {
           label="Настройки"
           onNavigate={onNavigate}
         />
-        {isAdmin && (
-          <>
-            <div className="my-2 border-t border-zinc-200" />
-            <SidebarItem
-              to="/dashboard/admin"
-              icon={<ShieldCheck size={18} />}
-              label="Администрирование"
-              onNavigate={onNavigate}
-            />
-          </>
-        )}
       </nav>
       <div className="px-6 py-4 border-t border-zinc-200 text-xs text-zinc-400 shrink-0">
         v{VERSION}

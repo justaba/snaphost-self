@@ -109,7 +109,7 @@ SNAPHOST_VERSION=$SHA
 WEBHOOK_SECRET=internal-secret-value
 EOF
   chmod 600 "$ENV_FILE"
-  write_tables users deploys deploy_sagas api_keys projects custom_domains
+  write_tables users deploys deploy_sagas api_keys projects custom_domains admin_audit_log
   export PATH="$BIN:$PATH" FAKE_LOG FAKE_TABLES
   export SNAPHOST_COMPOSE_FILE="$COMPOSE" SNAPHOST_ENV_FILE="$ENV_FILE"
   export SNAPHOST_COMPOSE_PROJECT=snaphost-test
@@ -192,10 +192,19 @@ else fail 'empty dump is rejected'; fi
 
 # `users` is the one that carries the operator's password hash, so a dump
 # without it restores into a platform nobody can log into.
-setup_case; write_tables deploys deploy_sagas api_keys projects custom_domains; run_capture run
+setup_case; write_tables deploys deploy_sagas api_keys projects custom_domains admin_audit_log; run_capture run
 if [[ $RC -ne 0 && $(count_dumps 'scheduled-*.sql') -eq 0 ]]; then
   pass 'dump missing a required table is rejected'
 else fail 'dump missing a required table is rejected'; fi
+
+# The audit log is the only record of a destructive operator action, and a
+# project deletion cannot be undone from the panel. A dump that kept every
+# other table and lost this one would preserve the effect and discard the
+# account of who caused it.
+setup_case; write_tables users deploys deploy_sagas api_keys projects custom_domains; run_capture run
+if [[ $RC -ne 0 && $(count_dumps 'scheduled-*.sql') -eq 0 ]]; then
+  pass 'dump missing the audit log is rejected'
+else fail 'dump missing the audit log is rejected'; fi
 
 setup_case; write_tables; run_capture run
 if [[ $RC -ne 0 ]]; then pass 'dump with no table data at all is rejected'; else fail 'dump with no table data at all is rejected'; fi

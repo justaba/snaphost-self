@@ -33,6 +33,7 @@ func (f *fakeBilling) UpdateDeployStatus(context.Context, string, string, *strin
 func (f *fakeBilling) SetDeployRunning(context.Context, string, billing.SetRunningRequest) error {
 	panic("not used")
 }
+func (f *fakeBilling) MarkDeployImageDeleted(context.Context, string) error { panic("not used") }
 
 const (
 	testDeployID = "b132cb0d-ce92-4009-a8f3-221d86d8607c"
@@ -68,6 +69,8 @@ type deployBilling struct {
 	setRunningErr        error
 	statuses             []string
 	setRunningContextErr *error
+	markImageErr         error
+	markedImages         []string
 }
 
 func (b *deployBilling) GetDeploy(context.Context, string) (*billing.DeployInfo, error) {
@@ -86,6 +89,10 @@ func (b *deployBilling) SetDeployRunning(ctx context.Context, _ string, _ billin
 	}
 	return b.setRunningErr
 }
+func (b *deployBilling) MarkDeployImageDeleted(_ context.Context, deployID string) error {
+	b.markedImages = append(b.markedImages, deployID)
+	return b.markImageErr
+}
 
 type fakeBackend struct {
 	runErr         error
@@ -93,6 +100,8 @@ type fakeBackend struct {
 	stopCalls      *int
 	stopContextErr *error
 	onRun          func()
+	removeImageErr error
+	removedImages  *[]string
 }
 
 func (b fakeBackend) Run(context.Context, backend.RunRequest) (*backend.RunResult, error) {
@@ -126,6 +135,12 @@ func (b fakeBackend) StreamLogs(context.Context, string) (<-chan string, error) 
 	ch := make(chan string)
 	close(ch)
 	return ch, nil
+}
+func (b fakeBackend) RemoveImage(_ context.Context, imageRef string) error {
+	if b.removedImages != nil {
+		*b.removedImages = append(*b.removedImages, imageRef)
+	}
+	return b.removeImageErr
 }
 func (b fakeBackend) Name() string { return "fake" }
 
@@ -544,6 +559,81 @@ func TestUndeployMatchingStoredContainerAllowsStop(t *testing.T) {
 	}
 }
 
+// Stopping must NOT release the image. The image is what lets Start bring the
+// deploy back in seconds instead of a rebuild, and releasing it here would
+// make every stop — including an unattended TTL expiry — irreversible.
+//
+// This is the invariant the image sweep is written around: it takes 'failed'
+// and 'deleted' and skips 'stopped'. If this test starts failing because an
+// image was removed, the restart button has quietly become decoration.
+func TestUndeployKeepsTheImageSoTheDeployCanStartAgain(t *testing.T) {
+	var removed []string
+	bill := &deployBilling{info: deployableInfo()}
+	svc := NewService(
+		fakeBackend{removedImages: &removed},
+		bill,
+		nil,
+		strictCfg(),
+		zap.NewNop(),
+	)
+
+	if err := svc.Undeploy(context.Background(), testDeployID, "container-id"); err != nil {
+		t.Fatalf("Undeploy() error = %v", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("stopping removed %v; a stopped deploy has to keep its image", removed)
+	}
+	if len(bill.markedImages) != 0 {
+		t.Fatalf("stopping recorded image cleanup that did not happen: %v", bill.markedImages)
+	}
+	if len(bill.statuses) != 1 || bill.statuses[0] != "stopped" {
+		t.Fatalf("statuses = %v, want exactly one transition to stopped", bill.statuses)
+	}
+}
+
+// The marker is written only after Docker confirms the image is gone, so a
+// backend failure must not leave a row claiming reclaimed disk that is still
+// occupied — that row would never be swept again.
+func TestRemoveImageDoesNotRecordCleanupThatDidNotHappen(t *testing.T) {
+	bill := &deployBilling{info: deployableInfo()}
+	svc := NewService(
+		fakeBackend{removeImageErr: errors.New("image is referenced by a running container")},
+		bill,
+		nil,
+		strictCfg(),
+		zap.NewNop(),
+	)
+
+	if err := svc.RemoveImage(context.Background(), testDeployID, testImageRef); err == nil {
+		t.Fatal("RemoveImage reported success while the backend refused")
+	}
+	if len(bill.markedImages) != 0 {
+		t.Fatalf("marked %v as cleaned up despite the backend failing", bill.markedImages)
+	}
+}
+
+// A deploy that failed before anything was built has no artifact. Calling the
+// daemon for an empty reference would be an error, and recording cleanup would
+// be a lie.
+func TestRemoveImageIsANoOpWithoutAnImageRef(t *testing.T) {
+	var removed []string
+	bill := &deployBilling{info: deployableInfo()}
+	svc := NewService(
+		fakeBackend{removedImages: &removed},
+		bill,
+		nil,
+		strictCfg(),
+		zap.NewNop(),
+	)
+
+	if err := svc.RemoveImage(context.Background(), testDeployID, "   "); err != nil {
+		t.Fatalf("RemoveImage() error = %v", err)
+	}
+	if len(removed) != 0 || len(bill.markedImages) != 0 {
+		t.Fatalf("an empty image_ref reached the backend (%v) or the marker (%v)", removed, bill.markedImages)
+	}
+}
+
 func TestUndeployMismatchedContainerRejectedBeforeStop(t *testing.T) {
 	calls := 0
 	svc := NewService(
@@ -637,7 +727,7 @@ func TestStopExpiredPublishesTTLLogs(t *testing.T) {
 	want := []string{
 		"watchdog TTL cleanup started",
 		"stopping deployment",
-		"stopped cleanly",
+		"stopped cleanly, image kept for restart",
 		"watchdog TTL cleanup succeeded",
 	}
 	assertLogTexts(t, pub.lines, want)
@@ -694,3 +784,4 @@ func (a assertingBilling) UpdateDeployStatus(context.Context, string, string, *s
 func (a assertingBilling) SetDeployRunning(context.Context, string, billing.SetRunningRequest) error {
 	panic("not used")
 }
+func (a assertingBilling) MarkDeployImageDeleted(context.Context, string) error { panic("not used") }

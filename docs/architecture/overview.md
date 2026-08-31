@@ -48,7 +48,7 @@ cloud runtime are not part of the current system.
 
 SQLite is the only durable application store. It runs in WAL mode at
 DATABASE_PATH and contains users, sessions, API keys, projects, deploys, saga
-state, domains, AI cache entries and AI usage records.
+state, domains, AI cache entries, AI usage records and the operator audit log.
 
 The following state is intentionally process-local:
 

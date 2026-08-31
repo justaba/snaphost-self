@@ -37,7 +37,12 @@ type Repo interface {
 	UpdateStatus(ctx context.Context, deployID uuid.UUID, status string, failureReason *string) error
 	SetRunning(ctx context.Context, deployID uuid.UUID, imageRef, endpointURL, subdomain, containerID string, ttlExpiresAt time.Time) error
 	MarkDeleted(ctx context.Context, deployID uuid.UUID) error
+	MarkImageDeleted(ctx context.Context, deployID uuid.UUID) error
+	BeginRestart(ctx context.Context, deployID uuid.UUID, defaultPort int) (*RestartTarget, error)
+	AbandonRestart(ctx context.Context, deployID uuid.UUID, reason string) error
+	GetSaga(ctx context.Context, deployID uuid.UUID) (*SagaView, error)
 	FindExpiredWithDetails(ctx context.Context, limit int) ([]ExpiredDeploy, error)
+	FindImagesPendingCleanup(ctx context.Context, limit int) ([]ImageCleanup, error)
 	FindRouteByHost(ctx context.Context, host string) (*RouteInfo, error)
 }
 
@@ -48,19 +53,48 @@ type Projects interface {
 	Ensure(ctx context.Context, userID uuid.UUID, sourceKey string) (*project.Project, error)
 }
 
+// RuntimeCleaner is the saga runtime surface plus explicit artifact cleanup
+// for terminal deploys that never acquired a container.
+type RuntimeCleaner interface {
+	saga.RunnerClient
+	RemoveImage(ctx context.Context, deployID, imageRef string) error
+}
+
 // Handler exposes HTTP endpoints for deploy operations.
 type Handler struct {
 	repo           Repo
 	projects       Projects
 	log            *zap.Logger
 	sagaQueue      *saga.Queue
-	runner         saga.RunnerClient
+	runner         RuntimeCleaner
 	logReader      *logs.Reader
 	uploads        *uploads.Store
 	maxUploadBytes int64
 	uploadTTL      time.Duration
 	creds          *gitcreds.Store
 	credTTL        time.Duration
+	restartPort    int
+	restartTTLMin  int
+}
+
+// HandlerOption configures optional handler behaviour. It is variadic so the
+// already long constructor does not grow another two positional ints that
+// every call site and test would have to carry.
+type HandlerOption func(*Handler)
+
+// WithRestartDefaults supplies the port and TTL a restarted deploy gets when
+// the saga recorded none. They are the same values the orchestrator uses, and
+// they come from one place in main so a restart and a first deploy cannot
+// disagree about where the application listens.
+func WithRestartDefaults(port, ttlMinutes int) HandlerOption {
+	return func(h *Handler) {
+		if port > 0 {
+			h.restartPort = port
+		}
+		if ttlMinutes > 0 {
+			h.restartTTLMin = ttlMinutes
+		}
+	}
 }
 
 // NewHandler creates a new deploy HTTP handler. sagaQueue, logReader, and
@@ -68,8 +102,8 @@ type Handler struct {
 // (CreateDeploy returns 503 if the saga is off; GetLogs returns 503 if log
 // history is off; UploadArchive returns 503 if the upload store is off).
 // projects may be nil, in which case deploys are created without a project.
-func NewHandler(repo Repo, projects Projects, log *zap.Logger, sagaQueue *saga.Queue, runner saga.RunnerClient, logReader *logs.Reader, uploads *uploads.Store, maxUploadBytes int64, uploadTTL time.Duration, creds *gitcreds.Store, credTTL time.Duration) *Handler {
-	return &Handler{
+func NewHandler(repo Repo, projects Projects, log *zap.Logger, sagaQueue *saga.Queue, runner RuntimeCleaner, logReader *logs.Reader, uploads *uploads.Store, maxUploadBytes int64, uploadTTL time.Duration, creds *gitcreds.Store, credTTL time.Duration, opts ...HandlerOption) *Handler {
+	h := &Handler{
 		repo:           repo,
 		projects:       projects,
 		log:            log,
@@ -81,8 +115,21 @@ func NewHandler(repo Repo, projects Projects, log *zap.Logger, sagaQueue *saga.Q
 		uploadTTL:      uploadTTL,
 		creds:          creds,
 		credTTL:        credTTL,
+		restartPort:    defaultRestartPort,
+		restartTTLMin:  defaultRestartTTLMinutes,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
+
+// Fallbacks for a deploy whose saga recorded no port, and for a TTL nobody
+// configured. They mirror the orchestrator's own defaults.
+const (
+	defaultRestartPort       = 3000
+	defaultRestartTTLMinutes = 30
+)
 
 // updateStatusRequest is the JSON body for POST /internal/deploys/:id/status.
 type updateStatusRequest struct {
@@ -154,6 +201,22 @@ func (h *Handler) SetRunning(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "running"})
 }
 
+// MarkImageDeleted records successful local artifact cleanup. The runtime only
+// calls this after Docker confirms the image is absent.
+func (h *Handler) MarkImageDeleted(c *gin.Context) {
+	deployID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errResponse("invalid_deploy_id", "id must be a valid UUID"))
+		return
+	}
+	if err := h.repo.MarkImageDeleted(c.Request.Context(), deployID); err != nil {
+		h.log.Error("failed to mark deploy image deleted", zap.String("deploy_id", deployID.String()), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to record image cleanup"))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
 // ListExpired handles GET /internal/deploys/expired?limit=N — returns deploys
 // with status='running' whose TTL has expired, for the watchdog to stop.
 func (h *Handler) ListExpired(c *gin.Context) {
@@ -178,6 +241,25 @@ func (h *Handler) ListExpired(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, deploys)
+}
+
+// ListImagesPendingCleanup returns terminal deploy artifacts the watchdog must
+// remove. Successful removals disappear after MarkImageDeleted.
+func (h *Handler) ListImagesPendingCleanup(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	images, err := h.repo.FindImagesPendingCleanup(c.Request.Context(), limit)
+	if err != nil {
+		h.log.Error("failed to list deploy images pending cleanup", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to list image cleanup work"))
+		return
+	}
+	if images == nil {
+		images = []ImageCleanup{}
+	}
+	c.JSON(http.StatusOK, images)
 }
 
 // LookupRouteByHost handles GET /internal/routes?host=<host>. It returns the
@@ -529,7 +611,29 @@ func (h *Handler) GetDeploy(c *gin.Context) {
 		c.JSON(http.StatusForbidden, errResponse("forbidden", "deploy belongs to a different user"))
 		return
 	}
-	c.JSON(http.StatusOK, d)
+
+	// The saga rides along rather than living behind its own endpoint: every
+	// caller that wants one wants the other, and this is the screen where "why
+	// is it stuck" gets answered.
+	//
+	// It is embedded so the deploy's own fields stay exactly where they were.
+	// A nested {"deploy": …} would have been tidier and would have broken every
+	// existing client for a field most of them do not read. A missing saga is
+	// omitted rather than an error: rows predating the orchestrator have none.
+	body := deployDetailResponse{Deploy: *d}
+	if s, err := h.repo.GetSaga(c.Request.Context(), deployID); err != nil {
+		h.log.Warn("failed to read saga state for a deploy",
+			zap.String("deploy_id", deployID.String()), zap.Error(err))
+	} else {
+		body.Saga = s
+	}
+	c.JSON(http.StatusOK, body)
+}
+
+// deployDetailResponse is the deploy plus its orchestration state.
+type deployDetailResponse struct {
+	Deploy
+	Saga *SagaView `json:"saga,omitempty"`
 }
 
 // ListDeploys handles GET /api/v1/deploys?limit=&offset= — paginated list
@@ -590,11 +694,14 @@ func (h *Handler) DeleteDeploy(c *gin.Context) {
 		return
 	}
 
+	needsRuntime := (d.ContainerID != nil && *d.ContainerID != "") ||
+		(d.ImageRef != nil && *d.ImageRef != "" && d.ImageDeletedAt == nil)
+	if needsRuntime && h.runner == nil {
+		c.JSON(http.StatusServiceUnavailable, errResponse("runner_unavailable", "runner client is not configured"))
+		return
+	}
+
 	if d.ContainerID != nil && *d.ContainerID != "" {
-		if h.runner == nil {
-			c.JSON(http.StatusServiceUnavailable, errResponse("runner_unavailable", "runner client is not configured"))
-			return
-		}
 		if err := h.runner.Stop(c.Request.Context(), deployID.String(), *d.ContainerID); err != nil {
 			h.log.Error("failed to stop deploy runtime",
 				zap.String("deploy_id", deployID.String()),
@@ -615,7 +722,188 @@ func (h *Handler) DeleteDeploy(c *gin.Context) {
 		return
 	}
 
+	// Deleting is what releases the image; stopping no longer does, because a
+	// stopped deploy has to stay startable. This runs after MarkDeleted and is
+	// best-effort on purpose: the row is 'deleted' now, so it is already in the
+	// image sweep's queue and a Docker failure here is retried within a tick
+	// rather than turning a completed deletion into a 502.
+	if d.ImageRef != nil && *d.ImageRef != "" && d.ImageDeletedAt == nil {
+		if err := h.runner.RemoveImage(c.Request.Context(), deployID.String(), *d.ImageRef); err != nil {
+			h.log.Warn("deploy image cleanup deferred to the watchdog",
+				zap.String("deploy_id", deployID.String()),
+				zap.String("image_ref", *d.ImageRef),
+				zap.Error(err),
+			)
+		}
+	}
+
 	c.Status(http.StatusNoContent)
+}
+
+// StopDeploy handles POST /api/v1/deploys/:id/stop — tears the container down
+// and leaves everything else alone.
+//
+// It exists because stopping and deleting are different operations and the
+// panel had only one. "Остановить" called DELETE, which marks the deploy
+// deleted and releases its image, so stopping a site destroyed the artifact
+// that StartDeploy needs — the start button would have had nothing to start,
+// on a deploy the operator only meant to pause.
+func (h *Handler) StopDeploy(c *gin.Context) {
+	userID, err := userIDFromHeader(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, errResponse("missing_user", err.Error()))
+		return
+	}
+	deployID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errResponse("invalid_deploy_id", "id must be a valid UUID"))
+		return
+	}
+
+	d, err := h.repo.Get(c.Request.Context(), deployID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, errResponse("not_found", "deploy not found"))
+		return
+	}
+	if d.UserID != userID {
+		c.JSON(http.StatusForbidden, errResponse("forbidden", "deploy belongs to a different user"))
+		return
+	}
+	if d.Status == "stopped" {
+		c.JSON(http.StatusOK, gin.H{"status": "stopped"})
+		return
+	}
+	if d.Status != "running" || d.ContainerID == nil || *d.ContainerID == "" {
+		c.JSON(http.StatusConflict, errResponse("not_running", "only a running deploy can be stopped"))
+		return
+	}
+	if h.runner == nil {
+		c.JSON(http.StatusServiceUnavailable, errResponse("runner_unavailable", "runner client is not configured"))
+		return
+	}
+
+	// Tearing a container down outlives the request that asked for it.
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := h.runner.Stop(stopCtx, deployID.String(), *d.ContainerID); err != nil {
+		h.log.Error("failed to stop deploy",
+			zap.String("deploy_id", deployID.String()),
+			zap.String("container_id", *d.ContainerID),
+			zap.Error(err),
+		)
+		c.JSON(http.StatusBadGateway, errResponse("stop_failed", "failed to stop the deploy runtime"))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "stopped"})
+}
+
+// StartDeploy handles POST /api/v1/deploys/:id/start — brings a stopped
+// deploy back up from the image it was already built into.
+//
+// This is not a rebuild and deliberately does not go through the saga. The
+// artifact exists, the port the build detected is on the saga row, and the
+// runtime's own liveness probe still decides what "running" means — so the
+// work is one container run, and routing it through the build queue would
+// mean re-cloning a repository to produce an image that is already on disk.
+//
+// It is the reason FindImagesPendingCleanup skips 'stopped'. If that ever
+// changes back, this endpoint starts answering image_reclaimed for every
+// deploy and the button becomes decoration.
+func (h *Handler) StartDeploy(c *gin.Context) {
+	userID, err := userIDFromHeader(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, errResponse("missing_user", err.Error()))
+		return
+	}
+	deployID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errResponse("invalid_deploy_id", "id must be a valid UUID"))
+		return
+	}
+	if h.runner == nil {
+		c.JSON(http.StatusServiceUnavailable, errResponse("runner_unavailable", "runner client is not configured"))
+		return
+	}
+
+	target, err := h.repo.BeginRestart(c.Request.Context(), deployID, h.restartPort)
+	switch {
+	case errors.Is(err, ErrDeployNotFound):
+		c.JSON(http.StatusNotFound, errResponse("not_found", "deploy not found"))
+		return
+	case errors.Is(err, ErrNotStopped):
+		c.JSON(http.StatusConflict, errResponse("not_stopped",
+			"only a stopped deploy can be started"))
+		return
+	case errors.Is(err, ErrNotRestartable):
+		c.JSON(http.StatusConflict, errResponse("image_reclaimed",
+			"the build artifact has been reclaimed; deploy the project again to rebuild it"))
+		return
+	case err != nil:
+		h.log.Error("failed to claim deploy for restart",
+			zap.String("deploy_id", deployID.String()), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to start deploy"))
+		return
+	}
+
+	// The ownership check comes after the claim because the claim is what
+	// makes the read consistent; a refusal here still has to release it.
+	if target.UserID != userID {
+		h.abandonRestart(deployID, "")
+		c.JSON(http.StatusForbidden, errResponse("forbidden", "deploy belongs to a different user"))
+		return
+	}
+
+	// Starting a container outlives the request that asked for it: a browser
+	// that navigates away must not leave a running container with the row
+	// still saying 'provisioning'.
+	runCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	resp, err := h.runner.Deploy(runCtx, saga.DeployRequest{
+		DeployID:       deployID.String(),
+		UserID:         userID.String(),
+		ImageRef:       target.ImageRef,
+		Port:           target.Port,
+		TTLMinutes:     h.restartTTLMin,
+		IdempotencyKey: deployID.String() + ":start",
+	})
+	if err != nil {
+		reason := "start failed"
+		var statusErr *saga.StatusError
+		if errors.As(err, &statusErr) {
+			reason = statusErr.UserReason()
+		}
+		h.abandonRestart(deployID, reason)
+		h.log.Error("failed to start stopped deploy",
+			zap.String("deploy_id", deployID.String()),
+			zap.String("image_ref", target.ImageRef),
+			zap.Error(err),
+		)
+		c.JSON(http.StatusBadGateway, errResponse("start_failed", reason))
+		return
+	}
+
+	h.log.Info("stopped deploy started from its existing image",
+		zap.String("deploy_id", deployID.String()),
+		zap.String("container_id", resp.ContainerID),
+		zap.Int("port", target.Port),
+	)
+	c.JSON(http.StatusOK, gin.H{
+		"status":       "running",
+		"container_id": resp.ContainerID,
+		"endpoint_url": resp.EndpointURL,
+	})
+}
+
+// abandonRestart releases a claim the runtime did not take up. It uses its own
+// context because the request's may already be the reason we are here.
+func (h *Handler) abandonRestart(deployID uuid.UUID, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := h.repo.AbandonRestart(ctx, deployID, reason); err != nil {
+		h.log.Error("failed to release a restart claim; the deploy is stuck in provisioning",
+			zap.String("deploy_id", deployID.String()), zap.Error(err))
+	}
 }
 
 // GetLogs handles GET /api/v1/deploys/:id/logs?since=&limit= — returns

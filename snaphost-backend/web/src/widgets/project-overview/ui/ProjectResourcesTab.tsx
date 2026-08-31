@@ -1,4 +1,4 @@
-import { Network, HardDrive } from 'lucide-react';
+import { Network, HardDrive, Workflow } from 'lucide-react';
 import type { DeployDetail } from '@/entities/deploy';
 import styles from './ProjectResourcesTab.module.css';
 
@@ -51,8 +51,50 @@ function ProjectResourcesTab({ deploy }: ProjectResourcesTabProps) {
         value={deploy.subdomain ?? '—'}
         hint={deploy.endpoint_url ?? undefined}
       />
+      <Row
+        icon={<HardDrive size={14} />}
+        label="Образ на диске"
+        value={imageState(deploy)}
+        hint={
+          deploy.image_deleted_at
+            ? 'Запустить нельзя — нужен новый деплой проекта'
+            : 'Остановленный деплой можно запустить без пересборки'
+        }
+      />
+      {/* The saga is the only place that answers "why is this stuck". It used
+          to be visible only on an admin screen, and that screen is gone. */}
+      {deploy.saga && (
+        <>
+          <Row
+            icon={<Workflow size={14} />}
+            label="Шаг саги"
+            value={deploy.saga.current_step}
+            hint={
+              deploy.saga.retry_count > 0
+                ? `попыток: ${deploy.saga.retry_count}`
+                : deploy.saga.failure_reason || undefined
+            }
+          />
+          {deploy.saga.app_port != null && (
+            <Row
+              icon={<Network size={14} />}
+              label="Порт приложения"
+              value={String(deploy.saga.app_port)}
+              hint="определён при сборке; на нём проверяется живость"
+            />
+          )}
+        </>
+      )}
     </div>
   );
+}
+
+/** image_ref survives cleanup for diagnostics, so the presence of the artifact
+ *  is a separate fact from the name of it. This row is what tells an operator
+ *  whether the Запустить button will work. */
+function imageState(deploy: DeployDetail): string {
+  if (!deploy.image_ref) return 'не собран';
+  return deploy.image_deleted_at ? 'удалён сборщиком мусора' : 'есть';
 }
 
 export default ProjectResourcesTab;

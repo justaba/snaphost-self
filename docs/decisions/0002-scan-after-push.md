@@ -33,4 +33,8 @@ own code, but that switch is not implemented yet.
   window.
 - Runtime can inspect and start the exact local image without a registry.
 - Trivy and Docker daemon failures remain part of the build path.
-- Image cleanup on ordinary deploy deletion or expiry is still missing.
+- The host daemon became the only image store, so ordinary deploy expiry and
+  deletion had to learn to remove images too. That is implemented: a terminal
+  deploy's image is released and deploys.image_deleted_at records it. See
+  [deploy lifecycle](../architecture/deploy-lifecycle.md). The BuildKit cache
+  volume remains unmanaged.

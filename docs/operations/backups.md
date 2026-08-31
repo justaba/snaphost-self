@@ -9,12 +9,15 @@ Updated: 2026-08-30
 
 The durable control-plane state is the SQLite database at
 /var/snaphost/data/snaphost.db in the snaphost_data volume. It contains the
-operator identity, sessions, API keys, projects, deploys, sagas, domains and AI
-records.
+operator identity, sessions, API keys, projects, deploys, sagas, domains, AI
+records and the operator audit log.
 
 Docker images, running containers and BuildKit cache are not contained in this
 backup. Restoring SQLite can recover ownership and history, but it does not
-recreate a missing image or container.
+recreate a missing image or container. That gap widened with image
+reclamation: a deploy whose image the watchdog has released cannot be restarted
+from a restore, only rebuilt from its source. deploys.image_deleted_at is what
+tells them apart.
 
 ## Never copy the live database file
 
@@ -31,7 +34,7 @@ infra/backup.sh run:
 1. takes the same lock as deployment so it cannot overlap migration;
 2. runs sqlite3 .dump inside the application container;
 3. rejects a truncated dump and requires the durable identity, project, deploy,
-   saga, key and domain tables;
+   saga, key, domain and operator-audit tables;
 4. optionally encrypts with age;
 5. publishes the file and SHA-256 checksum atomically;
 6. optionally copies both to S3-compatible off-host storage and confirms the

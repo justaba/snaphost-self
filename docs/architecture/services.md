@@ -12,7 +12,7 @@ are packages in one process now.
 | Package | Responsibility |
 | --- | --- |
 | gateway | Gin middleware, local authentication integration, Casbin RBAC, request enrichment and WebSocket log access. |
-| control | Operator auth, sessions, API keys, projects, deploys, domains, admin reads, SQLite schema and saga orchestration. |
+| control | Operator auth, sessions, API keys, projects, deploys, domains, the operator audit log, SQLite schema and saga orchestration. |
 | builder | Request validation, clone or archive unpack, project detection, Dockerfile acquisition, BuildKit export and Trivy scanning. |
 | runtime | Docker container lifecycle, runtime hardening, liveness probing, log forwarding and expiry watchdog. |
 | ai | Built-in Dockerfile templates, OpenRouter fallback, response validation, cache and usage records. |

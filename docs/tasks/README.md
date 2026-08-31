@@ -5,8 +5,41 @@ Updated: 2026-08-30
 
 ## Active
 
-No active task is recorded. Task 1 is complete; Task 7 is the next fully scoped
-task but remains blocked on its version and registry decision.
+No active task is recorded. Task 7 is the next fully scoped task but remains
+blocked on its version and registry decision.
+
+Two pieces of work landed outside the numbered tasks, because one closed a
+recorded gap and the other is the smallest useful part of Task 6:
+
+- **Image reclamation.** The watchdog releases the local Docker image of any
+  deploy that reaches a terminal status, and deploys.image_deleted_at records
+  it. This was the top entry under "known gaps" in every architecture document
+  and is no longer one. The BuildKit cache volume is still unmanaged.
+- **Operator actions on the dashboard, and no admin console.** The whole
+  /api/v1/admin surface and its seven panel screens are deleted. They existed
+  so one role could administer other people's accounts; a self-hosted install
+  has one account, so the dashboard is the console. What replaced them:
+
+  - GET /api/v1/projects and DELETE /api/v1/projects/:id on the ordinary user
+    surface, the deletion writing an admin_audit_log row in the same
+    transaction as the removal;
+  - POST /api/v1/deploys/:id/stop and .../start, which are now different
+    operations. Stopping keeps the image so starting is a container run rather
+    than a rebuild; deleting is what releases the disk. The panel previously
+    had one button wired to DELETE and labelled «Остановить», so pausing a site
+    destroyed it;
+  - the saga state that only an admin screen used to show, folded into the
+    deploy detail — it is the only answer to "why is this stuck";
+  - GET /api/v1/audit and a screen for it under Настройки, so the audit log is
+    read by something other than sqlite3.
+
+  Two dead entries went on the way: the Транзакции tab, pointing at a route
+  deleted with billing in Task 1, and a «Перезапустить» button calling an
+  endpoint this backend has never had.
+
+Task 6 is therefore partially completed rather than planned. Stop, start,
+delete and the audit read surface are done; audited shell access into a
+container remains.
 
 ## Completed
 
@@ -27,7 +60,7 @@ Real build pressure on a 1 GB host is also still unmeasured.
 | 3 — Managed services | Template-defined databases and application authentication resources with volumes, health checks and injected connection data. | — |
 | 4 — The edge | Integrate Caddy with verified-domain authorization and dynamic Docker routing; remove Traefik from the intended production path. | — |
 | 5 — Git webhooks | Deploy on push. | — |
-| 6 — Operator actions | Restart, stop and audited shell access to a container. | — |
+| 6 — Operator actions *(partially completed)* | Stop, start, project deletion and the audit read surface are done. Audited shell access into a container remains. | — |
 | 7 — Install and upgrade without us | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
 
 Tasks 2, 3 and 6 include their corresponding panel work. Task 1 delivered the

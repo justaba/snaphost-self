@@ -41,6 +41,21 @@ type StatusReporter interface {
 	ReportBuilding(ctx context.Context, deployID string) error
 	// ReportFailed notifies that the build has failed with the given reason.
 	ReportFailed(ctx context.Context, deployID, reason string) error
+	// ReportImageLoaded records that an image now exists in the local daemon,
+	// before anything downstream has had a chance to reject it.
+	//
+	// This is not the same fact as BuildCompleted. That event is published on
+	// the success path only, so an image rejected by the vulnerability scan —
+	// or by anything else between the daemon load and a running container —
+	// never reached deploys.image_ref, and the image sweep works entirely from
+	// that column. The gate's own removal is best-effort by design, because
+	// the scan failure is the error the operator should see; when that removal
+	// failed there was nothing left that could name the artifact, and it stayed
+	// on the host for good.
+	//
+	// The rule this encodes: the moment an image exists on the host, the
+	// database says so.
+	ReportImageLoaded(ctx context.Context, deployID, imageRef string) error
 }
 
 // AIClient interface moved to internal/ai
@@ -104,6 +119,81 @@ func (r *Runner) publishEvent(ctx context.Context, ev events.BuildEvent) {
 			zap.String("type", string(ev.Type)),
 			zap.Error(err))
 	}
+}
+
+// recordLoadedImageTimeout bounds the retry below. It is short: the write is a
+// single UPDATE against a local SQLite file, so anything slower than this is
+// not going to be fixed by waiting.
+const recordLoadedImageTimeout = 10 * time.Second
+
+// recordLoadedImage enforces one invariant: either the database names the
+// image, or the image is not on the host.
+//
+// The retry is not decoration. The most likely reason the first attempt fails
+// is that the build context has been cancelled — a timeout, a shutdown, a
+// caller giving up — and retrying on that same dead context would fail for the
+// reason it just failed. The second attempt therefore runs on a fresh bounded
+// context, which is the only kind that can still succeed.
+//
+// When both fail, the artifact is removed rather than left for a retry to
+// overwrite. An earlier version returned a Transient error on the theory that
+// the build would be retried and the deterministic image name would make the
+// second run reuse the same tag. Nothing retries: runBuildWorker logs
+// IsTransient and calls FinalizeAsFailed either way, and a retry budget is
+// still unimplemented. The deploy was terminal, the image was on disk, and
+// deploys.image_ref was empty — the exact leak this function exists to close,
+// reached through the function itself.
+//
+// Deleting is therefore the only move that keeps the invariant true without
+// depending on machinery that does not exist.
+func (r *Runner) recordLoadedImage(ctx context.Context, deployID, imageRef string, log *zap.Logger) error {
+	if r.Status == nil {
+		return nil
+	}
+
+	err := r.Status.ReportImageLoaded(ctx, deployID, imageRef)
+	if err == nil {
+		return nil
+	}
+	log.Warn("failed to record the built image, retrying on a fresh context",
+		zap.String("image_ref", imageRef),
+		zap.Error(err),
+	)
+
+	retryCtx, cancel := context.WithTimeout(context.Background(), recordLoadedImageTimeout)
+	defer cancel()
+	err = r.Status.ReportImageLoaded(retryCtx, deployID, imageRef)
+	if err == nil {
+		return nil
+	}
+	log.Error("could not record the built image; removing it so nothing is left unreferenced",
+		zap.String("image_ref", imageRef),
+		zap.Error(err),
+	)
+
+	// The removal gets its own context for the same reason the retry did.
+	if r.Images == nil {
+		log.Error("no image remover is configured; the built image is unreferenced and must be removed by hand",
+			zap.String("image_ref", imageRef),
+		)
+		return Permanent(fmt.Errorf("record built image %s: %w", imageRef, err))
+	}
+
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), recordLoadedImageTimeout)
+	defer cancelCleanup()
+	if delErr := r.Images.RemoveImage(cleanupCtx, imageRef); delErr != nil {
+		// The control plane's database and the Docker daemon are both
+		// unreachable. Nothing durable can be written anywhere — a deferred
+		// cleanup record would need the database that just refused — so this
+		// log line is the only artifact, and it names the image precisely so
+		// an operator can remove it. Documented as the one residual leak.
+		log.Error("the built image could not be recorded or removed; it is orphaned until removed by hand",
+			zap.String("image_ref", imageRef),
+			zap.String("remove_image_command", "docker image rm "+imageRef),
+			zap.Error(delErr),
+		)
+	}
+	return Permanent(fmt.Errorf("record built image %s: %w", imageRef, err))
 }
 
 // Result is the success output of Runner.Run. The worker passes it to
@@ -523,6 +613,19 @@ func (r *Runner) executePipeline(ctx context.Context, job queue.Job, log *zap.Lo
 	})
 	if err != nil {
 		return "", "", 0, classifyBuildKitError(fmt.Errorf("build: %w", err))
+	}
+
+	// 12a. The image is on the host now, so record it before anything can
+	// reject it. Everything after this point can fail, and several of those
+	// failures used to leave an artifact the image sweep could not name.
+	//
+	// This is a barrier, not a best-effort log line. It was the latter and that
+	// was not enough: the pipeline continued, the scan then failed, its own
+	// best-effort removal also failed, and the artifact was orphaned exactly as
+	// before. Carrying on without a durable reference re-creates the leak this
+	// call exists to close.
+	if err := r.recordLoadedImage(ctx, job.DeployID, imageRef, log); err != nil {
+		return "", "", 0, err
 	}
 
 	// 13. Scan the built image via Trivy. On critical-vulnerability failure

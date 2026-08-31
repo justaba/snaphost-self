@@ -7,7 +7,11 @@ p, user, /api/v1/deploys/upload, POST
 p, user, /api/v1/deploys, GET
 p, user, /api/v1/deploys/:id, GET
 p, user, /api/v1/deploys/:id, DELETE
+p, user, /api/v1/deploys/:id/start, POST
+p, user, /api/v1/deploys/:id/stop, POST
 p, user, /api/v1/deploys/:id/logs, GET
+p, user, /api/v1/projects, GET
+p, user, /api/v1/projects/:id, DELETE
 p, user, /api/v1/keys, POST
 p, user, /api/v1/keys, GET
 p, user, /api/v1/keys/:id, DELETE
@@ -18,15 +22,6 @@ p, user, /api/v1/domains/:id/target, POST
 p, user, /api/v1/ai/status/:id, GET
 p, user, /ws/logs/:id, GET
 
-p, admin, /api/v1/admin/overview, GET
-p, admin, /api/v1/admin/users, GET
-p, admin, /api/v1/admin/users/:id, GET
-p, admin, /api/v1/admin/users/:id/deploys, GET
-p, admin, /api/v1/admin/users/:id/domains, GET
-p, admin, /api/v1/admin/users/:id/projects, GET
-p, admin, /api/v1/admin/users/:id/keys, GET
-p, admin, /api/v1/admin/deploys, GET
-p, admin, /api/v1/admin/deploys/:id, GET
-p, admin, /api/v1/admin/domains, GET
+p, admin, /api/v1/audit, GET
 
 g, admin, user

@@ -28,7 +28,10 @@ import (
 
 // DockerBackend implements backend.Backend using the local Docker daemon.
 type DockerBackend struct {
-	cli       *client.Client
+	cli *client.Client
+	// teardown is the same client behind the narrow interface Stop uses, so
+	// the teardown path can be tested. See teardown.go for why that matters.
+	teardown  teardownClient
 	cfg       *config.Config
 	publisher logs.Publisher
 	log       *zap.Logger
@@ -53,6 +56,7 @@ func NewDockerBackend(cfg *config.Config, publisher logs.Publisher, log *zap.Log
 
 	return &DockerBackend{
 		cli:       cli,
+		teardown:  cli,
 		cfg:       cfg,
 		publisher: publisher,
 		log:       log,
@@ -157,21 +161,32 @@ func (b *DockerBackend) Run(ctx context.Context, req backend.RunRequest) (*backe
 
 // Stop gracefully shuts down the container and cleans up associated resources.
 func (b *DockerBackend) Stop(ctx context.Context, deployID, containerID string) error {
-	// Inspect to get deploy ID for network cleanup.
-	info, err := b.cli.ContainerInspect(ctx, containerID)
-	if err != nil {
-		// If the container is already gone, nothing to clean up.
-		if client.IsErrNotFound(err) {
-			b.publishLog(deployID, "runtime-shutdown", "container already absent", "warn")
-			b.log.Warn("container already removed during stop", zap.String("container_id", containerID))
-			return nil
-		}
-		return fmt.Errorf("inspect container for stop: %w", err)
-	}
+	// The deploy id the network name is built from. The label is authoritative
+	// when the container is there to read it from; the argument is the fallback
+	// and is the only thing available once it is not.
+	containerDeployID := deployID
 
-	containerDeployID := info.Config.Labels["snaphost.deploy.id"]
-	if containerDeployID == "" {
-		containerDeployID = deployID
+	// Inspect to get deploy ID for network cleanup.
+	info, err := b.teardown.ContainerInspect(ctx, containerID)
+	switch {
+	case err == nil:
+		if labelled := info.Config.Labels["snaphost.deploy.id"]; labelled != "" {
+			containerDeployID = labelled
+		}
+	case client.IsErrNotFound(err):
+		// An absent container does not mean there is nothing left to clean up,
+		// and returning here is how the network outlived its deploy. The usual
+		// way to reach this branch is a second attempt after a first one that
+		// removed the container and then failed on the network — so this is
+		// precisely the case that has to carry on to the network below.
+		b.publishLog(deployID, "runtime-shutdown", "container already absent", "warn")
+		b.log.Warn("container already removed during stop, continuing to network cleanup",
+			zap.String("container_id", containerID),
+			zap.String("deploy_id", deployID),
+		)
+		return b.destroyDeployNetwork(ctx, deployID, containerDeployID)
+	default:
+		return fmt.Errorf("inspect container for stop: %w", err)
 	}
 
 	// Graceful stop with 10 second timeout.
@@ -179,32 +194,70 @@ func (b *DockerBackend) Stop(ctx context.Context, deployID, containerID string) 
 	b.publishLog(deployID, "runtime-shutdown", "container delete started", "info")
 	b.log.Info("stopping container", zap.String("container_id", containerID), zap.String("deploy_id", containerDeployID))
 
-	if err := b.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &stopTimeout}); err != nil {
+	// A failed graceful stop is not fatal on its own: the removal below is
+	// forced, and it is the removal that decides whether the container is
+	// actually gone. Logging it and carrying on is the right call here.
+	if err := b.teardown.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &stopTimeout}); err != nil {
 		if !client.IsErrNotFound(err) {
-			b.log.Warn("container stop returned error", zap.Error(err))
+			b.log.Warn("container stop returned error, continuing to forced removal", zap.Error(err))
 		}
 	}
 
-	// Remove the container.
-	if err := b.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
+	// The removal is not best-effort, and it used to be. Swallowing this error
+	// made Stop report success for a container that is still on the host, and
+	// callers act on that answer: the deploy is recorded stopped, and project
+	// deletion goes on to hard-delete the rows that name the container. What
+	// is left is a running container nothing in the database points at, which
+	// no sweep can find because every sweep works from those rows.
+	//
+	// Not-found stays a success. Compensation and the watchdog both re-run
+	// this path, and a container that is already gone is the outcome they want.
+	if err := b.teardown.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force:         true,
 		RemoveVolumes: true,
-	}); err != nil {
-		if !client.IsErrNotFound(err) {
-			b.log.Warn("container remove returned error", zap.Error(err))
-		}
+	}); err != nil && !client.IsErrNotFound(err) {
+		b.publishLog(deployID, "runtime-shutdown", "container removal failed", "error")
+		b.log.Error("container remove failed",
+			zap.String("container_id", containerID),
+			zap.String("deploy_id", containerDeployID),
+			zap.Error(err),
+		)
+		return fmt.Errorf("remove container %s: %w", containerID, err)
 	}
 
-	// Remove the isolated network (best effort).
-	if containerDeployID != "" {
-		networkName := fmt.Sprintf("snaphost-deploy-%s", containerDeployID)
-		if err := DestroyNetwork(ctx, b.cli, networkName); err != nil {
-			b.log.Warn("failed to remove isolated network", zap.String("network", networkName), zap.Error(err))
-		}
+	if err := b.destroyDeployNetwork(ctx, deployID, containerDeployID); err != nil {
+		return err
 	}
 
 	b.publishLog(deployID, "runtime-shutdown", "container delete succeeded", "info")
 	b.log.Info("container stopped and cleaned up", zap.String("container_id", containerID))
+	return nil
+}
+
+// destroyDeployNetwork removes the per-deploy isolated network.
+//
+// It is reported like the container removal and for the same reason: the name
+// is derived from the deploy id, so once the rows naming that deploy are gone
+// — which is exactly what project deletion does right after Stop returns —
+// nothing can reconstruct it and no sweep can find it. A warning in a log is
+// not a record anything acts on.
+//
+// DestroyNetwork treats a missing network as success, so compensation, the
+// watchdog and a repeated deletion all re-run this safely.
+func (b *DockerBackend) destroyDeployNetwork(ctx context.Context, deployID, containerDeployID string) error {
+	if containerDeployID == "" {
+		return nil
+	}
+	networkName := fmt.Sprintf("snaphost-deploy-%s", containerDeployID)
+	if err := DestroyNetwork(ctx, b.teardown, networkName); err != nil {
+		b.publishLog(deployID, "runtime-shutdown", "network removal failed", "error")
+		b.log.Error("failed to remove isolated network",
+			zap.String("network", networkName),
+			zap.String("deploy_id", containerDeployID),
+			zap.Error(err),
+		)
+		return fmt.Errorf("remove deploy network %s: %w", networkName, err)
+	}
 	return nil
 }
 

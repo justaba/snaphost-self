@@ -28,14 +28,28 @@ export default function LoginPage() {
   return (
     <div className={`${styles.root} flex min-h-screen items-center justify-center bg-zinc-50 p-6`}>
       <div className="w-full max-w-sm">
-        <h1 className="mb-1 text-xl font-semibold tracking-tight text-zinc-900">Snaphost</h1>
-        <p className="mb-6 text-sm text-zinc-500">Войдите, чтобы управлять этим сервером.</p>
-        <LoginForm />
+        <div className="mb-6 text-center">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">SnapHost</h1>
+          <p className="mt-1 text-sm text-zinc-500">Войдите, чтобы управлять этим сервером.</p>
+        </div>
+
+        {/* A card, so the form sits on a surface rather than on the page
+            background. Same border, radius and padding as every other panel
+            surface — this screen used to be the one place that looked like it
+            belonged to a different application. */}
+        <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
+          <LoginForm />
+        </div>
+
         {status === 'loading' && (
-          <p className="mt-4 text-sm text-zinc-500" aria-live="polite">
+          <p className="mt-4 text-center text-sm text-zinc-500" aria-live="polite">
             Проверяем активную сессию…
           </p>
         )}
+
+        <p className="mt-6 text-center text-xs text-zinc-400">
+          Пароль оператора печатается один раз при первом запуске и не восстанавливается.
+        </p>
       </div>
     </div>
   );

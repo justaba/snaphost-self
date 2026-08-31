@@ -52,27 +52,33 @@ func TestNoBillingPathIsReachableByAnyRole(t *testing.T) {
 	}
 }
 
-// The operator console is admin-only, and `admin` inherits `user` rather than
-// the other way round.
-func TestAdminRoutesAreAdminOnly(t *testing.T) {
-	adminPaths := []string{
+// There is no /api/v1/admin surface any more. It existed so one role could
+// read across every account, which is a multi-tenant SaaS's problem; here the
+// operator's own projects are all the projects.
+//
+// This is asserted as an absence rather than deleted along with the routes,
+// because a policy line outliving its handler is exactly how the panel ended
+// up with a Транзакции tab pointing at a page that no longer existed.
+func TestNoAdminSurfaceRemains(t *testing.T) {
+	e := newEnforcer(t)
+
+	paths := []string{
+		"/api/v1/admin",
 		"/api/v1/admin/overview",
 		"/api/v1/admin/users",
 		"/api/v1/admin/users/11111111-2222-3333-4444-555555555555",
 		"/api/v1/admin/deploys",
 		"/api/v1/admin/deploys/11111111-2222-3333-4444-555555555555",
 		"/api/v1/admin/domains",
+		"/api/v1/admin/projects",
+		"/api/v1/admin/projects/11111111-2222-3333-4444-555555555555",
 	}
-
-	e := newEnforcer(t)
-
-	for _, path := range adminPaths {
-		if !mustEnforce(t, e, "admin", path, "GET") {
-			t.Errorf("admin cannot GET %s — missing policy line", path)
-		}
-		for _, role := range []string{"guest", "user"} {
-			if mustEnforce(t, e, role, path, "GET") {
-				t.Errorf("role %q may GET %s", role, path)
+	for _, role := range []string{"guest", "user", "admin"} {
+		for _, path := range paths {
+			for _, method := range []string{"GET", "POST", "PATCH", "PUT", "DELETE"} {
+				if mustEnforce(t, e, role, path, method) {
+					t.Errorf("role %q may %s %s — the admin surface was removed", role, method, path)
+				}
 			}
 		}
 	}
@@ -88,22 +94,65 @@ func TestAdminInheritsUser(t *testing.T) {
 	}
 }
 
-// Admin access is read-only in this pass: no policy line may admit a method
-// that changes state, or the console can mutate without an audit trail.
-func TestAdminConsoleIsReadOnly(t *testing.T) {
+// Project management moved onto the ordinary dashboard, so these are `user`
+// lines now. Nothing is reachable without a session at all — `guest` is the
+// role an unauthenticated request gets.
+func TestProjectManagementIsReachableBySignedInRoles(t *testing.T) {
 	e := newEnforcer(t)
 
-	paths := []string{
-		"/api/v1/admin/users",
-		"/api/v1/admin/users/11111111-2222-3333-4444-555555555555",
-		"/api/v1/admin/deploys/11111111-2222-3333-4444-555555555555",
-	}
+	const list = "/api/v1/projects"
+	const item = "/api/v1/projects/11111111-2222-3333-4444-555555555555"
+	const start = "/api/v1/deploys/11111111-2222-3333-4444-555555555555/start"
 
-	for _, path := range paths {
-		for _, method := range []string{"POST", "PATCH", "PUT", "DELETE"} {
-			if mustEnforce(t, e, "admin", path, method) {
-				t.Errorf("admin may %s %s — the console is meant to be read-only", method, path)
+	for _, role := range []string{"user", "admin"} {
+		if !mustEnforce(t, e, role, list, "GET") {
+			t.Errorf("role %q cannot list projects; the screen would 403", role)
+		}
+		if !mustEnforce(t, e, role, item, "DELETE") {
+			t.Errorf("role %q cannot delete a project", role)
+		}
+		if !mustEnforce(t, e, role, start, "POST") {
+			t.Errorf("role %q cannot start a stopped deploy", role)
+		}
+	}
+	for _, path := range []string{list, item, start} {
+		for _, method := range []string{"GET", "POST", "DELETE"} {
+			if mustEnforce(t, e, "guest", path, method) {
+				t.Errorf("guest may %s %s", method, path)
 			}
+		}
+	}
+}
+
+// keyMatch2's :id must not let the collection path borrow the item path's
+// DELETE. Addressing the list must never become a way to delete.
+func TestProjectCollectionRejectsMutations(t *testing.T) {
+	e := newEnforcer(t)
+
+	for _, method := range []string{"POST", "PATCH", "PUT", "DELETE"} {
+		if mustEnforce(t, e, "admin", "/api/v1/projects", method) {
+			t.Errorf("admin may %s the project collection", method)
+		}
+	}
+}
+
+// The audit log records destructive actions, so reading it stays behind the
+// admin role even though everything it records is now on the user surface.
+func TestAuditLogIsAdminOnly(t *testing.T) {
+	e := newEnforcer(t)
+	const path = "/api/v1/audit"
+
+	if !mustEnforce(t, e, "admin", path, "GET") {
+		t.Fatal("admin cannot read the audit log")
+	}
+	for _, role := range []string{"guest", "user"} {
+		if mustEnforce(t, e, role, path, "GET") {
+			t.Errorf("role %q may read the audit log", role)
+		}
+	}
+	for _, method := range []string{"POST", "PATCH", "PUT", "DELETE"} {
+		if mustEnforce(t, e, "admin", path, method) {
+			t.Errorf("admin may %s the audit log; it is append-only from the code that writes it", method)
 		}
 	}
 }

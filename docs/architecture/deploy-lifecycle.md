@@ -89,8 +89,87 @@ is not reclaimed. Retention and idle-alias rules are controlled by
 DEPLOY_TTL_MIN, DEPLOY_TTL_MAX_MIN, ALIAS_IDLE_GC_DAYS and
 PROJECT_DEPLOY_RETENTION.
 
-Stopping or deleting a deploy does not currently remove its Docker image. Image
-garbage collection is a known disk-growth gap.
+## Image reclamation
+
+Every tick the watchdog also runs a second, independent sweep. It asks the
+control repository for deploys at failed or deleted that still carry an
+image_ref with no image_deleted_at, and removes each image from the local
+daemon. There is no registry, so nothing else would ever collect them and the
+disk that fills is the one the platform runs on.
+
+stopped is deliberately excluded, because its image is what makes POST
+/api/v1/deploys/:id/start a container run instead of a rebuild.
+
+That exclusion needs an expiry or it is a leak. A third sweep moves stopped
+deploys past STOPPED_IMAGE_GRACE_HOURS (default 168) to deleted, which is what
+puts their images in the queue above. Without it nothing automatic ever leaves
+stopped — the TTL and retention sweeps both end there, and the only other route
+to deleted is an operator pressing the button — so every expired preview would
+keep a container image for the life of the installation.
+
+The grace runs from stopped_at, which SetRunning clears — that column records
+the first stop and never moves on its own, so a restarted deploy would
+otherwise be measured from a stop that happened before it last ran. A deploy an
+alias publishes is never reclaimed.
+
+The image is recorded on the deploy row the moment the daemon has it, before
+the vulnerability scan and before anything else that can reject the deploy.
+That column is the only thing the sweep reads, so an image the database cannot
+name is one nothing will ever collect — which is what happened to artifacts the
+scan gate rejected when its own best-effort removal failed.
+
+That write is a barrier holding one invariant: either the database names the
+image, or the image is not on the host. It retries on a fresh bounded context,
+because a cancelled build context is the likely reason the first attempt
+failed, and if that fails too it removes the image and fails the build. It
+cannot instead defer to a rebuild: a failed build is finalised as failed, never
+retried, and a retry budget is unimplemented.
+
+If the database and the daemon are both unreachable the image is orphaned. An
+ERROR log line names it and the command to remove it; nothing durable can be
+written in that state, because a deferred-cleanup record would need the
+database that just refused.
+
+## Stop, start and delete
+
+Three different operations, and the distinction is load-bearing:
+
+| Operation | Container | Image | Row |
+| --- | --- | --- | --- |
+| POST /deploys/:id/stop | removed | kept | stopped |
+| POST /deploys/:id/start | created from the kept image | reused | running |
+| DELETE /deploys/:id | removed | released | deleted |
+| watchdog, after the grace | already gone | released | deleted |
+
+Start does not go through the saga. The artifact exists, the port the build
+detected is on the saga row, and the runtime's own liveness probe still decides
+what running means, so the work is one container run — routing it through the
+build queue would re-clone a repository to produce an image already on disk.
+
+Start claims the deploy by moving it stopped to provisioning with a guarded
+UPDATE before it calls the runtime. Two clicks would otherwise start two
+containers for a row that records one. A refusal after the claim releases it;
+nothing sweeps provisioning, so a leaked claim would leave the deploy looking
+like it is starting indefinitely.
+
+A deploy whose image the sweep reclaimed answers 409 image_reclaimed. That is a
+refusal rather than an implicit rebuild: rebuilding has a different cost and
+the operator should choose it. A failed deploy is never startable at all.
+
+deploys.image_deleted_at is the durable marker. image_ref is kept after
+cleanup for diagnostics, so the pair records both what was built and whether it
+is still on disk. The marker is written only after Docker confirms the image is
+absent, which makes a failure retryable and a success idempotent; a removal that
+fails leaves the row queued for the next tick.
+
+Images are also released eagerly on the paths that produce a dead deploy: a
+failed liveness probe, deleting a deploy, and deleting a project. In each case
+the row is recorded terminal before the image goes, because the terminal status
+is what queues the watchdog's retry if the eager removal fails. The two
+watchdog sweeps do not share a failure path, so a broken expiry query cannot
+silently disable image reclamation.
+
+The BuildKit cache volume is outside all of this and still grows without bound.
 
 The data model behind publishing is documented in
 [projects, deploys and routing](deployment-model.md).
