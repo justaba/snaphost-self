@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-08-30
+Updated: 2026-09-01
 
 snaphost-self has one trusted operator, but it still processes repositories,
 Dockerfiles and dependencies that may be compromised. The application also has
@@ -99,12 +99,16 @@ not exposing all internal routes.
   base-image policies; untagged and latest images are rejected.
 - BuildKit is rootless and has its own resource limits and cache volume.
 - Short-lived Git credentials stay in process memory and are deleted after use.
-- Trivy scans the local image. SCAN_FAIL_ON_CRITICAL currently defaults to true;
-  on a gated critical result the image is removed.
+- No vulnerability scanner is bundled or run during builds. This self-hosted
+  installation treats submitted source and selected base images as code trusted
+  by its operator; Dockerfile validation and base-image allowlists are policy
+  controls, not vulnerability detection.
 
 Build execution is not a strong sandbox against every BuildKit or kernel
-vulnerability. Keep Docker, BuildKit, Trivy and the host patched, and do not
-treat an allowlisted repository as trusted merely because its URL is public.
+vulnerability. Keep Docker, BuildKit, base images and the host patched, and do
+not treat an allowlisted repository as trusted merely because its URL is
+public. Operators that build untrusted third-party code should add scanning at
+their own CI or image-admission boundary.
 
 ## Runtime controls
 

@@ -46,7 +46,7 @@ func PortFromDockerfile(path string) int {
 
 // FixedPortRisk reports whether a user-shipped Dockerfile looks like it serves
 // on a hard-coded port. The runtime injects PORT and invokes the container on
-// it, so a server bound to a fixed port builds, scans, pushes, and starts —
+// it, so a server bound to a fixed port builds, loads, and starts —
 // and then never receives a request. That is the 2026-07-19 incident: an
 // nginx image with EXPOSE 80 reached `running` and was billed while every
 // request returned UserCodeError.

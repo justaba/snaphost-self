@@ -1,5 +1,5 @@
 // Package pipeline orchestrates the full build pipeline: clone → detect →
-// validate → build → scan → report. Each stage has explicit timeouts and
+// validate → build → report. Each stage has explicit timeouts and
 // structured logging.
 package pipeline
 
@@ -23,7 +23,6 @@ import (
 	"snaphost/internal/builder/events"
 	"snaphost/internal/builder/logs"
 	"snaphost/internal/builder/queue"
-	"snaphost/internal/builder/scan"
 	"snaphost/internal/builder/unpack"
 	"snaphost/internal/gitcreds"
 	"snaphost/internal/shared/validator"
@@ -42,16 +41,13 @@ type StatusReporter interface {
 	// ReportFailed notifies that the build has failed with the given reason.
 	ReportFailed(ctx context.Context, deployID, reason string) error
 	// ReportImageLoaded records that an image now exists in the local daemon,
-	// before anything downstream has had a chance to reject it.
+	// before anything downstream has had a chance to fail.
 	//
 	// This is not the same fact as BuildCompleted. That event is published on
-	// the success path only, so an image rejected by the vulnerability scan —
-	// or by anything else between the daemon load and a running container —
-	// never reached deploys.image_ref, and the image sweep works entirely from
-	// that column. The gate's own removal is best-effort by design, because
-	// the scan failure is the error the operator should see; when that removal
-	// failed there was nothing left that could name the artifact, and it stayed
-	// on the host for good.
+	// the success path only, so an error between the daemon load and a running
+	// container would otherwise leave deploys.image_ref empty. The image sweep
+	// works entirely from that column, so an unnamed artifact would stay on the
+	// host for good.
 	//
 	// The rule this encodes: the moment an image exists on the host, the
 	// database says so.
@@ -63,7 +59,7 @@ type StatusReporter interface {
 // ImageRemover deletes an image from the local Docker daemon.
 //
 // It replaces a registry client whose one method was a DELETE against the v2
-// API. The image never leaves the daemon it was built into, so a rejected
+// API. The image never leaves the daemon it was built into, so an unreferenced
 // artifact has to be removed from there.
 type ImageRemover interface {
 	RemoveImage(ctx context.Context, imageRef string) error
@@ -85,14 +81,13 @@ type Runner struct {
 	Cloner *clone.Cloner
 	// Builder performs BuildKit builds.
 	Builder *build.Builder
-	// Scanner performs vulnerability scanning.
-	Scanner *scan.Scanner
 	// Status reports deploy status to user-billing.
 	Status StatusReporter
 	// AI generates Dockerfiles when none is provided.
 	AIClient ai.Client
-	// Registry cleans up images that fail the post-push scan. Optional;
-	// nil disables cleanup (used by tests that don't exercise that path).
+	// Images cleans up an artifact when its durable reference cannot be
+	// recorded. Optional; nil disables cleanup in tests that do not exercise
+	// that failure path.
 	Images ImageRemover
 	// Uploads reads archive blobs for source_type=archive jobs (14b-2).
 	// Optional; nil makes archive jobs fail permanently.
@@ -615,56 +610,14 @@ func (r *Runner) executePipeline(ctx context.Context, job queue.Job, log *zap.Lo
 		return "", "", 0, classifyBuildKitError(fmt.Errorf("build: %w", err))
 	}
 
-	// 12a. The image is on the host now, so record it before anything can
-	// reject it. Everything after this point can fail, and several of those
-	// failures used to leave an artifact the image sweep could not name.
+	// 12a. The image is on the host now, so record it before anything else can
+	// fail. Everything after this point can fail, and an unnamed artifact is
+	// invisible to the image sweep.
 	//
-	// This is a barrier, not a best-effort log line. It was the latter and that
-	// was not enough: the pipeline continued, the scan then failed, its own
-	// best-effort removal also failed, and the artifact was orphaned exactly as
-	// before. Carrying on without a durable reference re-creates the leak this
-	// call exists to close.
+	// This is a barrier, not a best-effort log line. Carrying on without a
+	// durable reference re-creates the leak this call exists to close.
 	if err := r.recordLoadedImage(ctx, job.DeployID, imageRef, log); err != nil {
 		return "", "", 0, err
-	}
-
-	// 13. Scan the built image via Trivy. On critical-vulnerability failure
-	// with the gate enabled, remove the image from the daemon so a rejected
-	// artifact does not sit on the host. Cleanup failure is logged but does
-	// not change the user-visible outcome — the scan failure is the primary
-	// error.
-	log.Info("scanning image for vulnerabilities", zap.String("stage", "scan"))
-	scanResult, err := r.Scanner.Scan(ctx, imageRef)
-	if err != nil {
-		if errors.Is(err, scan.ErrCriticalVulnerability) {
-			if r.Cfg.ScanFailOnCritical {
-				if r.Images != nil {
-					if delErr := r.Images.RemoveImage(ctx, imageRef); delErr != nil {
-						log.Error("failed to remove the vulnerable image from the local daemon",
-							zap.String("image_ref", imageRef),
-							zap.Error(delErr),
-						)
-					}
-				}
-				return "", "", 0, Permanent(fmt.Errorf("scan: critical vulnerabilities found (CRITICAL=%d, HIGH=%d)",
-					scanResult.CriticalCount, scanResult.HighCount))
-			}
-			// Gate disabled (typically dev): log + publish a warning so the
-			// finding is visible, but let the build proceed.
-			log.Warn("scan found critical vulnerabilities; gate disabled, proceeding",
-				zap.Int("critical", scanResult.CriticalCount),
-				zap.Int("high", scanResult.HighCount),
-			)
-			_ = r.Publisher.Publish(job.DeployID, logs.LogLine{
-				Stage:     "scan",
-				Text:      fmt.Sprintf("found %d CRITICAL, %d HIGH vulnerabilities — gate disabled, deploy continuing", scanResult.CriticalCount, scanResult.HighCount),
-				Level:     "warn",
-				Timestamp: time.Now().UTC(),
-			})
-		} else {
-			// Trivy process error (binary missing, exec failed, etc.) — transient infra issue.
-			return "", "", 0, Transient(fmt.Errorf("scan: %w", err))
-		}
 	}
 
 	// Resolve the application port: prefer EXPOSE in the Dockerfile, then

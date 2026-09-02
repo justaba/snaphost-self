@@ -13,7 +13,7 @@ import (
 type LogLine struct {
 	// DeployID identifies the deployment this log belongs to.
 	DeployID string `json:"deploy_id"`
-	// Stage is the pipeline stage producing the log (clone, detect, validate, build, scan, push).
+	// Stage is the pipeline stage producing the log (clone, detect, validate, build).
 	Stage string `json:"stage"`
 	// Text is the log message content.
 	Text string `json:"text"`

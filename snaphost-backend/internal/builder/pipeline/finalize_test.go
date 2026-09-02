@@ -208,12 +208,9 @@ func TestFinalizeAsFailed_NilStatusReporterSafe(t *testing.T) {
 // The image is recorded the moment it exists on the host, not when the deploy
 // succeeds.
 //
-// BuildCompleted — which is what wrote deploys.image_ref — is published on the
-// success path only. An image rejected by the vulnerability gate therefore
-// never reached that column, and the image sweep works entirely from it. The
-// gate removes the artifact best-effort by design, because the scan result is
-// the error worth surfacing; when that removal failed there was nothing left
-// that could name the image and it stayed on the host permanently.
+// BuildCompleted — which also writes deploys.image_ref — is published on the
+// success path only. Any error after ImageLoad would otherwise leave that
+// column empty, and the image sweep works entirely from it.
 func TestReportImageLoadedIsPartOfTheReporterContract(t *testing.T) {
 	var _ StatusReporter = (*recStatus)(nil)
 

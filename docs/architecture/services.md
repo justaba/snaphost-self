@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-08-30
+Updated: 2026-09-01
 
 The old service names survive in a few interface names and comments, but they
 are packages in one process now.
@@ -13,14 +13,14 @@ are packages in one process now.
 | --- | --- |
 | gateway | Gin middleware, local authentication integration, Casbin RBAC, request enrichment and WebSocket log access. |
 | control | Operator auth, sessions, API keys, projects, deploys, domains, the operator audit log, SQLite schema and saga orchestration. |
-| builder | Request validation, clone or archive unpack, project detection, Dockerfile acquisition, BuildKit export and Trivy scanning. |
+| builder | Request validation, clone or archive unpack, project detection, Dockerfile acquisition and BuildKit export. |
 | runtime | Docker container lifecycle, runtime hardening, liveness probing, log forwarding and expiry watchdog. |
 | ai | Built-in Dockerfile templates, OpenRouter fallback, response validation, cache and usage records. |
 | panel | React/Vite assets embedded into the Go binary with go:embed and served as an SPA. |
 | wiring | Direct adapters that satisfy package interfaces formerly implemented by HTTP clients. |
 | logbus and buildevents | In-process event fan-out and bounded log history. |
 | uploads and gitcreds | File-backed upload staging and TTL-bound credentials held only in memory. |
-| memlimit | Reads the cgroup limit and derives a Go memory limit with space reserved for Trivy and page cache. |
+| memlimit | Reads the cgroup limit and derives a Go memory limit with space reserved for page cache and non-heap allocations. |
 | shared | Cross-cutting webhook authentication and Dockerfile validation helpers. |
 
 The application entry point is cmd/snaphost. cmd/control-migrate is a one-shot
@@ -35,7 +35,6 @@ binary for applying the same SQLite baseline before a production rollout.
 | BuildKit | Rootless daemon used to build images. The result is streamed into the host Docker image store; no registry is involved. |
 | Traefik | Local-development routing from generated hostnames to user containers through Docker labels. |
 | Caddy | Chosen production edge, but the current Docker integration and installer are not complete. |
-| Trivy | Child process in the application container that scans each built local image. |
 
 ## Operator panel
 

@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-08-30
+Updated: 2026-09-01
 
 ## Create and build
 
@@ -19,22 +19,20 @@ Updated: 2026-08-30
 5. The Dockerfile is validated against the configured base-image policy.
    BuildKit builds it and streams Docker exporter output into ImageLoad on the
    host daemon.
-6. Trivy scans the local image. With SCAN_FAIL_ON_CRITICAL enabled, critical
-   findings fail the build and the newly loaded image is removed.
 
 Images are named snaphost/proj-<owner-hash>:<deploy-id>. No push or pull occurs.
 
 ## Start and publish
 
-7. Runtime verifies the deploy owner, expected image name, tag and state before
+6. Runtime verifies the deploy owner, expected image name, tag and state before
    creating a container.
-8. The container receives resource limits, read-only root filesystem, tmpfs
+7. The container receives resource limits, read-only root filesystem, tmpfs
    mounts, dropped capabilities, no-new-privileges and isolated networking. It
    also joins snaphost-net so the control plane and local edge can reach it.
-9. Runtime waits for the container to stay up, then explicitly probes the
+8. Runtime waits for the container to stay up, then explicitly probes the
    detected application port. A started container that does not answer is
    stopped and the deploy fails.
-10. Runtime stores the container identifier, endpoint, generated subdomain and
+9. Runtime stores the container identifier, endpoint, generated subdomain and
     expiry while moving the saga to provisioning in the same SQLite
     transaction. The saga then records terminal success and best-effort
     repoints verified custom-domain aliases for the project to the new deploy.
@@ -67,7 +65,7 @@ Built exists only in saga state. It is not a public deploy status.
 
 Permanent failures compensate immediately: a partially started container is
 removed and the deploy receives a user-visible reason. A retry budget for
-transient BuildKit, network and Trivy failures is not implemented.
+transient BuildKit and network failures is not implemented.
 
 If the final running-state transaction fails, runtime treats it as transient,
 stops the container and restores the deploy to building. Both persistence and
@@ -113,10 +111,8 @@ otherwise be measured from a stop that happened before it last ran. A deploy an
 alias publishes is never reclaimed.
 
 The image is recorded on the deploy row the moment the daemon has it, before
-the vulnerability scan and before anything else that can reject the deploy.
-That column is the only thing the sweep reads, so an image the database cannot
-name is one nothing will ever collect — which is what happened to artifacts the
-scan gate rejected when its own best-effort removal failed.
+anything else can fail the deploy. That column is the only thing the sweep
+reads, so an image the database cannot name is one nothing will ever collect.
 
 That write is a barrier holding one invariant: either the database names the
 image, or the image is not on the host. It retries on a fresh bounded context,

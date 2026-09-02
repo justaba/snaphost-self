@@ -13,24 +13,18 @@
 // kill under load rather than an error at startup. The cgroup already knows the
 // answer, so this reads it.
 //
-// # Why the reserve is large
+// # Why there is a reserve
 //
 // GOMEMLIMIT bounds the Go heap. It does not bound this container, and on this
-// platform the difference is most of the container:
+// platform the difference includes:
 //
-//   - the image scanner is `trivy`, run with exec.Command. It is a separate
-//     process with its own hundreds of megabytes, counted against the same
-//     cgroup and invisible to the Go runtime;
 //   - the build workspace and the uploaded archive are files, and the page
 //     cache holding them is charged to the cgroup too;
 //   - the Go runtime's own non-heap memory — stacks, the binary, mmapped
 //     metadata — is outside GOMEMLIMIT by definition.
 //
-// The usual recipe of "GOMEMLIMIT at 90% of the container limit" assumes the Go
-// heap is essentially the whole process. Here it is not, and following that
-// recipe would leave the scanner competing with the heap for the last tenth of
-// the cgroup — which is the OOM kill this package exists to prevent, arrived at
-// by a different route.
+// Leaving an explicit reserve prevents the heap from consuming the entire
+// cgroup while those allocations are still live.
 package memlimit
 
 import (
@@ -43,10 +37,9 @@ import (
 	"strings"
 )
 
-// DefaultReserve is what is held back from the cgroup limit for everything that
-// is not the Go heap. Sized for one `trivy` process, which is the largest child
-// this container runs.
-const DefaultReserve = 320 << 20 // 320 MiB
+// DefaultReserve is held back from the cgroup limit for page cache, goroutine
+// stacks, the binary and other memory that GOMEMLIMIT does not cover.
+const DefaultReserve = 128 << 20 // 128 MiB
 
 // MinLimit is the floor below which a derived GOMEMLIMIT is refused. Setting it
 // under this would make the garbage collector run continuously without ever
@@ -117,7 +110,7 @@ func Derive(cgroupLimit, reserve int64) (int64, error) {
 	derived := cgroupLimit - reserve
 	if derived < MinLimit {
 		return 0, fmt.Errorf(
-			"container memory limit %d is too small: %d is reserved for the scanner and other non-heap use, leaving less than the %d minimum",
+			"container memory limit %d is too small: %d is reserved for non-heap use, leaving less than the %d minimum",
 			cgroupLimit, reserve, int64(MinLimit))
 	}
 	return derived, nil

@@ -61,10 +61,9 @@ services:
     # cannot drift — and the drift's symptom would have been an OOM kill under
     # load rather than an error anyone saw.
     #
-    # It has to cover more than the Go heap. `trivy` is a child process with its
-    # own hundreds of megabytes and its own place in this cgroup, and the build
-    # workspace's page cache is charged here too; the reserve inside the process
-    # is what leaves room for them.
+    # It has to cover more than the Go heap because the build workspace's page
+    # cache and runtime non-heap allocations are charged here too; the reserve
+    # inside the process is what leaves room for them.
     deploy:
       resources:
         limits:
@@ -73,8 +72,8 @@ services:
     environment:
       PORT: "8080"
       LOG_LEVEL: "${LOG_LEVEL}"
-      # How much of the container limit is held back from the Go heap for the
-      # scanner child process and the page cache. Empty takes the default.
+      # How much of the container limit is held back from the Go heap for page
+      # cache and other non-heap memory. Empty takes the default.
       GOMEMLIMIT_RESERVE_MB: "${GOMEMLIMIT_RESERVE_MB:-}"
       DATABASE_PATH: "/var/snaphost/data/snaphost.db"
       # The env file has always carried RUN_MIGRATIONS=false and this file has
@@ -115,7 +114,6 @@ services:
       ALLOWED_GIT_HOSTS: "${ALLOWED_GIT_HOSTS}"
       ALLOWED_BASE_IMAGES: "${ALLOWED_BASE_IMAGES}"
       ALLOWED_BASE_IMAGES_PERMISSIVE: "${ALLOWED_BASE_IMAGES_PERMISSIVE}"
-      SCAN_FAIL_ON_CRITICAL: "${SCAN_FAIL_ON_CRITICAL}"
 
       RUNNER_BACKEND: "docker"
       CONTAINER_CPU_LIMIT: "${CONTAINER_CPU_LIMIT}"

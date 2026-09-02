@@ -105,18 +105,18 @@ func TestCgroupV2WinsWhenBothExist(t *testing.T) {
 }
 
 func TestDeriveSubtractsTheReserve(t *testing.T) {
-	derived, err := Derive(1<<30, DefaultReserve)
+	derived, err := Derive(512<<20, DefaultReserve)
 	if err != nil {
 		t.Fatalf("Derive: %v", err)
 	}
-	if want := int64(1<<30) - DefaultReserve; derived != want {
+	if want := int64(384 << 20); derived != want {
 		t.Fatalf("derived = %d, want %d", derived, want)
 	}
 }
 
 // A container limit that the reserve eats is refused rather than clamped. The
 // clamp would produce a plausible number from a configuration that cannot work,
-// and the symptom would arrive later as an OOM kill during a scan.
+// and the symptom would arrive later as an OOM kill under load.
 func TestDeriveRefusesALimitTheReserveConsumes(t *testing.T) {
 	for _, limit := range []int64{0, 1 << 20, DefaultReserve, DefaultReserve + MinLimit - 1} {
 		if _, err := Derive(limit, DefaultReserve); err == nil {

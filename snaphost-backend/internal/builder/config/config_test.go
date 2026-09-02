@@ -3,8 +3,8 @@ package config
 import "testing"
 
 // The registry configuration is gone: REGISTRY_URL, REGISTRY_USERNAME,
-// REGISTRY_PASSWORD, REGISTRY_INSECURE and REGISTRY_AUTH_MODE, plus the
-// auto-detection that turned Trivy's --insecure on for a local registry.
+// REGISTRY_PASSWORD, REGISTRY_INSECURE and REGISTRY_AUTH_MODE, plus their
+// auto-detected local-registry behaviour.
 //
 // The tests that were here checked that auto-detection. They are replaced
 // rather than deleted, because what they were guarding — that a build can be

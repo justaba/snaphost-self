@@ -51,7 +51,6 @@ import (
 	builderconfig "snaphost/internal/builder/config"
 	builderpipeline "snaphost/internal/builder/pipeline"
 	builderqueue "snaphost/internal/builder/queue"
-	builderscan "snaphost/internal/builder/scan"
 	builderunpack "snaphost/internal/builder/unpack"
 	"snaphost/internal/buildevents"
 	"snaphost/internal/control/apikey"
@@ -308,8 +307,6 @@ func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Confi
 		log.Fatal("failed to create buildkit builder", zap.Error(err))
 	}
 
-	scanner := builderscan.NewScanner(pub, log)
-
 	return builderParts{
 		enqueuer: &builderapi.Enqueuer{Queue: q, Cfg: cfg, Log: log},
 		queue:    q,
@@ -320,7 +317,6 @@ func buildBuilder(pool *sql.DB, cfg *builderconfig.Config, aiCfg *aiconfig.Confi
 			Events:    eventsPub,
 			Cloner:    builderclone.NewCloner(pub, log),
 			Builder:   builder,
-			Scanner:   scanner,
 			// Was an HTTP POST to the control plane; now the same repository
 			// write, so a status update cannot be lost to a network blip.
 			Status:      &wiring.StatusReporter{Repo: deployRepo(pool, bus, nil)},

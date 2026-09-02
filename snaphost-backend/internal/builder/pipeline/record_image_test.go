@@ -11,14 +11,10 @@ import (
 // Recording the artifact enforces one invariant: either the database names the
 // image, or the image is not on the host.
 //
-// Getting here took two wrong answers. First the call was best-effort, so the
-// pipeline carried on, the scan failed, its own best-effort removal failed, and
-// the image was orphaned exactly as before the call existed. Then it returned a
-// Transient error on the theory that the build would be retried and the
-// deterministic image name would make the retry overwrite the same tag —
-// but runBuildWorker logs IsTransient and calls FinalizeAsFailed either way.
-// Nothing retries. The deploy went terminal with the image on disk and
-// deploys.image_ref empty, which is the leak, reached through the fix for it.
+// A best-effort write is not enough: the deploy could go terminal with the
+// image on disk and deploys.image_ref empty. Returning a Transient error would
+// not help either, because runBuildWorker finalises failures and no retry
+// budget exists. The deterministic tag is useful only if a retry happens.
 
 type recordingStatus struct {
 	// contextErrs records the liveness of each attempt's context, which is the

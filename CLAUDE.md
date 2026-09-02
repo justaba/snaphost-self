@@ -305,8 +305,7 @@ Orchestrated in `internal/control/saga`, in-process, over a buffered channel.
    saga rows, enqueues, returns `202`.
 2. The worker enqueues a build. The builder clones (or unpacks an upload),
    detects the project, gets a Dockerfile — template first, LLM only if none
-   matches — builds with BuildKit, loads the image into Docker, and runs Trivy
-   against that local image.
+   matches — builds with BuildKit and loads the image into Docker.
 3. On success the runtime starts the container, attaches it to `snaphost-net`,
    waits for the liveness probe, and atomically stores the running deploy plus
    saga runtime handle before reporting the URL. A failed final write stops the
@@ -334,12 +333,13 @@ instead of pulling. Push and pull only ever existed to reach a cloud runtime.
 Images are named `snaphost/proj-<hash8>:<deploy-id>` — the account id is hashed
 because the name appears in `docker ps` and in build logs.
 
-Trivy scans the local image (`--image-src docker`). `SCAN_FAIL_ON_CRITICAL`
-gates whether a finding fails the build; on failure with the gate on, the image
-is removed from the daemon.
+No vulnerability scanner is bundled into the service or run in the build
+pipeline. This fork assumes the self-hosting operator trusts the submitted
+source and base images; operators with a different trust boundary must scan in
+their own CI or image-admission flow.
 
-**Nothing removes a built image when its deploy is deleted or expires.** With no
-registry, the disk that fills is the one the platform runs on.
+The watchdog reclaims local images after deploy deletion or expiry. With no
+registry, the disk it protects is the one the platform runs on.
 
 ## AI — templates first
 
@@ -427,13 +427,11 @@ Three more things about it are load-bearing:
   sweep will ever look at that row again.
 - **The moment an image exists on the host, the database says so.** The
   pipeline calls `ReportImageLoaded` immediately after the daemon load, before
-  the Trivy scan and before anything else that can reject the deploy;
+  anything else can fail the deploy;
   `saga.MarkImageBuilt` then records it again on the success path. Both write
-  `deploys.image_ref`, which is the only column the sweep reads. It used to be
-  written by `SetRunning` alone, so an image rejected by the vulnerability gate
-  was never named anywhere — and the gate's own removal is best-effort by
-  design, because the scan result is the error worth surfacing. When that
-  removal failed the artifact stayed on the host permanently.
+  `deploys.image_ref`, which is the only column the sweep reads. Writing it
+  only on the success path would leave any artifact followed by a later error
+  unnamed and permanently invisible to cleanup.
 - **The invariant is: either the database names the image, or the image is not
   on the host.** `recordLoadedImage` retries on a fresh bounded context — the
   likely reason the first attempt fails is a cancelled build context, and
@@ -442,9 +440,8 @@ Three more things about it are load-bearing:
   Permanently.
 
   Two earlier answers were wrong and are worth not repeating. Logging and
-  continuing put the leak straight back: the scan failed next, its own
-  best-effort removal failed, and the artifact was orphaned. Returning
-  `Transient` was worse, because it reasoned from machinery that does not
+  continuing allows a later pipeline error to orphan the artifact. Returning
+  `Transient` is no better, because it reasons from machinery that does not
   exist — **nothing retries a build.** `runBuildWorker` logs `IsTransient` and
   calls `FinalizeAsFailed` either way; a retry budget is still unimplemented.
   Any code here that assumes a retry will happen is wrong.
@@ -529,9 +526,6 @@ Written down rather than fixed, so nobody rediscovers them:
 - **No end-to-end custom-domain TLS.** The verification handler exists, but its
   current webhook authentication is incompatible with standard Caddy `ask`;
   nothing in this tree safely bridges that boundary yet.
-- **Trivy runs on every build.** The recorded decision is to put it behind a
-  flag, since it defends against untrusted code and here the code is the
-  operator's own.
 - **Not installable.** [Task 7](docs/tasks/planned/0007-install-and-upgrade.md)
   is the install and upgrade story, and it is not started.
 

@@ -1,8 +1,8 @@
 # ADR 0002 — Scan after push with cleanup
 
-Status: Superseded by the local-image pipeline
+Status: Superseded by ADR 0003
 Date: 2026-05-16
-Superseded: 2026-08-30
+Superseded: 2026-09-01
 
 ## Original context
 
@@ -17,22 +17,21 @@ snaphost-self builds and runs on one Docker host. Task 1 removed both the cloud
 runtime and the registry. BuildKit now streams its Docker exporter into
 ImageLoad on the host daemon.
 
-## Current decision
+## Former local-image follow-up
 
 After a successful load, Trivy scans the local image with the Docker image
 source. When SCAN_FAIL_ON_CRITICAL is true and a critical finding is reported,
 the build fails and the newly loaded image is removed from the daemon.
 
-Trivy currently runs on every build. The product decision is to make scanning
-optional by an explicit flag because this installation builds the operator's
-own code, but that switch is not implemented yet.
+This follow-up was removed by [ADR 0003](0003-remove-embedded-scanning.md).
+There is no scanner or vulnerability gate in the current build path.
 
 ## Consequences
 
 - There is no network push, pull, registry credential or pre-scan exposure
   window.
 - Runtime can inspect and start the exact local image without a registry.
-- Trivy and Docker daemon failures remain part of the build path.
+- At the time, Trivy and Docker daemon failures remained part of the build path.
 - The host daemon became the only image store, so ordinary deploy expiry and
   deletion had to learn to remove images too. That is implemented: a terminal
   deploy's image is released and deploys.image_deleted_at records it. See

@@ -459,14 +459,13 @@ func (b *DockerBackend) LoadImage(ctx context.Context, r io.Reader) error {
 
 // RemoveImage deletes an image from the daemon's store.
 //
-// The build pipeline calls it when a scan finds critical vulnerabilities and
-// the gate is on, so a rejected artifact does not sit on the host. It used to
-// be a DELETE against the registry's v2 API; the image never leaves this daemon
-// now, so this is where it has to be removed from.
+// Build bookkeeping, deploy deletion and the watchdog call it so unused
+// artifacts do not sit on the host. It used to be a DELETE against the
+// registry's v2 API; the image never leaves this daemon now, so this is where
+// it has to be removed from.
 //
-// force=true because the image was tagged by the build and nothing else refers
-// to it; prune untagged parents, since the layers under a rejected image are
-// not wanted either.
+// force=true because lifecycle callers already decided the tagged image is no
+// longer referenced; prune untagged parents along with it.
 func (b *DockerBackend) RemoveImage(ctx context.Context, imageRef string) error {
 	_, err := b.cli.ImageRemove(ctx, imageRef, image.RemoveOptions{Force: true, PruneChildren: true})
 	if err != nil && !client.IsErrNotFound(err) {

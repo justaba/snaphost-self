@@ -48,8 +48,8 @@ services:
     environment:
       PORT: "8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # How much of the container limit is held back from the Go heap for the
-      # scanner child process and the page cache. Empty takes the default.
+      # How much of the container limit is held back from the Go heap for page
+      # cache and other non-heap memory. Empty takes the default.
       GOMEMLIMIT_RESERVE_MB: ${GOMEMLIMIT_RESERVE_MB:-}
       DATABASE_PATH: /var/snaphost/data/snaphost.db
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
@@ -93,7 +93,6 @@ services:
       ALLOWED_GIT_HOSTS: ${ALLOWED_GIT_HOSTS:-github.com,gitlab.com,bitbucket.org}
       ALLOWED_BASE_IMAGES: ${ALLOWED_BASE_IMAGES:-node:,python:,golang:,ruby:,nginx:,alpine:,debian:,ubuntu:,gcr.io/distroless/,oven/bun:,denoland/deno:}
       ALLOWED_BASE_IMAGES_PERMISSIVE: ${ALLOWED_BASE_IMAGES_PERMISSIVE:-}
-      SCAN_FAIL_ON_CRITICAL: ${SCAN_FAIL_ON_CRITICAL:-true}
 
       # Runtime.
       RUNNER_BACKEND: docker
@@ -121,13 +120,13 @@ services:
     # number here rather than two that can drift apart, and the drift's symptom
     # would have been an OOM kill under load rather than an error.
     #
-    # It has to cover more than the Go heap: `trivy` is a child process with its
-    # own hundreds of megabytes, and the build workspace's page cache is charged
-    # here too. That is what the reserve inside the process is for.
+    # It has to cover more than the Go heap because the build workspace's page
+    # cache and runtime non-heap allocations are charged here too. That is what
+    # the reserve inside the process is for.
     deploy:
       resources:
         limits:
-          memory: ${CONTROL_PLANE_MEMORY_LIMIT:-1G}
+          memory: ${CONTROL_PLANE_MEMORY_LIMIT:-512M}
 
   buildkitd:
     image: moby/buildkit:v0.29.0-rootless

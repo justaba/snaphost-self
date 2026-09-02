@@ -559,12 +559,9 @@ func (r *Repository) MarkImageDeleted(ctx context.Context, deployID uuid.UUID) e
 
 // SetImageRef records the artifact a build just loaded into the daemon.
 //
-// It is called before the scan, and before anything else that can reject the
-// deploy, because the image sweep works entirely from this column: an image
-// the database cannot name is one nothing will ever collect. The gate that
-// rejects a vulnerable image removes it best-effort by design — the scan
-// result is the error worth surfacing — and this is what makes that
-// best-effort safe.
+// It is called immediately after the load and before anything else can fail,
+// because the image sweep works entirely from this column: an image the
+// database cannot name is one nothing will ever collect.
 //
 // image_deleted_at is cleared for the same reason SetRunning clears it: a
 // stale marker on a freshly built artifact would hide it from the sweep.

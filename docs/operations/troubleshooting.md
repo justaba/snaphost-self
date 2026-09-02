@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Operations
-Updated: 2026-08-30
+Updated: 2026-09-01
 
 Start with the failing boundary rather than an inherited service name. The
 current stack has one application process, BuildKit, Docker and an edge.
@@ -64,17 +64,8 @@ The build streams a Docker exporter into the host daemon. There is no registry
 to inspect. After a successful build, the image should exist locally under
 snaphost/proj-<hash>:<deploy-id>.
 
-Transient build and scan retries are not implemented; retrying the deploy is
+Transient build retries are not implemented; retrying the deploy is
 currently an operator action.
-
-## Scan fails
-
-Separate a critical vulnerability result from Trivy database, network or daemon
-errors. SCAN_FAIL_ON_CRITICAL=true turns a critical finding into a permanent
-build failure and removes the just-built image.
-
-Trivy always runs at present even though the architectural decision is to make
-it optional for operator-owned code.
 
 ## Container starts but deploy fails
 

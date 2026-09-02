@@ -4,12 +4,9 @@
 # gateway, the control plane, the builder API and worker, the runtime API and
 # watchdog, and the Dockerfile generator.
 #
-# The runtime stage is debian-slim rather than distroless. Four of the five
-# images could have been distroless; this one cannot, because the build
-# pipeline shells out to git for clones and to trivy for scans. Merging the
-# processes means the whole binary inherits the fattest base of the set —
-# a real cost of the collapse, and the reason `git` and `trivy` are the only
-# things installed here.
+# The runtime stage is debian-slim rather than distroless because the build
+# pipeline shells out to git for clones and operators need sqlite3 for safe
+# online backups of the embedded database.
 #
 # Build context is snaphost-backend/, the module root.
 
@@ -76,11 +73,8 @@ FROM debian:12-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
-        curl \
         git \
         sqlite3 && \
-    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && \
-    apt-get purge -y curl && apt-get autoremove -y && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

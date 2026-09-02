@@ -32,10 +32,6 @@ type Config struct {
 	// empty, falls back to AllowedBaseImagePrefixes (i.e. strict mode for
 	// everything).
 	AllowedBaseImagePrefixesPermissive []string
-	// ScanFailOnCritical controls whether the pipeline fails when Trivy
-	// reports CRITICAL/HIGH vulnerabilities. Defaults to true (prod-safe);
-	// set to false for local dev so the deploy can proceed past scan.
-	ScanFailOnCritical bool
 	// WebhookSecret is the shared secret for authenticating service-to-service calls.
 	WebhookSecret string
 	// AIOrchestratorURL is the HTTP endpoint for the AI Dockerfile generator.
@@ -130,14 +126,6 @@ func Load() (*Config, error) {
 	} else {
 		cfg.AllowedBaseImagePrefixesPermissive = splitTrim(permImagesStr, ",")
 	}
-
-	// ScanFailOnCritical (default true)
-	scanFailStr := envOrDefault("SCAN_FAIL_ON_CRITICAL", "true")
-	scanFail, err := strconv.ParseBool(scanFailStr)
-	if err != nil {
-		return nil, fmt.Errorf("config: SCAN_FAIL_ON_CRITICAL is not a valid boolean: %w", err)
-	}
-	cfg.ScanFailOnCritical = scanFail
 
 	return cfg, nil
 }

@@ -5,7 +5,10 @@ PostgreSQL, Redis, registry and multi-service control plane are gone. The
 platform is one application process on SQLite with an embedded panel, direct
 package wiring, local Docker runtime and current documentation.
 **Created:** 2026-08-29
-**Updated:** 2026-08-30
+**Updated:** 2026-09-01
+
+> Follow-up: the embedded Trivy stage described in this historical task was
+> removed on 2026-09-01. See [ADR 0003](../../decisions/0003-remove-embedded-scanning.md).
 
 ## Goal
 
