@@ -36,15 +36,13 @@ control-plane error must refuse issuance rather than fail open.
 
 ## Current implementation state
 
-The domain repository, TXT verifier, alias target, route lookup and
-/internal/tls/authorize handler exist.
+The domain repository, TXT verifier and alias target exist.
 
 The complete edge does not:
 
 - the Docker backend emits Traefik labels only for generated hostnames;
 - there is no dynamic Caddy-to-Docker route adapter;
-- the TLS authorize handler is inside the WEBHOOK_SECRET-protected internal
-  group, while standard Caddy ask cannot add that header;
+- there is no Caddy-compatible TLS authorization contract;
 - infra/Caddyfile.production.example is intentionally comments-only until the
   missing authorization and routing contract is implemented.
 

@@ -2,9 +2,8 @@ name: snaphost-self
 
 # Local development stack.
 #
-# One application service, because there is one process (Task 1). It replaced
-# seven: api-gateway, user-billing, builder-api, builder-worker, runner-api,
-# runner-watchdog and ai-orchestrator.
+# One application service and the two infrastructure components it uses:
+# BuildKit for image builds and Traefik for local container routing.
 #
 # What is left beside it is infrastructure the platform genuinely does not
 # implement itself — BuildKit and Traefik. PostgreSQL went with item 6, Redis
@@ -29,9 +28,8 @@ services:
       # backup must use sqlite3 .dump; copying only the main file can lose
       # committed pages from the WAL sidecar.
       - snaphost_data:/var/snaphost/data
-    # The merge collided two deliberate decisions. runner-svc ran as root
-    # because it needs this socket; builder-svc ran as uid 1000 because it
-    # clones and unpacks untrusted input. One process cannot do both.
+    # The process needs this socket for the runtime while still cloning and
+    # unpacking untrusted build input as uid 1000.
     #
     # Joining the socket's group keeps the non-root uid and grants only the
     # socket, which is the narrower of the two options — though "only the
@@ -52,8 +50,6 @@ services:
       # cache and other non-heap memory. Empty takes the default.
       GOMEMLIMIT_RESERVE_MB: ${GOMEMLIMIT_RESERVE_MB:-}
       DATABASE_PATH: /var/snaphost/data/snaphost.db
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-
       # Identity, issued here. The operator account is created on first start
       # and its password printed once to this container's log; nothing external
       # is contacted, and there is no default credential to change.
@@ -81,7 +77,6 @@ services:
       DOMAIN_VERIFY_INTERVAL_SEC: ${DOMAIN_VERIFY_INTERVAL_SEC:-60}
       DOMAIN_REVERIFY_HOURS: ${DOMAIN_REVERIFY_HOURS:-24}
       DOMAIN_VERIFY_GRACE_HOURS: ${DOMAIN_VERIFY_GRACE_HOURS:-24}
-      ALIAS_IDLE_GC_DAYS: ${ALIAS_IDLE_GC_DAYS:-30}
       PROJECT_DEPLOY_RETENTION: ${PROJECT_DEPLOY_RETENTION:-3}
 
       # Build pipeline.
@@ -95,7 +90,6 @@ services:
       ALLOWED_BASE_IMAGES_PERMISSIVE: ${ALLOWED_BASE_IMAGES_PERMISSIVE:-}
 
       # Runtime.
-      RUNNER_BACKEND: docker
       CONTAINER_CPU_LIMIT: ${CONTAINER_CPU_LIMIT:-0.5}
       CONTAINER_MEMORY_MB: ${CONTAINER_MEMORY_MB:-512}
       CONTAINER_DEFAULT_TTL_MIN: ${CONTAINER_DEFAULT_TTL_MIN:-30}
@@ -111,7 +105,6 @@ services:
       OPENROUTER_REFERER: ${OPENROUTER_REFERER:-http://localhost:5173}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-SnapHost}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-30s}
-      CACHE_TTL_DAYS: ${CACHE_TTL_DAYS:-7}
     networks:
       - snaphost-net
     restart: unless-stopped
@@ -126,7 +119,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${CONTROL_PLANE_MEMORY_LIMIT:-512M}
+          memory: ${SNAPHOST_MEMORY_LIMIT:-512M}
 
   buildkitd:
     image: moby/buildkit:v0.29.0-rootless

@@ -25,8 +25,8 @@ type Store interface {
 
 // Limiter bounds how often one user may attach a domain. Each attach costs
 // DNS lookups and, on an on-demand-TLS edge, a certificate issuance attempt,
-// so this is a cost gate rather than a correctness one. A nil Limiter
-// disables the bound (Redis not configured).
+// so this is a cost gate rather than a correctness one. A nil Limiter disables
+// the bound.
 type Limiter interface {
 	Allow(ctx context.Context, userID string) (bool, error)
 }

@@ -1,8 +1,7 @@
 // Package events publishes coarse-grained build lifecycle events
 // (started/completed/failed). The saga orchestrator waits on them to advance
-// its state machine; the Publisher interface is satisfied by an adapter over
-// internal/buildevents, and used to be a Redis pub/sub client because the
-// builder and the saga were separate processes.
+// its state machine; the Publisher interface is satisfied by the in-process
+// event bus adapter.
 //
 // This is intentionally separate from logs.Publisher: log lines are a
 // stream of human-readable text, while events are structured signals.
@@ -25,7 +24,7 @@ const (
 	BuildFailed BuildEventType = "failed"
 )
 
-// BuildEvent is the JSON body sent on build-events:{deploy_id}.
+// BuildEvent describes one build lifecycle transition.
 type BuildEvent struct {
 	Type     BuildEventType `json:"type"`
 	DeployID string         `json:"deploy_id"`

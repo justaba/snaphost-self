@@ -201,7 +201,10 @@ verify_archive() {
   tail -n 1 "$path" | grep -qx 'COMMIT;' || die "backup is truncated, no terminating COMMIT: $path"
   grep -q '^BEGIN TRANSACTION;$' "$path" || die "backup is not a readable SQLite dump: $path"
   for table in "${REQUIRED_TABLES[@]}"; do
-    grep -Eq "^CREATE TABLE (IF NOT EXISTS )?[\"']?$table[\"']?[ (]" "$path" \
+    # ${table} rather than $table: the regex that follows opens with a
+    # bracket, and shellcheck reads `$table[` as a malformed array index
+    # (SC1087) — an error, so it fails the CI lint gate.
+    grep -Eq "^CREATE TABLE (IF NOT EXISTS )?[\"']?${table}[\"']?[ (]" "$path" \
       || die "backup is missing table $table: $path"
   done
 }

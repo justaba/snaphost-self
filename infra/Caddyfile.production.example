@@ -1,9 +1,6 @@
 # No production Caddy configuration is currently shipped.
 #
-# The upstream example that used router-svc and Yandex Serverless Containers
-# was removed when Task 1 collapsed the platform to one local Docker runtime.
-# Keeping those directives here would produce a configuration that validates
-# against components which no longer exist.
+# The old cloud-router example does not apply to the local Docker runtime.
 #
 # Task 4 must implement and document all of the following before this becomes a
 # real example:
@@ -13,11 +10,8 @@
 #    containers;
 # 3. authorize on-demand certificates only for verified custom_domains rows;
 # 4. route a verified custom hostname to its alias target;
-# 5. expose no broad /internal surface.
-#
-# The existing /internal/tls/authorize handler is protected by WEBHOOK_SECRET,
-# while standard Caddy ask cannot add that header. Do not bypass the protection
-# globally merely to make ask work.
+# 5. define a narrow edge-to-application authorization contract without
+#    exposing a general service-to-service API.
 #
 # See docs/operations/custom-domains.md and
 # docs/decisions/0007-custom-domain-tls-edge.md.

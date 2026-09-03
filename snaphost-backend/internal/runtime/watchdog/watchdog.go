@@ -8,17 +8,17 @@ import (
 
 	"go.uber.org/zap"
 
-	"snaphost/internal/runtime/billing"
 	"snaphost/internal/runtime/config"
+	"snaphost/internal/runtime/deployments"
 )
 
 // ExpiredLister is the one thing the watchdog needs from the control plane.
 // An interface rather than a concrete client so the sweep can read the deploy
 // repository directly in-process, without a round trip to an HTTP endpoint
 // that exists only to serve this caller.
-type ExpiredLister interface {
-	ListExpiredDeploys(ctx context.Context, limit int) ([]billing.ExpiredDeploy, error)
-	ListImagesPendingCleanup(ctx context.Context, limit int) ([]billing.ImageCleanup, error)
+type DeploymentCatalog interface {
+	ListExpiredDeploys(ctx context.Context, limit int) ([]deployments.Expired, error)
+	ListImagesPendingCleanup(ctx context.Context, limit int) ([]deployments.ImageCleanup, error)
 	ReclaimStoppedDeploys(ctx context.Context, limit int) (int, error)
 }
 
@@ -30,16 +30,16 @@ type RuntimeCleaner interface {
 // Watchdog periodically sweeps for expired deploys and stops them.
 type Watchdog struct {
 	runner  RuntimeCleaner
-	billing ExpiredLister
+	catalog DeploymentCatalog
 	cfg     *config.Config
 	log     *zap.Logger
 }
 
 // NewWatchdog creates a new Watchdog instance.
-func NewWatchdog(r RuntimeCleaner, b ExpiredLister, cfg *config.Config, log *zap.Logger) *Watchdog {
+func NewWatchdog(r RuntimeCleaner, catalog DeploymentCatalog, cfg *config.Config, log *zap.Logger) *Watchdog {
 	return &Watchdog{
 		runner:  r,
-		billing: b,
+		catalog: catalog,
 		cfg:     cfg,
 		log:     log,
 	}
@@ -95,7 +95,7 @@ func (w *Watchdog) sweep(ctx context.Context) {
 // gives up on the favour — every TTL expiry would otherwise keep a container
 // image forever. This is that something.
 func (w *Watchdog) sweepStopped(ctx context.Context) {
-	reclaimed, err := w.billing.ReclaimStoppedDeploys(ctx, 50)
+	reclaimed, err := w.catalog.ReclaimStoppedDeploys(ctx, 50)
 	if err != nil {
 		w.log.Error("watchdog: failed to reclaim long-stopped deploys", zap.Error(err))
 		return
@@ -108,7 +108,7 @@ func (w *Watchdog) sweepStopped(ctx context.Context) {
 }
 
 func (w *Watchdog) sweepExpired(ctx context.Context) {
-	expired, err := w.billing.ListExpiredDeploys(ctx, 50)
+	expired, err := w.catalog.ListExpiredDeploys(ctx, 50)
 	if err != nil {
 		w.log.Error("watchdog: failed to list expired deploys", zap.Error(err))
 		return
@@ -140,7 +140,7 @@ func (w *Watchdog) sweepExpired(ctx context.Context) {
 // A failure on one image is skipped rather than fatal: the row keeps its
 // image_deleted_at NULL, so the next tick asks for it again.
 func (w *Watchdog) sweepImages(ctx context.Context) {
-	images, err := w.billing.ListImagesPendingCleanup(ctx, 50)
+	images, err := w.catalog.ListImagesPendingCleanup(ctx, 50)
 	if err != nil {
 		w.log.Error("watchdog: failed to list images pending cleanup", zap.Error(err))
 		return

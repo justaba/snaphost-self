@@ -19,7 +19,6 @@ p, user, /api/v1/domains, POST
 p, user, /api/v1/domains, GET
 p, user, /api/v1/domains/:id, DELETE
 p, user, /api/v1/domains/:id/target, POST
-p, user, /api/v1/ai/status/:id, GET
 p, user, /ws/logs/:id, GET
 
 p, admin, /api/v1/audit, GET

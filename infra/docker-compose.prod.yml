@@ -1,21 +1,13 @@
 name: snaphost-self
 
-# Production manifest. One application service pinned to an exact image SHA,
-# plus the one piece of infrastructure the platform does not implement itself.
-#
-# It used to be ten services and five images, and a deployment had to verify
-# every one of those manifests existed at the same SHA before it could start.
-# There is one now (Task 1).
+# Production manifest. One application image pinned to an exact Git SHA, plus
+# BuildKit for builds.
 #
 # PostgreSQL is gone with item 6: the store is a SQLite file in the
 # application's own volume. That removes the container, the volume, five
 # environment variables and the healthcheck the whole rollout waited on — and
 # it moves the backup from `pg_dump` over a network socket to `sqlite3 .dump`
 # inside the one container that has the file.
-#
-# Redis is gone with item 7. Its queues became channels, its pub/sub became a
-# fan-out in memory, its upload blobs became files, and its credentials became
-# a map — every one of them a broker between two goroutines in one process.
 #
 # Still the wrong shape for a self-hosted product: this describes pushing a
 # GHCR image onto a VDS over SSH, and a self-hosted platform is installed by
@@ -38,7 +30,7 @@ services:
     # The only published port. Everything else answers on an internal network,
     # and `data` is marked internal, so nothing on it can reach outward.
     ports:
-      - "${API_GATEWAY_BIND_ADDRESS}:${API_GATEWAY_PORT}:8080"
+      - "${SNAPHOST_BIND_ADDRESS}:${SNAPHOST_PORT}:8080"
     volumes:
       # The runtime backend starts user containers through the host daemon.
       # This is the largest privilege in the file: anything that can reach this
@@ -67,8 +59,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "${CONTROL_PLANE_CPU_LIMIT}"
-          memory: "${CONTROL_PLANE_MEMORY_LIMIT}"
+          cpus: "${SNAPHOST_CPU_LIMIT}"
+          memory: "${SNAPHOST_MEMORY_LIMIT}"
     environment:
       PORT: "8080"
       LOG_LEVEL: "${LOG_LEVEL}"
@@ -81,14 +73,11 @@ services:
       # profile-only migrate service was decoration. On SQLite that is two
       # containers opening one file.
       RUN_MIGRATIONS: "${RUN_MIGRATIONS}"
-      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
-
       OPERATOR_EMAIL: "${OPERATOR_EMAIL:-operator@localhost}"
       SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-168}"
       SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-true}"
       CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS}"
 
-      SAGA_WORKER_ENABLED: "${SAGA_WORKER_ENABLED}"
       SAGA_BUILD_TIMEOUT_MIN: "${SAGA_BUILD_TIMEOUT_MIN}"
       SAGA_RESUME_INTERVAL_SEC: "${SAGA_RESUME_INTERVAL_SEC}"
       DEPLOY_DEFAULT_PORT: "${DEPLOY_DEFAULT_PORT}"
@@ -103,7 +92,6 @@ services:
       DOMAIN_VERIFY_INTERVAL_SEC: "${DOMAIN_VERIFY_INTERVAL_SEC}"
       DOMAIN_REVERIFY_HOURS: "${DOMAIN_REVERIFY_HOURS}"
       DOMAIN_VERIFY_GRACE_HOURS: "${DOMAIN_VERIFY_GRACE_HOURS}"
-      ALIAS_IDLE_GC_DAYS: "${ALIAS_IDLE_GC_DAYS}"
       PROJECT_DEPLOY_RETENTION: "${PROJECT_DEPLOY_RETENTION}"
 
       BUILDKIT_HOST: "tcp://buildkitd:1234"
@@ -115,7 +103,6 @@ services:
       ALLOWED_BASE_IMAGES: "${ALLOWED_BASE_IMAGES}"
       ALLOWED_BASE_IMAGES_PERMISSIVE: "${ALLOWED_BASE_IMAGES_PERMISSIVE}"
 
-      RUNNER_BACKEND: "docker"
       CONTAINER_CPU_LIMIT: "${CONTAINER_CPU_LIMIT}"
       CONTAINER_MEMORY_MB: "${CONTAINER_MEMORY_MB}"
       CONTAINER_DEFAULT_TTL_MIN: "${CONTAINER_DEFAULT_TTL_MIN}"
@@ -128,14 +115,10 @@ services:
       LLM_BASE_URL: "${LLM_BASE_URL}"
       LLM_JSON_MODE: "${LLM_JSON_MODE}"
       LLM_TIMEOUT: "${LLM_TIMEOUT}"
-      LLM_MAX_RETRIES: "${LLM_MAX_RETRIES}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
       OPENROUTER_MODEL: "${OPENROUTER_MODEL}"
       OPENROUTER_REFERER: "${OPENROUTER_REFERER}"
       OPENROUTER_APP_NAME: "${OPENROUTER_APP_NAME}"
-      CACHE_TTL_DAYS: "${CACHE_TTL_DAYS}"
-      MAX_FILE_SIZE_KB: "${MAX_FILE_SIZE_KB}"
-      MAX_FILES_PER_REQUEST: "${MAX_FILES_PER_REQUEST}"
 
   # One-shot migrator under a profile, so a deployment can apply the schema as
   # its own step before the service that would otherwise do it at startup is

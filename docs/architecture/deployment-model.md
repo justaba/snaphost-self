@@ -43,11 +43,11 @@ An in-process verifier changes pending to verified only after the TXT value
 matches, and periodically rechecks ownership. Unknown, pending, failed or
 revoked domains never route.
 
-GET /internal/tls/authorize contains the fail-closed verification lookup needed
-by a future Caddy edge, but it currently requires WEBHOOK_SECRET and standard
-Caddy ask cannot send that header. The single-binary deployment also lacks the
-dynamic Caddy-to-Docker routing layer. The removed router-svc example has been
-replaced by a comments-only warning rather than a fictional working config.
+The application exposes no internal routing or TLS-authorization endpoint.
+The single-binary deployment still lacks the dynamic Caddy-to-Docker routing
+layer; a future edge needs a dedicated fail-closed contract for verified
+domains. The obsolete cloud-router example remains a comments-only warning
+rather than a fictional working config.
 
 ## Browser isolation
 

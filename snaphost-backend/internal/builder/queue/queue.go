@@ -1,19 +1,11 @@
 // Package queue hands build jobs to the worker and tracks how many builds each
 // user has in flight.
 //
-// It was a Redis Stream with a consumer group, which existed so the build API
-// and the build worker could be separate processes and scaled apart. They are
-// one process, so the stream was a broker between a handler and a goroutine.
-//
 // # Durability
 //
-// There is none here, on purpose. The stream's un-acked message would have been
-// redelivered after a crash, and that redelivery was already broken for two of
-// the three source types: an uploaded archive and a git credential are both
-// deleted the moment the pipeline consumes them, so re-running the job could
-// only fail. The recovery that works is one step up — the saga owns a durable
-// row, and a saga interrupted mid-build is rewound to enqueue a fresh build
-// rather than replay a stale request.
+// Queue entries are process-local on purpose. The saga owns durable progress,
+// and an interrupted build is rewound to enqueue fresh work rather than replay
+// a request whose short-lived archive or credential may already be consumed.
 package queue
 
 import (
@@ -27,19 +19,15 @@ import (
 
 // defaultCapacity bounds how many build jobs may wait before Enqueue blocks.
 // Builds run one at a time on this box by design, so the buffer exists to keep
-// the HTTP handler off the worker's back rather than to absorb a backlog.
+// the scheduler off the worker's back rather than to absorb a backlog.
 const defaultCapacity = 64
 
-// Queue carries build jobs from the API to the worker.
+// Queue carries build jobs from the scheduler to the worker.
 type Queue struct {
 	jobs chan Job
 	log  *zap.Logger
 
-	// mu guards the in-flight accounting. It used to be a Redis sorted set per
-	// user, which had no expiry on its members: a build killed mid-flight left
-	// its entry behind for good, and the user's concurrency limit shrank by one
-	// permanently. A map in the process that runs the builds cannot outlive
-	// them.
+	// mu guards process-local in-flight accounting.
 	mu     sync.Mutex
 	active map[string]map[string]struct{}
 }
@@ -58,9 +46,8 @@ func NewQueue(capacity int, log *zap.Logger) *Queue {
 
 // Enqueue submits a build job and returns its id.
 //
-// The id was a Redis stream entry id and is a UUID now. Nothing parses it: it
-// identifies the job in logs and in the in-flight set, and the deploy id is
-// what everything else keys on.
+// The id identifies the job in logs and in-flight accounting. Deployment state
+// remains keyed by deploy id.
 func (q *Queue) Enqueue(ctx context.Context, job Job) (string, error) {
 	job.ID = uuid.NewString()
 	job.QueuedAt = time.Now().UTC()
@@ -81,10 +68,9 @@ func (q *Queue) Enqueue(ctx context.Context, job Job) (string, error) {
 
 // Consume runs handler for each job until ctx is cancelled.
 //
-// A handler error is logged and the job is dropped. That is what the Redis
-// version did too, for a documented reason: the pipeline has already reported
-// the failure to the deploy, and retrying a build that failed on its own source
-// would fail the same way. A retry budget is still unwritten.
+// A handler error is logged and the job is dropped because the pipeline has
+// already finalised the deploy failure. Orchestration retries are handled by
+// the saga rather than by replaying a failed source build here.
 func (q *Queue) Consume(ctx context.Context, handler func(Job) error) error {
 	q.log.Info("build consumer started")
 	for {

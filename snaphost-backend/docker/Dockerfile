@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # One image, because there is one process (Task 1). It replaced five: the
-# gateway, the control plane, the builder API and worker, the runtime API and
-# watchdog, and the Dockerfile generator.
+# application API, build pipeline, container runtime and Dockerfile generator.
 #
 # The runtime stage is debian-slim rather than distroless because the build
 # pipeline shells out to git for clones and operators need sqlite3 for safe
@@ -92,8 +91,8 @@ RUN mkdir -p /var/snaphost/builds /var/snaphost/data && \
 
 COPY --from=builder /out/snaphost /snaphost
 COPY --from=builder /out/control-migrate /control-migrate
-COPY internal/gateway/rbac_model.conf /etc/snaphost/rbac_model.conf
-COPY internal/gateway/rbac_policy.csv /etc/snaphost/rbac_policy.csv
+COPY internal/httpapi/rbac_model.conf /etc/snaphost/rbac_model.conf
+COPY internal/httpapi/rbac_policy.csv /etc/snaphost/rbac_policy.csv
 
 ENV RBAC_MODEL_PATH=/etc/snaphost/rbac_model.conf \
     RBAC_POLICY_PATH=/etc/snaphost/rbac_policy.csv

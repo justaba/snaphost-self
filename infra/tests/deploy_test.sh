@@ -104,12 +104,9 @@ cat >"$BIN/curl" <<'FAKE'
 set -u
 echo "curl called" >>"${FAKE_LOG:?}"
 [[ ${FAIL_SMOKE:-0} != 1 ]] || exit 22
-if [[ "$*" == *'--config'* ]]; then
-  if [[ ${SLOW_AUTH_SMOKE:-0} == 1 ]]; then touch "${AUTH_SMOKE_STARTED:?}"; sleep 30; fi
-  [[ ${FAIL_AUTH_SMOKE:-0} != 1 ]] || exit 22
-fi
 if [[ "$*" == *'%{http_code}'* ]]; then
-  if [[ "$*" == *'intentionally-wrong'* ]]; then printf 401; else printf 404; fi
+  [[ ${FAIL_AUTH_SMOKE:-0} != 1 ]] || exit 22
+  printf 401
 fi
 FAKE
 chmod +x "$BIN/docker" "$BIN/curl"
@@ -142,13 +139,11 @@ setup_case() {
   cat >"$ENV_FILE" <<EOF
 SNAPHOST_VERSION=$OLD_SHA
 GHCR_IMAGE_PREFIX=ghcr.io/acme/repo
-API_GATEWAY_BIND_ADDRESS=0.0.0.0
-API_GATEWAY_PORT=8080
+SNAPHOST_BIND_ADDRESS=0.0.0.0
+SNAPHOST_PORT=8080
 DOMAIN_SUFFIX=apps.prod.invalid
-WEBHOOK_SECRET=internal-secret-value
 CORS_ALLOW_ORIGINS=https://app.prod.invalid
 RUN_MIGRATIONS=false
-SAGA_WORKER_ENABLED=true
 SAGA_BUILD_TIMEOUT_MIN=15
 SAGA_RESUME_INTERVAL_SEC=60
 DEPLOY_DEFAULT_PORT=3000
@@ -178,7 +173,6 @@ DOMAIN_ATTACH_PER_HOUR=5
 DOMAIN_VERIFY_INTERVAL_SEC=60
 DOMAIN_REVERIFY_HOURS=24
 DOMAIN_VERIFY_GRACE_HOURS=24
-ALIAS_IDLE_GC_DAYS=30
 PROJECT_DEPLOY_RETENTION=3
 OPENROUTER_API_KEY=openrouter-test-key
 OPENROUTER_MODEL=openai/test
@@ -187,12 +181,8 @@ OPENROUTER_APP_NAME=SnapHost
 LLM_BASE_URL=https://openrouter.ai/api/v1
 LLM_JSON_MODE=true
 LLM_TIMEOUT=30s
-LLM_MAX_RETRIES=1
-CACHE_TTL_DAYS=7
-MAX_FILE_SIZE_KB=50
-MAX_FILES_PER_REQUEST=20
-CONTROL_PLANE_CPU_LIMIT=1
-CONTROL_PLANE_MEMORY_LIMIT=512M
+SNAPHOST_CPU_LIMIT=1
+SNAPHOST_MEMORY_LIMIT=512M
 BUILDKIT_CPU_LIMIT=4
 BUILDKIT_MEMORY_LIMIT=4G
 EOF
@@ -203,7 +193,7 @@ EOF
   export SNAPHOST_STATE_DIR="$CASE_DIR/state" SNAPHOST_BACKUP_DIR="$CASE_DIR/backups"
   export SNAPHOST_GHCR_TOKEN_FILE="$TOKEN_FILE" SNAPHOST_PUBLIC_SMOKE_URL=https://control.invalid
   export SNAPHOST_MIN_FREE_KB=0 SNAPHOST_READINESS_TIMEOUT=1 SNAPHOST_STABILITY_DELAY=0
-  unset FAIL_CONFIG FAIL_LOGIN FAIL_PULL FAIL_BACKUP TRUNCATED_BACKUP FAIL_MIGRATION FAIL_READINESS FAIL_SMOKE FAIL_AUTH_SMOKE SLOW_AUTH_SMOKE AUTH_SMOKE_STARTED FAIL_CHECKSUM_PUBLISH GHCR_USERNAME MIGRATIONS_BACKWARD_COMPATIBLE MISSING_ROLLBACK_IMAGE TMPDIR
+  unset FAIL_CONFIG FAIL_LOGIN FAIL_PULL FAIL_BACKUP TRUNCATED_BACKUP FAIL_MIGRATION FAIL_READINESS FAIL_SMOKE FAIL_AUTH_SMOKE FAIL_CHECKSUM_PUBLISH GHCR_USERNAME MIGRATIONS_BACKWARD_COMPATIBLE MISSING_ROLLBACK_IMAGE TMPDIR
 }
 
 # Deployment state as it looks after a successful release, which is the only
@@ -284,7 +274,7 @@ run_capture rollback
 
 setup_case; run_capture --dry-run deploy "$SHA"
 leaked=0
-for secret in internal-secret-value production-password openrouter-test-key token; do
+for secret in production-password openrouter-test-key token; do
   if grep -R -Fq "$secret" "$CASE_DIR/state" "$OUTPUT"; then leaked=1; fi
 done
 if [[ $leaked -eq 0 ]]; then pass 'secrets absent from output/state'; else fail 'secrets absent from output/state'; fi
@@ -300,24 +290,6 @@ before=$(snapshot_case)
 run_capture --dry-run rollback
 after=$(snapshot_case)
 if [[ $RC -eq 0 && "$before" == "$after" && ! -e "$CASE_DIR/backups" && ! -e "$CASE_DIR/state/deploy.lock" ]]; then pass 'dry-run rollback is filesystem read-only'; else fail 'dry-run rollback is filesystem read-only'; fi
-
-setup_case
-export FAIL_AUTH_SMOKE=1 TMPDIR="$CASE_DIR/tmp"
-mkdir -p "$TMPDIR"
-run_capture deploy "$SHA"
-if [[ $RC -ne 0 && -z $(find "$TMPDIR" -type f -print -quit) ]]; then pass 'curl config removed on error'; else fail 'curl config removed on error'; fi
-
-for signal in INT TERM; do
-  setup_case
-  export SLOW_AUTH_SMOKE=1 TMPDIR="$CASE_DIR/tmp" AUTH_SMOKE_STARTED="$CASE_DIR/auth-smoke-started"
-  mkdir -p "$TMPDIR"
-  "$SCRIPT" deploy "$SHA" >"$CASE_DIR/output" 2>&1 &
-  deploy_pid=$!
-  for _ in $(seq 1 100); do [[ -e "$AUTH_SMOKE_STARTED" ]] && break; sleep 0.05; done
-  kill -s "$signal" "$deploy_pid" 2>/dev/null || true
-  wait "$deploy_pid" 2>/dev/null || true
-  if [[ -z $(find "$TMPDIR" -type f -print -quit) ]]; then pass "curl config removed on $signal"; else fail "curl config removed on $signal"; fi
-done
 
 setup_case
 export FAIL_MIGRATION=1
@@ -503,7 +475,7 @@ setup_case
 seed_deployed_state
 run_capture rollback
 leaked=0
-for secret in internal-secret-value production-password openrouter-test-key; do
+for secret in production-password openrouter-test-key; do
   if grep -R -Fq "$secret" "$CASE_DIR/state" "$OUTPUT"; then leaked=1; fi
 done
 if [[ $leaked -eq 0 ]]; then pass 'rollback leaks no secret into output or state'; else fail 'rollback leaks no secret into output or state'; fi

@@ -8,22 +8,12 @@ import (
 	"strings"
 )
 
-// Config holds all configuration values for the runner-svc service.
+// Config holds container-runtime configuration.
 type Config struct {
-	// Port is the HTTP listen port for the API server.
-	Port string
-	// RunnerBackend selects the execution backend. Docker is the only one;
-	// the switch survives because backend.Backend is the seam a future
-	// runtime would land on (ADR 0004).
-	RunnerBackend string
-	// UserBillingURL is the base URL for the user-billing internal API.
-	UserBillingURL string
-	// WebhookSecret is the shared secret for service-to-service authentication.
-	WebhookSecret string
 	// DomainSuffix is appended to subdomains to form full hostnames
 	// (e.g. "localhost" in dev → proj-abc123.localhost).
 	DomainSuffix string
-	// DockerSocket is the path to the Docker daemon socket (docker backend only).
+	// DockerSocket is the path to the Docker daemon socket.
 	DockerSocket string
 	// ContainerCPULimit is the number of CPU cores allocated per user container.
 	ContainerCPULimit float64
@@ -33,25 +23,22 @@ type Config struct {
 	ContainerDefaultTTLMin int
 	// WatchdogIntervalSec is the interval in seconds between watchdog sweep cycles.
 	WatchdogIntervalSec int
-	// LogLevel controls the zap logger verbosity ("info" or "debug").
-	LogLevel string
 	// AllowedImagePrefixes lists what an image_ref may start with. There is no
 	// registry any more, so these are local image names: the build tags what it
 	// produces "snaphost/proj-<hash>", and this is what stops the internal
-	// deploy endpoint being asked to run something else on the host.
+	// runtime from starting an unexpected host image.
 	//
 	// Empty + StrictImageValidation=true is a fatal startup error.
 	AllowedImagePrefixes []string
 
 	// StrictImageValidation toggles the user_id and status cross-checks
-	// against user-billing in runner-svc.Service.Deploy. Must be true in
-	// prod; false acceptable in dev to skip the billing roundtrip.
+	// against the control-plane repository. It must be true in production;
+	// false is acceptable in development to skip the lookup.
 	StrictImageValidation bool
 
 	// RuntimeProbeEnabled controls whether a deploy must answer on the
 	// injected port before it is reported running (Task 15b). Turning it off
-	// restores the pre-15 meaning of "running" — started, not serving — and
-	// with it the possibility of billing a dead URL.
+	// makes "running" mean started rather than confirmed serving.
 	RuntimeProbeEnabled bool
 	// RuntimeProbeTimeoutSec bounds the probe. A scale-to-zero container's
 	// first request includes a cold start, so this has to outlast one.
@@ -65,26 +52,8 @@ const TraefikNetwork = "snaphost-net"
 // Required fields without defaults cause an error if unset.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Port:           envOrDefault("PORT", "8084"),
-		RunnerBackend:  envOrDefault("RUNNER_BACKEND", "docker"),
-		UserBillingURL: envOrDefault("USER_BILLING_URL", "http://user-billing:8081"),
-		DomainSuffix:   envOrDefault("DOMAIN_SUFFIX", "localhost"),
-		DockerSocket:   envOrDefault("DOCKER_SOCKET", "/var/run/docker.sock"),
-		LogLevel:       envOrDefault("LOG_LEVEL", "info"),
-	}
-
-	// Required: WEBHOOK_SECRET
-	cfg.WebhookSecret = os.Getenv("WEBHOOK_SECRET")
-	if cfg.WebhookSecret == "" {
-		return nil, fmt.Errorf("config: WEBHOOK_SECRET is required but not set")
-	}
-
-	// Validate RunnerBackend
-	switch cfg.RunnerBackend {
-	case "docker":
-		// valid
-	default:
-		return nil, fmt.Errorf("config: RUNNER_BACKEND must be 'docker', got %q", cfg.RunnerBackend)
+		DomainSuffix: envOrDefault("DOMAIN_SUFFIX", "localhost"),
+		DockerSocket: envOrDefault("DOCKER_SOCKET", "/var/run/docker.sock"),
 	}
 
 	// Optional: CONTAINER_CPU_LIMIT (default 0.5)

@@ -7,14 +7,14 @@ import (
 
 	"go.uber.org/zap"
 
-	"snaphost/internal/runtime/billing"
 	"snaphost/internal/runtime/config"
+	"snaphost/internal/runtime/deployments"
 )
 
 type fakeLister struct {
-	expired    []billing.ExpiredDeploy
+	expired    []deployments.Expired
 	expiredErr error
-	images     []billing.ImageCleanup
+	images     []deployments.ImageCleanup
 	imagesErr  error
 	reclaimed  int
 	reclaimErr error
@@ -29,12 +29,12 @@ func (f *fakeLister) ReclaimStoppedDeploys(context.Context, int) (int, error) {
 	return f.reclaimed, f.reclaimErr
 }
 
-func (f *fakeLister) ListExpiredDeploys(context.Context, int) ([]billing.ExpiredDeploy, error) {
+func (f *fakeLister) ListExpiredDeploys(context.Context, int) ([]deployments.Expired, error) {
 	f.expiredCalls++
 	return f.expired, f.expiredErr
 }
 
-func (f *fakeLister) ListImagesPendingCleanup(context.Context, int) ([]billing.ImageCleanup, error) {
+func (f *fakeLister) ListImagesPendingCleanup(context.Context, int) ([]deployments.ImageCleanup, error) {
 	f.imageCalls++
 	return f.images, f.imagesErr
 }
@@ -66,8 +66,8 @@ func newWatchdog(lister *fakeLister, cleaner *fakeCleaner) *Watchdog {
 
 func TestSweepStopsExpiredAndReleasesImages(t *testing.T) {
 	lister := &fakeLister{
-		expired: []billing.ExpiredDeploy{{ID: "deploy-1", ContainerID: "container-1"}},
-		images:  []billing.ImageCleanup{{ID: "deploy-9", ImageRef: "snaphost/proj-abc:9"}},
+		expired: []deployments.Expired{{ID: "deploy-1", ContainerID: "container-1"}},
+		images:  []deployments.ImageCleanup{{ID: "deploy-9", ImageRef: "snaphost/proj-abc:9"}},
 	}
 	cleaner := &fakeCleaner{}
 
@@ -87,7 +87,7 @@ func TestSweepStopsExpiredAndReleasesImages(t *testing.T) {
 func TestImageSweepRunsWhenTheExpiryQueryFails(t *testing.T) {
 	lister := &fakeLister{
 		expiredErr: errors.New("missing argument with index 3"),
-		images:     []billing.ImageCleanup{{ID: "deploy-9", ImageRef: "snaphost/proj-abc:9"}},
+		images:     []deployments.ImageCleanup{{ID: "deploy-9", ImageRef: "snaphost/proj-abc:9"}},
 	}
 	cleaner := &fakeCleaner{}
 
@@ -102,7 +102,7 @@ func TestImageSweepRunsWhenTheExpiryQueryFails(t *testing.T) {
 // TTL, which is the sweep that keeps the host's memory available.
 func TestExpirySweepRunsWhenTheImageQueryFails(t *testing.T) {
 	lister := &fakeLister{
-		expired:   []billing.ExpiredDeploy{{ID: "deploy-1", ContainerID: "container-1"}},
+		expired:   []deployments.Expired{{ID: "deploy-1", ContainerID: "container-1"}},
 		imagesErr: errors.New("no such column: image_deleted_at"),
 	}
 	cleaner := &fakeCleaner{}
@@ -118,7 +118,7 @@ func TestExpirySweepRunsWhenTheImageQueryFails(t *testing.T) {
 // the failed row, so the next tick asks for it again.
 func TestImageSweepContinuesPastOneFailure(t *testing.T) {
 	lister := &fakeLister{
-		images: []billing.ImageCleanup{
+		images: []deployments.ImageCleanup{
 			{ID: "deploy-1", ImageRef: "snaphost/proj-abc:1"},
 			{ID: "deploy-2", ImageRef: "snaphost/proj-abc:2"},
 			{ID: "deploy-3", ImageRef: "snaphost/proj-abc:3"},
@@ -143,7 +143,7 @@ func TestImageSweepContinuesPastOneFailure(t *testing.T) {
 // A failure to stop an expired deploy must not skip the ones behind it either.
 func TestExpirySweepContinuesPastOneFailure(t *testing.T) {
 	lister := &fakeLister{
-		expired: []billing.ExpiredDeploy{
+		expired: []deployments.Expired{
 			{ID: "deploy-1", ContainerID: "container-1"},
 			{ID: "deploy-2", ContainerID: "container-2"},
 		},
@@ -193,8 +193,8 @@ func TestSweepReclaimsLongStoppedDeploys(t *testing.T) {
 func TestReclaimFailureDoesNotStopTheOtherSweeps(t *testing.T) {
 	lister := &fakeLister{
 		reclaimErr: errors.New("database is locked"),
-		expired:    []billing.ExpiredDeploy{{ID: "deploy-1", ContainerID: "container-1"}},
-		images:     []billing.ImageCleanup{{ID: "deploy-9", ImageRef: "snaphost/proj-abc:9"}},
+		expired:    []deployments.Expired{{ID: "deploy-1", ContainerID: "container-1"}},
+		images:     []deployments.ImageCleanup{{ID: "deploy-9", ImageRef: "snaphost/proj-abc:9"}},
 	}
 	cleaner := &fakeCleaner{}
 

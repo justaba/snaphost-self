@@ -4,7 +4,7 @@ package queue
 import "time"
 
 // Source types carried in Job.SourceType. Mirrors the deploy source
-// abstraction owned by user-billing (Task 14b).
+// abstraction owned by the deploy API (Task 14b).
 const (
 	SourceGitPublic  = "git_public"
 	SourceGitPrivate = "git_private"

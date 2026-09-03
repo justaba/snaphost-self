@@ -47,8 +47,8 @@ traffic at the configured stable edge.
 
 The in-process verifier checks pending rows every
 DOMAIN_VERIFY_INTERVAL_SEC. Verified rows are periodically rechecked according
-to DOMAIN_REVERIFY_HOURS and the grace policy. Only verified domains may resolve
-through the route repository.
+to DOMAIN_REVERIFY_HOURS and the grace policy. Only verified domains may be
+published by the future edge.
 
 List the row through GET /api/v1/domains to see status and last_error. Common
 verification errors are txt_not_found, txt_mismatch and dns_lookup_failed.
@@ -76,23 +76,16 @@ build.
 
 ## Current edge gap
 
-The inherited system used a separate router-svc and a cloud runtime. Both were
-removed by Task 1. The current Docker backend emits Traefik labels only for the
-generated DOMAIN_SUFFIX hostname; it does not add custom-domain labels.
-
-GET /internal/routes can resolve either a generated hostname or a verified
-custom domain, but no current edge consumes that route dynamically.
-
-GET /internal/tls/authorize correctly answers whether a host is verified, but
-it is currently registered inside the WEBHOOK_SECRET-protected internal route
-group. Standard Caddy on-demand TLS ask requests cannot add that header.
-Therefore infra/Caddyfile.production.example is now a comments-only marker for
-the missing contract, not an installable configuration.
+The current Docker backend emits Traefik labels only for the generated
+DOMAIN_SUFFIX hostname; it does not add custom-domain labels. The application
+exposes no internal route lookup or TLS authorization API: those endpoints were
+transport leftovers from the pre-collapse architecture, not a working Caddy
+integration. Therefore infra/Caddyfile.production.example is a comments-only
+marker for the missing contract, not an installable configuration.
 
 Task 4 must provide both parts together:
 
-1. authenticated or safely loopback-only TLS authorization compatible with
-   Caddy ask;
+1. a narrow, fail-closed TLS authorization contract compatible with Caddy ask;
 2. dynamic routing from a verified host to the stored Docker container without
    exposing arbitrary internal routes.
 
@@ -101,8 +94,8 @@ are not an end-to-end production feature of snaphost-self.
 
 ## Detach
 
-DELETE /api/v1/domains/<id> revokes the row. Route lookup and future TLS
-authorization then fail closed. Any certificate already cached by an external
+DELETE /api/v1/domains/<id> revokes the row. Future routing and TLS
+authorization must then fail closed. Any certificate already cached by an external
 edge remains an edge-operator cleanup concern.
 
 See [ADR 0007](../decisions/0007-custom-domain-tls-edge.md) and

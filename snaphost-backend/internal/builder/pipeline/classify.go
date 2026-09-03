@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"snaphost/internal/builder/ai"
+	"snaphost/internal/ai/llm"
 	"snaphost/internal/builder/clone"
 )
 
@@ -62,33 +62,23 @@ func classifyGitError(err error) error {
 	return Permanent(err)
 }
 
-// classifyAIError classifies errors returned by ai.Client.GenerateDockerfile.
-// ErrAIUnavailable → transient (upstream / network); ErrAIRefused → permanent.
-// For 4xx non-422 (covered by ErrAIRefused) it emits a WARN log because
-// such codes may indicate a builder-svc bug (auth misconfigured, wrong
-// endpoint, malformed payload) rather than legitimate AI refusal.
+// classifyAIError classifies errors returned by the in-process generator.
+// Provider availability errors are transient; invalid model output is
+// permanent. Unknown errors stay permanent to avoid blind retry loops.
 func classifyAIError(err error, log *zap.Logger) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, ai.ErrAIUnavailable) {
+	if errors.Is(err, llm.ErrTimeout) ||
+		errors.Is(err, llm.ErrRateLimited) ||
+		errors.Is(err, llm.ErrCircuitOpen) ||
+		errors.Is(err, llm.ErrUpstream) {
 		return Transient(err)
 	}
-	if errors.Is(err, ai.ErrAIRefused) {
-		// Heuristic: if the underlying error text mentions a 4xx status
-		// code other than 422, this is more likely a builder-svc bug.
-		msg := err.Error()
-		if strings.Contains(msg, "status 400") ||
-			strings.Contains(msg, "status 401") ||
-			strings.Contains(msg, "status 403") ||
-			strings.Contains(msg, "status 404") {
-			log.Warn("AI returned 4xx — may indicate builder-svc bug rather than legitimate AI refusal",
-				zap.Error(err))
-		}
+	if errors.Is(err, llm.ErrInvalidOutput) {
 		return Permanent(err)
 	}
-	// Unknown error from AI client — default permanent to avoid retry
-	// loops on contract changes we missed.
+	log.Warn("Dockerfile generator returned an unclassified error", zap.Error(err))
 	return Permanent(err)
 }
 

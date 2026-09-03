@@ -8,18 +8,11 @@ import (
 	"strings"
 )
 
-// Config holds all configuration values for the user-billing service.
+// Config holds control-plane configuration.
 type Config struct {
-	// Port is the HTTP listen port for the service.
-	Port string
 	// DatabasePath is where the SQLite file lives. A directory that does not
 	// exist yet is created — a fresh install points this at an empty volume.
 	DatabasePath string
-	// LogLevel controls the zap logger verbosity ("info" or "debug").
-	LogLevel string
-	// WebhookSecret is the shared secret used by api-gateway and other
-	// internal services for authenticating webhook calls.
-	WebhookSecret string
 	// RunMigrations controls whether database migrations run automatically at startup.
 	RunMigrations bool
 
@@ -37,28 +30,18 @@ type Config struct {
 	// refuses to send makes that impossible.
 	SessionCookieSecure *bool
 
-	// BuilderSvcURL is the base URL of builder-svc's internal API. Used
-	// by the saga orchestrator to enqueue builds.
-	BuilderSvcURL string
-	// RunnerSvcURL is the base URL of runner-svc's internal API. Used
-	// by the saga orchestrator to start and stop containers.
-	RunnerSvcURL string
-	// SagaWorkerEnabled toggles in-process saga worker startup. Disable
-	// when running the worker as a separate process.
-	SagaWorkerEnabled bool
-	// SagaBuildTimeoutMin caps how long a saga waits for builder-svc to
+	// SagaBuildTimeoutMin caps how long a saga waits for the build pipeline to
 	// emit a build event before treating the build as failed.
 	SagaBuildTimeoutMin int
 	// SagaResumeIntervalSec controls how often the resume sweeper looks
 	// for stuck sagas and re-enqueues them.
 	SagaResumeIntervalSec int
-	// DeployDefaultPort is the container port runner-svc tells Traefik
+	// DeployDefaultPort is the container port the runtime tells Traefik
 	// to load-balance to. Should match the port the user app listens on.
 	// Most templates use 3000 (Node) or 8080 (older Node, Java, generic).
 	DeployDefaultPort int
 	// MaxUploadSizeMB bounds the archive body accepted by
-	// POST /api/v1/deploys/upload. Must not exceed what api-gateway
-	// allows for the same route (MAX_UPLOAD_SIZE_MB there too).
+	// POST /api/v1/deploys/upload.
 	MaxUploadSizeMB int
 	// UploadTTLMin is how long an uploaded archive lives on disk
 	// before the expiry sweep deletes it.
@@ -79,17 +62,14 @@ type Config struct {
 	// dashboard authenticates against. Attaching them is refused.
 	ReservedDomains []string
 
-	// DeployTTLMin is the TTL sent to runner-svc for a new deploy. It is a
-	// tier value, not a runtime constant: runner-svc applies whatever
+	// DeployTTLMin is the TTL sent to the runtime for a new deploy. It is a
+	// tier value, not a runtime constant: the runtime applies whatever
 	// non-zero ttl_minutes it receives with no upper bound, so the tier's
 	// limit has to be applied here, where the tier is known.
 	DeployTTLMin int
 	// DeployTTLMaxMin is the ceiling this service enforces on DeployTTLMin.
 	DeployTTLMaxMin int
 
-	// AliasIdleGCDays is how long an alias-pinned deploy may serve no
-	// traffic before the alias is unpinned and the runtime reclaimed.
-	AliasIdleGCDays int
 	// StoppedImageGraceHours is how long a stopped deploy keeps the image it
 	// can be started from before the watchdog gives up on it and reclaims the
 	// disk. Zero disables the sweep, which means stopped images are kept
@@ -128,20 +108,11 @@ type Config struct {
 // Load reads configuration from environment variables with fallback to defaults.
 // Required fields without defaults cause an error if unset.
 func Load() (*Config, error) {
-	cfg := &Config{
-		Port:     envOrDefault("PORT", "8081"),
-		LogLevel: envOrDefault("LOG_LEVEL", "info"),
-	}
+	cfg := &Config{}
 
 	// Optional: DATABASE_PATH. The default sits under a directory a container
 	// can own, so the common case needs no configuration at all.
 	cfg.DatabasePath = envOrDefault("DATABASE_PATH", "/var/snaphost/data/snaphost.db")
-
-	// Required: WEBHOOK_SECRET
-	cfg.WebhookSecret = os.Getenv("WEBHOOK_SECRET")
-	if cfg.WebhookSecret == "" {
-		return nil, fmt.Errorf("config: WEBHOOK_SECRET is required but not set")
-	}
 
 	// Optional: RUN_MIGRATIONS (default true)
 	runMigrations, err := parseBoolEnv("RUN_MIGRATIONS", true)
@@ -167,13 +138,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.SessionCookieSecure = cookieSecure
-
-	// Optional: SAGA_WORKER_ENABLED (default true)
-	sagaEnabled, err := parseBoolEnv("SAGA_WORKER_ENABLED", true)
-	if err != nil {
-		return nil, err
-	}
-	cfg.SagaWorkerEnabled = sagaEnabled
 
 	// Optional: SAGA_BUILD_TIMEOUT_MIN (default 15)
 	buildTimeout, err := parseIntEnv("SAGA_BUILD_TIMEOUT_MIN", 15)
@@ -238,7 +202,6 @@ func Load() (*Config, error) {
 		// container really does hold host RAM for its whole TTL.
 		{"DEPLOY_TTL_MIN", 1440, &cfg.DeployTTLMin},
 		{"DEPLOY_TTL_MAX_MIN", 1440, &cfg.DeployTTLMaxMin},
-		{"ALIAS_IDLE_GC_DAYS", 30, &cfg.AliasIdleGCDays},
 		{"PROJECT_DEPLOY_RETENTION", 3, &cfg.ProjectDeployRetention},
 		// A stopped deploy keeps the image it can be restarted from, which is
 		// what makes starting one a container run rather than a rebuild. The

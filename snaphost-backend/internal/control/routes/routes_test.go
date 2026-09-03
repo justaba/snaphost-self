@@ -13,8 +13,6 @@ import (
 	"snaphost/internal/control/auth"
 )
 
-const testSecret = "test-webhook-secret"
-
 // newEngine registers the real route table. The handlers are wired over a nil
 // pool: these tests assert routing and authorisation, and every case here is
 // refused before a handler would touch the database.
@@ -27,11 +25,7 @@ func newEngine(t *testing.T) *gin.Engine {
 	authHandler := auth.NewHandler(auth.NewService(auth.NewRepository(nil), 0), auth.CookieOptions{}, log)
 
 	r := gin.New()
-	// Both halves, because the assertions below span them: that no billing
-	// path is routable anywhere, and that the internal group refuses a wrong
-	// secret. Registering only one would make the first pass vacuously.
 	Register(r, authHandler, nil, apikeyHandler, nil, nil)
-	RegisterInternal(r, nil, apikeyHandler, nil, testSecret)
 	return r
 }
 
@@ -74,7 +68,7 @@ func TestNoBillingSurfaceExists(t *testing.T) {
 		"/internal/billing/refund",
 	} {
 		for _, method := range []string{http.MethodGet, http.MethodPost} {
-			w := request(t, r, method, path, `{}`, map[string]string{"X-Webhook-Secret": testSecret})
+			w := request(t, r, method, path, `{}`, nil)
 			if w.Code != http.StatusNotFound {
 				t.Errorf("%s %s answered %d; no billing route may be registered (body %s)",
 					method, path, w.Code, w.Body.String())
@@ -83,29 +77,21 @@ func TestNoBillingSurfaceExists(t *testing.T) {
 	}
 }
 
-// The internal group is reachable only with the shared secret. Checked on
-// /internal/keys/verify because the middleware is registered on the group, so
-// one route covers every route under it.
-func TestInternalGroupRequiresTheWebhookSecret(t *testing.T) {
-	body := `{"key":"sk_0000000000000000"}`
-
-	for _, tc := range []struct {
-		name    string
-		headers map[string]string
-	}{
-		{"no header at all", nil},
-		{"empty value", map[string]string{"X-Webhook-Secret": ""}},
-		{"wrong secret", map[string]string{"X-Webhook-Secret": "not-the-secret"}},
-		{"secret with trailing space", map[string]string{"X-Webhook-Secret": testSecret + " "}},
-		{"prefix of the secret", map[string]string{"X-Webhook-Secret": testSecret[:len(testSecret)-1]}},
+func TestNoInternalServiceSurfaceExists(t *testing.T) {
+	r := newEngine(t)
+	for _, path := range []string{
+		"/internal/keys/verify",
+		"/internal/deploys/expired",
+		"/internal/deploy-images/pending",
+		"/internal/routes",
+		"/internal/tls/authorize",
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := newEngine(t)
-			w := request(t, r, http.MethodPost, "/internal/keys/verify", body, tc.headers)
-			if w.Code != http.StatusUnauthorized {
-				t.Fatalf("answered %d, want 401 (body %s)", w.Code, w.Body.String())
+		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
+			w := request(t, r, method, path, `{}`, map[string]string{"X-Webhook-Secret": "stale-secret"})
+			if w.Code != http.StatusNotFound {
+				t.Errorf("%s %s answered %d; the monolith must not expose service-to-service routes", method, path, w.Code)
 			}
-		})
+		}
 	}
 }
 
@@ -115,7 +101,6 @@ func TestInternalGroupRequiresTheWebhookSecret(t *testing.T) {
 // could never set one, which is why it had no reason to survive.
 func TestNoAccountCreationEndpointExists(t *testing.T) {
 	r := newEngine(t)
-	secret := map[string]string{"X-Webhook-Secret": testSecret}
 	body := `{"id":"9a5b3f1e-0000-4000-8000-000000000000","email":"someone@example.com"}`
 
 	for _, path := range []string{
@@ -123,7 +108,7 @@ func TestNoAccountCreationEndpointExists(t *testing.T) {
 		"/api/v1/users",
 		"/internal/webhooks/supabase",
 	} {
-		w := request(t, r, http.MethodPost, path, body, secret)
+		w := request(t, r, http.MethodPost, path, body, nil)
 		if w.Code != http.StatusNotFound {
 			t.Errorf("POST %s answered %d; it must not be routed (body %s)", path, w.Code, w.Body.String())
 		}

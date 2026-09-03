@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -61,17 +60,10 @@ type Deploy struct {
 	StoppedAt      *time.Time `json:"stopped_at,omitempty"`
 }
 
-// ErrRouteNotFound indicates no running deploy is routable for the requested host.
-var ErrRouteNotFound = errors.New("route not found")
-
 // GCPolicy configures what the reclaim sweep is allowed to take away from a
 // project beyond plain TTL expiry (Task 16a items 7 and 8). Both limits are
 // disabled when zero.
 type GCPolicy struct {
-	// AliasIdleDays is how long an alias-pinned deploy may go without a
-	// single request before the alias is unpinned and the runtime released.
-	// A hard timer cannot express "live but quiet"; traffic can.
-	AliasIdleDays int
 	// KeepPerProject is how many superseded deploys of a project stay
 	// running as rollback targets. Older ones are reclaimed — registry
 	// storage, not idle runtime, is the accumulating cost.
@@ -88,26 +80,15 @@ type GCPolicy struct {
 }
 
 // Repository provides CRUD data access for the deploys table.
-// Called by repo-handler and runner-svc, not by frontend directly.
 type Repository struct {
 	db *sql.DB
-	// domainSuffix is the platform's own runtime suffix. Hosts under it
-	// resolve through deploys.subdomain; anything else is a custom domain
-	// and resolves through the alias table.
-	domainSuffix string
-	gc           GCPolicy
+	gc GCPolicy
 	// logArchiver, when set, is asked for a deploy's log tail as it fails.
 	logArchiver LogArchiver
 }
 
 // Option configures a Repository at construction.
 type Option func(*Repository)
-
-// WithDomainSuffix sets the platform runtime suffix used to split route
-// lookups between generated subdomains and custom domains.
-func WithDomainSuffix(suffix string) Option {
-	return func(r *Repository) { r.domainSuffix = strings.TrimSpace(strings.ToLower(suffix)) }
-}
 
 // WithGCPolicy sets the reclaim limits applied on top of TTL expiry.
 func WithGCPolicy(p GCPolicy) Option {
@@ -715,7 +696,7 @@ func (r *Repository) FindExpired(ctx context.Context, limit int) ([]uuid.UUID, e
 	return ids, nil
 }
 
-// ExpiredDeploy holds the minimal fields needed by runner-svc to stop an expired container.
+// ExpiredDeploy holds the minimal fields needed to stop an expired container.
 type ExpiredDeploy struct {
 	ID          uuid.UUID `json:"id"`
 	UserID      uuid.UUID `json:"user_id"`
@@ -749,36 +730,10 @@ WHERE status = 'running'
 ORDER BY ttl_expires_at IS NULL, ttl_expires_at
 LIMIT ?`
 
-// unpinIdleAliasesSQL releases an alias whose target has served no request
-// for the configured window. The domain stays verified — the user still owns
-// it — but stops resolving until the next deploy repoints it, exactly as a
-// dead subdomain does. Detaching the pointer is what returns the deploy to
-// ordinary GC.
-const unpinIdleAliasesSQL = `
-UPDATE custom_domains
-SET target_deploy_id = NULL,
-    last_error = 'unpinned_idle',
-    updated_at = ?
-WHERE status = 'verified'
-  AND target_deploy_id IS NOT NULL
-  AND EXISTS (
-        SELECT 1 FROM deploys d
-        WHERE d.id = custom_domains.target_deploy_id
-          AND coalesce(d.last_request_at, d.updated_at) < ?
-      )`
-
 // FindExpiredWithDetails returns the deploys the watchdog should stop: TTL
-// expiry plus the alias-aware reclaim cases. Idle aliases are unpinned first,
-// in the same sweep, so a released deploy is picked up on this pass.
+// expiry plus alias-aware retention cases.
 func (r *Repository) FindExpiredWithDetails(ctx context.Context, limit int) ([]ExpiredDeploy, error) {
 	now := time.Now()
-
-	if r.gc.AliasIdleDays > 0 {
-		idleBefore := controldb.FormatTime(now.AddDate(0, 0, -r.gc.AliasIdleDays))
-		if _, err := r.db.ExecContext(ctx, unpinIdleAliasesSQL, controldb.FormatTime(now), idleBefore); err != nil {
-			return nil, fmt.Errorf("unpin idle aliases: %w", err)
-		}
-	}
 
 	rows, err := r.db.QueryContext(ctx, reclaimableSQL,
 		controldb.FormatTime(now), r.gc.KeepPerProject, r.gc.KeepPerProject, limit)
@@ -801,122 +756,3 @@ func (r *Repository) FindExpiredWithDetails(ctx context.Context, limit int) ([]E
 
 	return deploys, nil
 }
-
-// RouteInfo is the minimal running deploy mapping returned to the central router.
-type RouteInfo struct {
-	DeployID    string `json:"deploy_id"`
-	ContainerID string `json:"container_id"`
-	Status      string `json:"status"`
-	Host        string `json:"host"`
-}
-
-// subdomainRouteSQL resolves a generated *.${DOMAIN_SUFFIX} host through the
-// deploy's own immutable subdomain — the pre-16 behavior, unchanged.
-const subdomainRouteSQL = `
-SELECT id, container_id, status
-FROM deploys
-WHERE subdomain = ?
-  AND status = 'running'
-  AND container_id IS NOT NULL
-  AND container_id <> ''
-LIMIT 1`
-
-// customDomainRouteSQL resolves a user-owned hostname through the alias. Only
-// a verified domain resolves: an unverified or revoked one is indistinguishable
-// from an unknown host, which is what keeps a hostname someone else controls
-// from being served.
-const customDomainRouteSQL = `
-SELECT d.id, d.container_id, d.status
-FROM custom_domains cd
-JOIN deploys d ON d.id = cd.target_deploy_id
-WHERE cd.domain = ?
-  AND cd.status = 'verified'
-  AND d.status = 'running'
-  AND d.container_id IS NOT NULL
-  AND d.container_id <> ''
-LIMIT 1`
-
-// FindRouteByHost returns a running deploy route for the given HTTP Host.
-// Hosts under the platform suffix keep resolving through deploys.subdomain;
-// any other host is a custom domain and resolves through the alias table.
-// Both branches end on the same condition — running, with a container.
-func (r *Repository) FindRouteByHost(ctx context.Context, host string) (*RouteInfo, error) {
-	normalizedHost, subdomain, err := normalizeRouteHost(host)
-	if err != nil {
-		return nil, err
-	}
-
-	query, arg := customDomainRouteSQL, normalizedHost
-	if r.isPlatformHost(normalizedHost) {
-		query, arg = subdomainRouteSQL, subdomain
-	}
-
-	var deployID uuid.UUID
-	var containerID string
-	var status string
-	err = r.db.QueryRowContext(ctx, query, arg).Scan(&deployID, &containerID, &status)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrRouteNotFound
-		}
-		return nil, fmt.Errorf("find route by host: %w", err)
-	}
-
-	r.touchLastRequest(ctx, deployID)
-
-	return &RouteInfo{
-		DeployID:    deployID.String(),
-		ContainerID: containerID,
-		Status:      status,
-		Host:        normalizedHost,
-	}, nil
-}
-
-func normalizeRouteHost(host string) (normalizedHost, subdomain string, err error) {
-	host = strings.TrimSpace(strings.ToLower(host))
-	if host == "" {
-		return "", "", fmt.Errorf("host is required")
-	}
-	if h, _, splitErr := net.SplitHostPort(host); splitErr == nil {
-		host = h
-	}
-	host = strings.TrimSuffix(host, ".")
-	if host == "" {
-		return "", "", fmt.Errorf("host is required")
-	}
-	parts := strings.Split(host, ".")
-	if parts[0] == "" {
-		return "", "", fmt.Errorf("host %q has empty subdomain", host)
-	}
-	return host, parts[0], nil
-}
-
-// isPlatformHost reports whether the host lives under our own runtime suffix.
-// With no suffix configured every host takes the legacy subdomain branch, so
-// an unset DOMAIN_SUFFIX degrades to exactly the pre-16 behavior.
-func (r *Repository) isPlatformHost(host string) bool {
-	if r.domainSuffix == "" {
-		return true
-	}
-	return strings.HasSuffix(host, "."+r.domainSuffix)
-}
-
-// touchLastRequest records that this deploy served traffic, at most once per
-// touchInterval. Best-effort: route lookup is the request hot path, so a
-// failed write must never fail the request. The throttle is what keeps this
-// from being one UPDATE per HTTP request.
-func (r *Repository) touchLastRequest(ctx context.Context, deployID uuid.UUID) {
-	_, _ = r.db.ExecContext(ctx,
-		`UPDATE deploys
-		 SET last_request_at = ?
-		 WHERE id = ?
-		   AND (last_request_at IS NULL OR last_request_at < ?)`,
-		controldb.Now(), deployID.String(),
-		controldb.FormatTime(time.Now().Add(-touchIntervalMinutes*time.Minute)),
-	)
-}
-
-// touchIntervalMinutes bounds last_request_at write frequency per deploy. The
-// idle window it feeds is measured in days, so minute-grained resolution is
-// far more than the GC decision needs.
-const touchIntervalMinutes = 5

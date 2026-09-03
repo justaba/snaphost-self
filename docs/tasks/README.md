@@ -1,15 +1,16 @@
 # Task catalog
 
 Status: Current
-Updated: 2026-08-30
+Updated: 2026-09-02
 
 ## Active
 
 No active task is recorded. Task 7 is the next fully scoped task but remains
 blocked on its version and registry decision.
 
-Two pieces of work landed outside the numbered tasks, because one closed a
-recorded gap and the other is the smallest useful part of Task 6:
+Four pieces of work landed outside the numbered tasks. Two closed recorded
+gaps, one is the smallest useful part of Task 6, and one removed structure that
+Task 1 left behind rather than adding anything:
 
 - **Image reclamation.** The watchdog releases the local Docker image of any
   deploy that reaches a terminal status, and deploys.image_deleted_at records
@@ -36,6 +37,21 @@ recorded gap and the other is the smallest useful part of Task 6:
   Two dead entries went on the way: the Транзакции tab, pointing at a route
   deleted with billing in Task 1, and a «Перезапустить» button calling an
   endpoint this backend has never had.
+
+- **The embedded vulnerability scanner is gone**, with the memory it reserved
+  in the application cgroup and the CLI it needed in the runtime image. This
+  fork trusts the source its own operator submits; an operator with a different
+  trust boundary scans in their own CI. See
+  [ADR 0003](../decisions/0003-remove-embedded-scanning.md).
+- **The microservice remains are gone.** Task 1 replaced every cross-service
+  HTTP call with a direct one but left the far ends standing: the
+  `/internal/*` group and its webhook secret, three unused HTTP clients, the
+  `runtime/billing` package, the `ai`/`builder`/`runtime` API handler packages,
+  and configuration selectors for backends that do not exist. Two routes had
+  already drifted into being unreachable without anything noticing, which is
+  the argument. `gateway` is `httpapi` now, because it is a middleware chain
+  and not a service. See
+  [ADR 0008](../decisions/0008-no-service-to-service-http.md).
 
 Task 6 is therefore partially completed rather than planned. Stop, start,
 delete and the audit read surface are done; audited shell access into a

@@ -34,7 +34,7 @@ func newReclaimDB(t *testing.T) *Repository {
 		t.Fatalf("apply baseline: %v", err)
 	}
 
-	return NewRepository(handle, WithGCPolicy(GCPolicy{AliasIdleDays: 30, KeepPerProject: 3}))
+	return NewRepository(handle, WithGCPolicy(GCPolicy{KeepPerProject: 3}))
 }
 
 func TestReclaimQueriesExecute(t *testing.T) {

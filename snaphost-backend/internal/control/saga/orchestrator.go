@@ -27,27 +27,22 @@ type DeployRepository interface {
 type Orchestrator struct {
 	Repo        *Repository
 	DeployRepo  DeployRepository
-	Builder     BuilderClient
-	Runner      RunnerClient
+	Builds      BuildScheduler
+	Runtime     Runtime
 	BuildEvents BuildEvents
 	Publisher   logs.Publisher
 	Log         *zap.Logger
 	// BuildTimeout caps how long the saga waits on a build outcome
 	// before giving up and compensating.
 	BuildTimeout time.Duration
-	// DeployPort is the container port runner-svc reports to Traefik for
+	// DeployPort is the container port the runtime reports to Traefik for
 	// load-balancing. Must match the port the user app listens on.
 	DeployPort int
 	// DeployTTLMinutes is the TTL this deploy's tier grants, sent to
-	// runner-svc per deploy. Zero leaves runner-svc on its own config
+	// the runtime per deploy. Zero leaves the runtime on its own config
 	// default, which is the pre-16 behavior.
 	DeployTTLMinutes int
-	// MaxTTLMinutes caps DeployTTLMinutes. runner-svc applies any non-zero
-	// ttl_minutes it receives with no upper bound, so the tier's ceiling has
-	// to be enforced here, where the tier is known. The endpoint is
-	// internal-only, so this is correctness for the tier model rather than a
-	// public attack surface — but the ceiling belongs with the entitlement,
-	// not with the executor.
+	// MaxTTLMinutes caps DeployTTLMinutes before work reaches the runtime.
 	MaxTTLMinutes int
 	// Aliases moves a project's verified custom domains onto the deploy that
 	// just went live (Task 16a item 4). Optional — nil disables promotion,
@@ -64,7 +59,7 @@ type AliasPromoter interface {
 	PromoteToDeploy(ctx context.Context, deployID uuid.UUID) (int, error)
 }
 
-// ttlMinutes resolves the per-deploy TTL to send to runner-svc.
+// ttlMinutes resolves the per-deploy TTL to send to the runtime.
 func (o *Orchestrator) ttlMinutes() int {
 	ttl := o.DeployTTLMinutes
 	if o.MaxTTLMinutes > 0 && ttl > o.MaxTTLMinutes {
@@ -76,9 +71,7 @@ func (o *Orchestrator) ttlMinutes() int {
 	return ttl
 }
 
-// BuildOutcome is what the saga learns when a build ends. It used to be a JSON
-// body decoded off a Redis channel; the fields are the same, minus the ones
-// that only existed to identify the message on the wire.
+// BuildOutcome is the result the saga receives when a build ends.
 type BuildOutcome struct {
 	// Failed distinguishes the two terminal outcomes. Anything that is not a
 	// failure carried an image.
@@ -91,10 +84,8 @@ type BuildOutcome struct {
 
 // BuildEvents reports the outcome of a build the saga is waiting on.
 //
-// An interface rather than the bus itself, for the reason every seam in this
-// package is one: the orchestrator's tests drive it through fakes, and it has
-// no business knowing whether the answer came from another goroutine or from
-// another machine.
+// The interface keeps the orchestrator independent of event storage and makes
+// its state transitions directly testable.
 type BuildEvents interface {
 	// Wait blocks until the build for deployID ends, the timeout elapses, or
 	// ctx is cancelled. A build that has already ended is answered without
@@ -200,16 +191,19 @@ func (o *Orchestrator) stepEnqueueBuild(ctx context.Context, job SagaJob, deploy
 	if state.CredentialID != nil {
 		credentialID = *state.CredentialID
 	}
-	if err := o.Builder.EnqueueBuild(ctx, BuildRequest{
-		DeployID:       job.DeployID,
-		UserID:         job.UserID,
-		SourceType:     sourceType,
-		RepoURL:        job.RepoURL,
-		Branch:         job.Branch,
-		UploadID:       uploadID,
-		CredentialID:   credentialID,
-		IdempotencyKey: job.DeployID + ":build",
+	if err := o.Builds.EnqueueBuild(ctx, BuildRequest{
+		DeployID:     job.DeployID,
+		UserID:       job.UserID,
+		SourceType:   sourceType,
+		RepoURL:      job.RepoURL,
+		Branch:       job.Branch,
+		UploadID:     uploadID,
+		CredentialID: credentialID,
 	}); err != nil {
+		var operationErr *OperationError
+		if errors.As(err, &operationErr) && operationErr.Permanent() {
+			return newTerminalError("%s", operationErr.UserReason())
+		}
 		return fmt.Errorf("enqueue build: %w", err)
 	}
 	if err := o.Repo.UpdateStep(ctx, deployID, StepBuilding); err != nil {
@@ -222,7 +216,7 @@ func (o *Orchestrator) stepEnqueueBuild(ctx context.Context, job SagaJob, deploy
 }
 
 func (o *Orchestrator) stepWaitForBuild(ctx context.Context, deployID uuid.UUID, state *SagaState) error {
-	// Race-safe pre-check: maybe builder-svc finished and persisted before
+	// Race-safe pre-check: maybe the build pipeline finished and persisted before
 	// we started subscribing.
 	if state.ImageRef != nil && *state.ImageRef != "" {
 		if err := o.Repo.UpdateStep(ctx, deployID, StepBuilt); err != nil {
@@ -270,28 +264,26 @@ func (o *Orchestrator) stepRunContainer(ctx context.Context, job SagaJob, deploy
 	if state.AppPort != nil && *state.AppPort > 0 {
 		port = *state.AppPort
 	}
-	resp, err := o.Runner.Deploy(ctx, DeployRequest{
-		DeployID:       job.DeployID,
-		UserID:         job.UserID,
-		ImageRef:       *state.ImageRef,
-		Port:           port,
-		TTLMinutes:     o.ttlMinutes(),
-		IdempotencyKey: job.DeployID + ":run",
+	resp, err := o.Runtime.Deploy(ctx, DeployRequest{
+		DeployID:   job.DeployID,
+		UserID:     job.UserID,
+		ImageRef:   *state.ImageRef,
+		Port:       port,
+		TTLMinutes: o.ttlMinutes(),
 	})
 	if err != nil {
-		// A 4xx from runner-svc means this deploy cannot work: the image is
-		// rejected, or the container started and never answered on the port
-		// the runtime injects (Task 15b). Retrying builds nothing new, so
-		// compensate — tear down and refund — instead of requeueing.
-		var statusErr *StatusError
-		if errors.As(err, &statusErr) && statusErr.Permanent() {
-			return newTerminalError("%s", statusErr.UserReason())
+		// A permanent runtime refusal means this deploy cannot work: the image
+		// is rejected, or the container started and never answered on its port.
+		// Retrying builds nothing new, so compensate — tear the runtime down —
+		// instead of requeueing.
+		var operationErr *OperationError
+		if errors.As(err, &operationErr) && operationErr.Permanent() {
+			return newTerminalError("%s", operationErr.UserReason())
 		}
-		return fmt.Errorf("runner deploy: %w", err)
+		return fmt.Errorf("runtime deploy: %w", err)
 	}
-	// runner-svc itself calls user-billing's /internal/deploys/:id/running to
-	// fill in subdomain / ttl / final status — saga only mirrors enough into
-	// its own state to support resume-after-crash.
+	// The runtime persists subdomain, TTL and final status directly; the saga
+	// mirrors enough into its own state to support resume-after-crash.
 	if err := o.Repo.MarkContainerRunning(ctx, deployID, resp.ContainerID, resp.EndpointURL); err != nil {
 		return err
 	}
@@ -305,9 +297,8 @@ func (o *Orchestrator) stepRunContainer(ctx context.Context, job SagaJob, deploy
 // its probe, so the deploy becomes user-visibly running and the project's
 // domains move onto it.
 //
-// It used to also commit the coin reservation, which is where its name came
-// from. What is left is not bookkeeping filler — this is the single point at
-// which a build becomes the live version of a project.
+// This is the single point at which a build becomes the live version of a
+// project.
 func (o *Orchestrator) stepFinalize(ctx context.Context, deployID uuid.UUID, state *SagaState) error {
 	if err := o.Repo.UpdateStep(ctx, deployID, StepRunning); err != nil {
 		return err
@@ -324,9 +315,8 @@ func (o *Orchestrator) stepFinalize(ctx context.Context, deployID uuid.UUID, sta
 
 // promoteAliases publishes the project's verified domains onto this deploy.
 //
-// Deliberately best-effort and last: the deploy is running and the coins are
-// already committed, so a failure here must not fail the saga or trigger a
-// refund. The cost of not moving the pointer is that the domain keeps serving
+// Deliberately best-effort and last: the deploy is already running, so a
+// failure here must not tear it down. The domain keeps serving
 // the previous build — a stale site, not a broken one — and the operator can
 // move it by hand. The cost of treating it as fatal would be tearing down a
 // working, paid-for deploy over a bookkeeping update.
@@ -356,11 +346,8 @@ func (o *Orchestrator) promoteAliases(ctx context.Context, deployID uuid.UUID) {
 // uses the persisted boolean flags to know what actually happened, so
 // rerunning compensate is safe.
 //
-// It used to refund the coin reservation as well. Removing the money did not
-// make this step redundant: a failure after the container started leaves a
-// running runtime nobody will ever route to, and that is exactly what
-// compensation is for. The saga was always a distributed-work saga; billing
-// was one participant in it, not its reason to exist.
+// A failure after the container started can leave an unreferenced runtime;
+// compensation ensures it is stopped before the deploy is marked failed.
 func (o *Orchestrator) compensate(ctx context.Context, deployID uuid.UUID, reason string) error {
 	state, err := o.Repo.Get(ctx, deployID)
 	if err != nil {
@@ -370,7 +357,7 @@ func (o *Orchestrator) compensate(ctx context.Context, deployID uuid.UUID, reaso
 	// Stop the container if it was started.
 	if state.ContainerRunning && state.ContainerID != nil {
 		o.publish(deployID, "saga", "info", "stopping container")
-		if err := o.Runner.Stop(ctx, deployID.String(), *state.ContainerID); err != nil {
+		if err := o.Runtime.Stop(ctx, deployID.String(), *state.ContainerID); err != nil {
 			o.Log.Warn("compensation: stop container failed",
 				zap.String("deploy_id", deployID.String()), zap.Error(err))
 		}

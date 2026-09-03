@@ -13,7 +13,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// Headers written by the gateway's Enrich middleware, which deletes any
+// Headers written by the HTTP Enrich middleware, which deletes any
 // incoming copy first. That deletion is the anti-spoofing measure.
 const (
 	userIDHeader = "X-User-ID"

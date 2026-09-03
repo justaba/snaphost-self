@@ -9,6 +9,12 @@ package wiring, local Docker runtime and current documentation.
 
 > Follow-up: the embedded Trivy stage described in this historical task was
 > removed on 2026-09-01. See [ADR 0003](../../decisions/0003-remove-embedded-scanning.md).
+>
+> Follow-up: item 5b below describes `routes.RegisterInternal` and the
+> `/internal` group as they were built. They were removed on 2026-09-02 along
+> with `WEBHOOK_SECRET` and the unused HTTP clients this task left behind, and
+> `gateway` was renamed `httpapi`. See
+> [ADR 0008](../../decisions/0008-no-service-to-service-http.md).
 
 ## Goal
 

@@ -80,8 +80,7 @@ decides the validation, the rollback target resolution, and the CI trigger.
 
 3. [ ] **An `install` path, which does not exist today.** The production box was
    brought up by hand, so there is no first-run story at all: create the
-   directories, **generate `WEBHOOK_SECRET`** rather than asking for it to be
-   typed, write an env file from a template, pull, migrate, start, and print
+   directories, write an env file from a template, pull, migrate, start, and print
    the operator password once. Item 6a of Task 1 already generates that
    password; this is the same idea applied to the rest of the install.
 

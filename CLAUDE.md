@@ -32,27 +32,25 @@ runtime binary plus a one-shot migration command:
 | `cmd/snaphost` | The whole platform: API, panel, build pipeline, runtime, watchdog, saga worker. |
 | `cmd/control-migrate` | Applies the schema. Separate so a deployment can migrate as its own step. |
 
-`internal/` holds what used to be seven services plus the glue that replaced the
-network between them:
+`internal/` holds the application components:
 
 | Package | Responsibility |
 | --- | --- |
-| `gateway` | Middleware chain, RBAC, WebSocket log endpoint. No business logic. |
+| `httpapi` | Middleware chain, RBAC, WebSocket log endpoint. No business logic. |
 | `control` | Sessions, API keys, deploys, projects, custom domains, the saga, the operator audit log. Owns the schema. |
-| `builder` | Clone or unpack, detect, generate a Dockerfile, scan, build. |
+| `builder` | Clone or unpack, detect, generate and validate a Dockerfile, build. |
 | `runtime` | Starts and stops user containers; the TTL watchdog. |
 | `ai` | Dockerfile templates first, an LLM when none match. |
 | `panel` | The operator UI, embedded with `go:embed`. |
-| `shared` | The webhook-secret middleware and Dockerfile validation. |
-| `wiring` | Adapters between packages that used to be HTTP clients of each other. |
+| `shared` | Session constants and Dockerfile validation. |
+| `wiring` | Narrow adapters between domain interfaces and concrete repositories or services. |
 | `logbus`, `buildevents` | In-process fan-out that replaced Redis pub/sub and streams. |
 | `uploads`, `gitcreds` | File-backed upload staging; in-memory credentials with a TTL. |
 | `memlimit` | Reads the cgroup limit and derives `GOMEMLIMIT` from it. |
 
-`wiring` exists because the merge kept the package boundaries: `builder` still
-calls an `AIClient` interface, `runtime` still calls a `BillingClient`. The
-adapters make those direct calls. Keep new cross-package calls going through it
-rather than importing another package's internals.
+`wiring` keeps package dependencies narrow: saga uses `BuildScheduler` and
+`Runtime`, while the container runtime uses `DeploymentStore`. All are direct
+in-process calls. Keep new cross-package calls behind small domain interfaces.
 
 ## Commands
 
@@ -166,12 +164,9 @@ in a precise order:
    `GET /ws/logs/:id`. Health must answer when authentication is broken, and a
    browser cannot put a header on a WebSocket handshake, so that endpoint
    authenticates itself.
-2. **Before user authentication, also on the engine:** `RegisterInternal` mounts
-   `/internal/*` behind `shared.WebhookAuth`. Those callers present a shared
-   secret, not a session; running them through `Auth` would reject every one.
-3. **Middleware chain:** `Recovery` → `CORS` → `RequestID` → `Logger` →
+2. **Middleware chain:** `Recovery` → `CORS` → `RequestID` → `Logger` →
    **`panel`** → `Auth` → `Casbin` → `Enrich` → upload body limit.
-4. **Routes:** `/api/v1/*` registered directly — no proxy, no second process.
+3. **Routes:** `/api/v1/*` registered directly — no proxy, no internal service API.
 
 The panel sits **before `Auth` deliberately**. The obvious shape is a `NoRoute`
 fallback, and it is wrong: Gin runs the global middleware for `NoRoute` too, so
@@ -200,21 +195,21 @@ when no account can log in with a password at all.
   runs after each.
 - **Sessions:** opaque tokens, stored SHA-256-hashed in `sessions`, handed out
   as a `snaphost_session` cookie (HttpOnly, SameSite=Lax). The cookie name lives
-  in `internal/shared` because control writes it and gateway reads it.
+  in `internal/shared` because auth writes it and HTTP middleware reads it.
 - **API keys:** `sk_` bearer tokens, a separate path for non-browser clients.
   `middleware.Auth` accepts exactly two credentials and a malformed
   `Authorization` header does **not** fall through to the cookie.
 - **Login rate limit:** ten failures per address per five minutes, in memory.
   Only failures count; a success clears the counter.
 
-`PublicRoutes` in [middleware/auth.go](snaphost-backend/internal/gateway/middleware/auth.go)
+`PublicRoutes` in [middleware/auth.go](snaphost-backend/internal/httpapi/middleware/auth.go)
 is `POST /api/v1/auth/login`, `/health`, `/metrics` — that is all. Both `Auth`
 and `Casbin` consult it.
 
 ## RBAC — Casbin with `keyMatch2`
 
-[rbac_model.conf](snaphost-backend/internal/gateway/rbac_model.conf) +
-[rbac_policy.csv](snaphost-backend/internal/gateway/rbac_policy.csv). Two roles:
+[rbac_model.conf](snaphost-backend/internal/httpapi/rbac_model.conf) +
+[rbac_policy.csv](snaphost-backend/internal/httpapi/rbac_policy.csv). Two roles:
 `user` and `admin`, with `g, admin, user`. The role comes from the `users.role`
 column, not a token claim.
 
@@ -365,8 +360,7 @@ serving the broken one for its TTL. LLM answers are cached, in
 
 ## Runtime
 
-`internal/runtime`. `RUNNER_BACKEND` selects a backend and `docker` is the only
-one — anything else is fatal at startup. Containers get a read-only root, tmpfs
+`internal/runtime` owns the Docker container lifecycle. Containers get a read-only root, tmpfs
 for `/tmp`, `/run` and `/var/cache/nginx`, all capabilities dropped except
 `NET_BIND_SERVICE`, `CHOWN`, `SETUID`, `SETGID`, `no-new-privileges`, a PID
 limit, and `CONTAINER_MEMORY_MB` / `CONTAINER_CPU_LIMIT`.
@@ -374,15 +368,14 @@ limit, and `CONTAINER_MEMORY_MB` / `CONTAINER_CPU_LIMIT`.
 **The liveness probe decides what "running" means.** Before reporting success
 the runtime dials the container on the port from `EXPOSE`; on failure it tears
 the container down, marks the deploy failed with a reason naming `PORT`, and
-answers `422`, which the saga treats as terminal. It dials the address on the
+returns a permanent operation error, which the saga compensates. It dials the address on the
 **shared** network — a deploy container also joins its own network with
 inter-container communication disabled, and that one is unreachable from here by
 design.
 
-A watchdog sweeps expired deploys: TTL expiry of un-aliased deploys, deploys
-whose alias went idle past `ALIAS_IDLE_GC_DAYS`, and deploys beyond
-`PROJECT_DEPLOY_RETENTION` per project. A deploy an alias points at is never
-reclaimed.
+A watchdog sweeps expired deploys: TTL expiry of un-aliased deploys and deploys
+beyond `PROJECT_DEPLOY_RETENTION` per project. A deploy an alias points at is
+never reclaimed.
 
 **The same watchdog reclaims images, and the two sweeps are deliberately
 independent.** With no registry the disk that fills is the one the platform
@@ -485,10 +478,9 @@ in-process verifier flips `pending` → `verified` and re-checks periodically, s
 a domain that stops pointing here loses verification. **Only a `verified` domain
 routes.** Attach is refused while both `DOMAIN_CNAME_TARGET` and
 `DOMAIN_A_RECORD_TARGET` are empty: there is no address to point DNS at.
-`GET /internal/tls/authorize` answers whether a host is verified, but it is
-currently inside the `WEBHOOK_SECRET`-protected internal group. Standard Caddy
-`ask` cannot add that header, so this handler is not yet a working edge
-integration by itself.
+The application intentionally exposes no generic `/internal` HTTP surface.
+Custom-domain TLS still needs a dedicated, narrowly scoped edge integration;
+do not reintroduce the former service webhook API to implement it.
 
 ## Infra
 
@@ -505,8 +497,8 @@ integration by itself.
   prunes on a retention policy that never touches a dump the deployment state
   references.
 
-Changing any of those means running `infra/tests/deploy_test.sh` and
-`infra/tests/backup_test.sh` (39 tests each). They need GNU coreutils and
+Changing any of those means running `infra/tests/deploy_test.sh` (36 tests) and
+`infra/tests/backup_test.sh` (40). They need GNU coreutils and
 `flock`, so on Windows run them in a Linux container. Their fakes are part of the
 test: the `docker` fake refuses `up` for a service the manifest does not define,
 because a `rollback_to` naming seven deleted services once passed the suite.
@@ -523,11 +515,21 @@ Written down rather than fixed, so nobody rediscovers them:
   this backend has never had.
 - **Traefik, not Caddy.** Caddy is the recorded direction, but dynamic routing
   from a verified alias to a Docker container has not been implemented.
-- **No end-to-end custom-domain TLS.** The verification handler exists, but its
-  current webhook authentication is incompatible with standard Caddy `ask`;
-  nothing in this tree safely bridges that boundary yet.
+- **No end-to-end custom-domain TLS.** DNS verification exists, but the
+  application deliberately exposes no authorization endpoint for Caddy `ask`;
+  a narrow edge contract still needs to be designed.
 - **Not installable.** [Task 7](docs/tasks/planned/0007-install-and-upgrade.md)
   is the install and upgrade story, and it is not started.
+- **`deploy.sh` readiness cannot pass on a real host.** `probe_internal` runs
+  `compose run --entrypoint curl snaphost`, and there is no `curl` in the
+  runtime image — there never was, because the old Dockerfile installed it only
+  to fetch the Trivy installer and purged it in the same layer. Every `deploy`
+  would fail readiness *after* applying migrations. The `run` branch of the
+  `docker` fake exits 0 without looking at the entrypoint, which is why 36 green
+  tests say nothing about it — the same "fake agrees with itself" shape as the
+  `rollback_to` and `REQUIRED_TABLES` defects. Fixing it is a choice between
+  putting `curl` back and probing the published port from the host, and it
+  belongs with Task 7's rework of this script.
 
 ## Documents
 

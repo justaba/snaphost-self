@@ -75,9 +75,9 @@ snaphost-self/
 │   │   ├── snaphost/          application entry point
 │   │   └── control-migrate/   one-shot SQLite migrator
 │   ├── internal/
-│   │   ├── gateway/           HTTP middleware, RBAC and WebSocket logs
+│   │   ├── httpapi/           HTTP middleware, RBAC and WebSocket logs
 │   │   ├── control/           auth, projects, deploys, domains and saga
-│   │   ├── builder/           clone/unpack, detection, build and scan
+│   │   ├── builder/           clone/unpack, detection, validation and build
 │   │   ├── runtime/           Docker lifecycle, probe and watchdog
 │   │   ├── ai/                templates and LLM fallback
 │   │   ├── panel/             embedded panel assets

@@ -1,6 +1,6 @@
-// Package backend defines the execution backend interface that all deployment
-// backends must implement. The rest of runner-svc depends only on this contract,
-// enabling backend swaps (e.g. docker → yandex) with zero changes elsewhere.
+// Package backend defines the narrow container-engine contract used by the
+// runtime. Keeping Docker behind this interface makes lifecycle behavior
+// independently testable.
 package backend
 
 import (
@@ -30,7 +30,7 @@ type RunRequest struct {
 
 // RunResult is returned once the deployment is live.
 type RunResult struct {
-	// ContainerID is the backend-specific handle (docker container id or cloud resource id).
+	// ContainerID is the Docker container id.
 	ContainerID string
 	// EndpointURL is the full public URL (e.g. http://proj-abc123.localhost).
 	EndpointURL string
@@ -63,27 +63,21 @@ type ProbeRequest struct {
 	EndpointURL string
 }
 
-// Prober is implemented by backends that can reach the runtime they started
-// and confirm something answers on it. Each backend knows its own path to the
-// container (a Docker network address, a signed invocation URL), so this stays
-// behind the provider boundary rather than in the service layer.
-//
-// A backend that does not implement Prober is simply not probed — that is the
-// pre-Task-15 behavior, where "running" meant "started" rather than "answers".
+// Prober can reach the container it started and confirm that the configured
+// application port answers.
 type Prober interface {
 	Probe(ctx context.Context, req ProbeRequest) error
 }
 
-// Backend is implemented by docker/docker.go for dev and will be implemented
-// by yandex/yandex.go for production (not in this task).
+// Backend is implemented by the local Docker engine.
 type Backend interface {
-	// Run pulls the image if needed, creates and starts the container/service,
+	// Run locates the image, creates and starts the container,
 	// waits for it to be reachable, and returns the public endpoint.
 	Run(ctx context.Context, req RunRequest) (*RunResult, error)
 
 	// Stop gracefully shuts down the deployment and cleans up associated resources
 	// (networks, volumes, routing rules). deployID is provided for deploy-log
-	// publishing; containerID remains the backend-specific runtime handle.
+	// publishing; containerID is the Docker container handle.
 	Stop(ctx context.Context, deployID, containerID string) error
 
 	// HealthCheck reports whether the deployment is currently running.
@@ -91,7 +85,7 @@ type Backend interface {
 
 	// StreamLogs tails container stdout/stderr. The returned channel emits lines
 	// until the context is cancelled or the container dies. Callers forward these
-	// lines to the Redis publisher with stage="runtime".
+	// lines to the runtime log publisher.
 	StreamLogs(ctx context.Context, containerID string) (<-chan string, error)
 
 	// RemoveImage releases the deploy artifact from the backend's local image
@@ -105,8 +99,8 @@ type Backend interface {
 
 // Typed errors that backends must use so callers can match with errors.Is.
 var (
-	// ErrImagePullFailed indicates the image could not be pulled from the registry.
-	ErrImagePullFailed = errors.New("image pull failed")
+	// ErrImageUnavailable indicates the requested image is absent locally.
+	ErrImageUnavailable = errors.New("image unavailable")
 	// ErrContainerStartFailed indicates the container failed to start.
 	ErrContainerStartFailed = errors.New("container start failed")
 	// ErrContainerNotFound indicates the container does not exist.

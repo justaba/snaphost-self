@@ -1,17 +1,5 @@
-// One module for the whole control plane.
-//
-// The six services were separate modules because they were separately
-// deployable, separately credentialed processes. On a single-operator host
-// they are one process (Task 1), and separate modules only bought a `replace`
-// directive per service and six dependency sets to keep in step.
-//
-// The merge itself changed no import path, because the old module paths and
-// the directory layout already agreed. The rename that followed it is what
-// moved the services under internal/ — kept a separate step so a real break
-// could not hide inside a rename diff.
-//
-// Layout: cmd/ holds the entry points, internal/ holds everything they wire
-// together, one package tree per former service.
+// One module and one application process. cmd/ contains entry points;
+// internal/ contains domain components and their direct wiring.
 module snaphost
 
 go 1.25.5

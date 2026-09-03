@@ -1,30 +1,12 @@
-// Package wiring holds the adapters that let the services call each other
-// directly instead of over HTTP.
-//
-// The seams themselves are not new: every one of these was already an
-// interface, because the services were separate processes and had to be
-// mockable in tests. What changes is the implementation behind them — an
-// in-process call rather than a JSON round trip to localhost.
-//
-// Two things are deliberately preserved rather than simplified away:
-//
-//   - The error classification. The saga distinguishes "this will never work"
-//     from "try again" by HTTP status, and refunding versus requeueing hangs on
-//     it. Each adapter reconstructs the exact status its HTTP handler would
-//     have returned, so the decision is made on the same evidence as before.
-//   - The validation. Nothing here re-implements a check that a handler did;
-//     the adapters call the same functions the handlers call.
-//
-// What does disappear is the internal X-Webhook-Secret layer. A shared secret
-// between two goroutines in one process protects nothing.
+// Package wiring adapts component-specific interfaces to the concrete
+// implementations assembled by the application. Adapters keep orchestration
+// policy (for example retry classification) out of repositories and workers.
 package wiring
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"time"
 
 	"database/sql"
@@ -32,40 +14,35 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	aillm "snaphost/internal/ai/llm"
-	aiservice "snaphost/internal/ai/service"
-	builderai "snaphost/internal/builder/ai"
-	builderapi "snaphost/internal/builder/api"
 	builderevents "snaphost/internal/builder/events"
 	builderlogs "snaphost/internal/builder/logs"
+	"snaphost/internal/builder/scheduler"
 	"snaphost/internal/buildevents"
 	"snaphost/internal/control/apikey"
 	"snaphost/internal/control/auth"
 	"snaphost/internal/control/deploy"
 	controllogs "snaphost/internal/control/logs"
 	"snaphost/internal/control/saga"
-	"snaphost/internal/gateway/middleware"
+	"snaphost/internal/httpapi/middleware"
 	"snaphost/internal/logbus"
-	"snaphost/internal/runtime/billing"
+	"snaphost/internal/runtime/deployments"
 	runtimelogs "snaphost/internal/runtime/logs"
 	"snaphost/internal/runtime/runner"
 )
 
 // ---------------------------------------------------------------------------
-// saga → builder
+// saga → build pipeline
 // ---------------------------------------------------------------------------
 
-// BuilderClient satisfies saga.BuilderClient by enqueueing directly.
-type BuilderClient struct {
-	Enqueuer *builderapi.Enqueuer
+// BuildScheduler satisfies saga.BuildScheduler by enqueueing directly.
+type BuildScheduler struct {
+	Scheduler *scheduler.Scheduler
 }
 
-// EnqueueBuild validates and queues the build. A rejected request becomes a
-// *saga.StatusError carrying the status the API would have answered with, so
-// the orchestrator's terminal-versus-transient decision is unchanged — a 400
-// compensates, a 429 is retried.
-func (c *BuilderClient) EnqueueBuild(ctx context.Context, req saga.BuildRequest) error {
-	_, err := c.Enqueuer.Enqueue(ctx, builderapi.BuildRequest{
+// EnqueueBuild validates and queues a build. Request failures are translated
+// into the retry semantics the saga needs.
+func (c *BuildScheduler) EnqueueBuild(ctx context.Context, req saga.BuildRequest) error {
+	_, err := c.Scheduler.Enqueue(ctx, scheduler.BuildRequest{
 		DeployID:     req.DeployID,
 		UserID:       req.UserID,
 		SourceType:   req.SourceType,
@@ -75,12 +52,12 @@ func (c *BuilderClient) EnqueueBuild(ctx context.Context, req saga.BuildRequest)
 		CredentialID: req.CredentialID,
 	})
 	if err != nil {
-		var reqErr *builderapi.RequestError
+		var reqErr *scheduler.RequestError
 		if errors.As(err, &reqErr) {
-			return &saga.StatusError{
-				StatusCode: reqErr.Status,
-				Code:       reqErr.Code,
-				Message:    reqErr.Message,
+			return &saga.OperationError{
+				Code:      reqErr.Code,
+				Message:   reqErr.Message,
+				Retryable: reqErr.Retryable,
 			}
 		}
 		return err
@@ -89,20 +66,17 @@ func (c *BuilderClient) EnqueueBuild(ctx context.Context, req saga.BuildRequest)
 }
 
 // ---------------------------------------------------------------------------
-// saga → runtime
+// saga → container runtime
 // ---------------------------------------------------------------------------
 
-// RunnerClient satisfies saga.RunnerClient by calling the runtime service.
-type RunnerClient struct {
+// ContainerRuntime satisfies saga.Runtime through direct service calls.
+type ContainerRuntime struct {
 	Service *runner.Service
 }
 
-// Deploy starts the container. The error mapping mirrors the runtime's HTTP
-// handler exactly, because the saga reads the status to decide whether to
-// refund: a failed liveness probe is 422 and terminal, a validation failure is
-// 400 and terminal, an already-running deploy is 409, and anything else is 500
-// and retried.
-func (c *RunnerClient) Deploy(ctx context.Context, req saga.DeployRequest) (*saga.DeployResponse, error) {
+// Deploy starts the container and translates runtime errors into saga retry
+// semantics without routing them through HTTP status codes.
+func (c *ContainerRuntime) Deploy(ctx context.Context, req saga.DeployRequest) (*saga.DeployResponse, error) {
 	result, err := c.Service.Deploy(ctx, runner.DeployRequest{
 		DeployID:   req.DeployID,
 		UserID:     req.UserID,
@@ -111,7 +85,7 @@ func (c *RunnerClient) Deploy(ctx context.Context, req saga.DeployRequest) (*sag
 		TTLMinutes: req.TTLMinutes,
 	})
 	if err != nil {
-		return nil, runnerStatusError(err)
+		return nil, runtimeOperationError(err)
 	}
 	return &saga.DeployResponse{
 		ContainerID: result.ContainerID,
@@ -119,24 +93,23 @@ func (c *RunnerClient) Deploy(ctx context.Context, req saga.DeployRequest) (*sag
 	}, nil
 }
 
-func runnerStatusError(err error) error {
+func runtimeOperationError(err error) error {
 	var probeErr *runner.ProbeError
 	var validationErr *runner.ValidationError
 	switch {
 	case errors.As(err, &probeErr):
-		return &saga.StatusError{StatusCode: http.StatusUnprocessableEntity, Code: "probe_failed", Message: probeErr.Error()}
+		return &saga.OperationError{Code: "probe_failed", Message: probeErr.Error()}
 	case errors.As(err, &validationErr):
-		return &saga.StatusError{StatusCode: http.StatusBadRequest, Code: "validation_failed", Message: validationErr.Error()}
+		return &saga.OperationError{Code: "validation_failed", Message: validationErr.Error()}
 	case errors.Is(err, runner.ErrAlreadyRunning):
-		return &saga.StatusError{StatusCode: http.StatusConflict, Code: "already_running", Message: err.Error()}
+		return &saga.OperationError{Code: "already_running", Message: err.Error()}
 	}
-	return &saga.StatusError{StatusCode: http.StatusInternalServerError, Code: "deploy_failed", Message: err.Error()}
+	return &saga.OperationError{Code: "deploy_failed", Message: err.Error(), Retryable: true}
 }
 
 // Stop tears the runtime down. A deploy the runtime does not know about is not
-// an error: the HTTP path treated 404 as success, because compensation must be
-// safe to run twice.
-func (c *RunnerClient) Stop(ctx context.Context, deployID, containerID string) error {
+// an error because compensation must be safe to run twice.
+func (c *ContainerRuntime) Stop(ctx context.Context, deployID, containerID string) error {
 	err := c.Service.Undeploy(ctx, deployID, containerID)
 	if err == nil {
 		return nil
@@ -160,13 +133,13 @@ func (c *RunnerClient) Stop(ctx context.Context, deployID, containerID string) e
 //
 // A container that is genuinely absent still succeeds — the backend treats
 // not-found as done — so this is stricter about refusals, not about outcomes.
-func (c *RunnerClient) StopStrict(ctx context.Context, deployID, containerID string) error {
+func (c *ContainerRuntime) StopStrict(ctx context.Context, deployID, containerID string) error {
 	return c.Service.Undeploy(ctx, deployID, containerID)
 }
 
 // RemoveImage releases a deploy artifact that has no container to stop, such
 // as a failed build or a deploy already stopped before image GC was enabled.
-func (c *RunnerClient) RemoveImage(ctx context.Context, deployID, imageRef string) error {
+func (c *ContainerRuntime) RemoveImage(ctx context.Context, deployID, imageRef string) error {
 	return c.Service.RemoveImage(ctx, deployID, imageRef)
 }
 
@@ -209,74 +182,16 @@ func (r *StatusReporter) updateStatus(ctx context.Context, deployID, status stri
 }
 
 // ---------------------------------------------------------------------------
-// builder → ai
-// ---------------------------------------------------------------------------
-
-// AIClient satisfies builder/ai.Client by calling the generator directly.
-type AIClient struct {
-	Service *aiservice.Service
-}
-
-// GenerateDockerfile converts between the two request shapes through JSON.
-//
-// The builder's ProjectInfo is an interface{} that used to be serialised onto
-// the wire and decoded into the generator's typed struct. Round-tripping it
-// here does exactly what the HTTP hop did, which is the point: the conversion
-// stays honest rather than becoming a hand-written field mapping that can
-// silently disagree with the JSON tags.
-func (c *AIClient) GenerateDockerfile(ctx context.Context, req builderai.GenerateRequest) (*builderai.GenerateResponse, error) {
-	var projectInfo aillm.ProjectInfo
-	if req.ProjectInfo != nil {
-		raw, err := json.Marshal(req.ProjectInfo)
-		if err != nil {
-			return nil, fmt.Errorf("encode project info: %w", err)
-		}
-		if err := json.Unmarshal(raw, &projectInfo); err != nil {
-			return nil, fmt.Errorf("decode project info: %w", err)
-		}
-	}
-
-	resp, err := c.Service.GenerateDockerfile(ctx, aillm.GenerateRequest{
-		DeployID:    req.DeployID,
-		UserID:      req.UserID,
-		ProjectInfo: projectInfo,
-		FileTree:    req.FileTree,
-		KeyFiles:    req.KeyFiles,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &builderai.GenerateResponse{
-		Dockerfile:   resp.Dockerfile,
-		ExposePort:   resp.ExposePort,
-		BuildArgs:    resp.BuildArgs,
-		SupportFiles: resp.SupportFiles,
-		CacheHit:     resp.CacheHit,
-		Metadata: builderai.Metadata{
-			Source:     resp.Metadata.Source,
-			TemplateID: resp.Metadata.TemplateID,
-			DurationMs: resp.Metadata.DurationMs,
-			TokensUsed: resp.Metadata.TokensUsed,
-		},
-	}, nil
-}
-
-// ---------------------------------------------------------------------------
 // runtime → control
 // ---------------------------------------------------------------------------
 
-// BillingClient satisfies runner.BillingClient and the watchdog's lookup of
-// expired deploys, reading and writing the deploy repository directly.
-//
-// The name is inherited from when this was an HTTP client to the billing
-// service. There is no billing left; renaming it is a wider change than this
-// step, and a wrong name is easier to see than a wrong wire.
-type BillingClient struct {
+// DeploymentStore exposes the control-plane repository through the narrow
+// interfaces required by the runtime and its cleanup loop.
+type DeploymentStore struct {
 	Repo *deploy.Repository
 }
 
-func (c *BillingClient) UpdateDeployStatus(ctx context.Context, deployID string, status string, failureReason *string) error {
+func (c *DeploymentStore) UpdateDeployStatus(ctx context.Context, deployID string, status string, failureReason *string) error {
 	id, err := uuid.Parse(deployID)
 	if err != nil {
 		return fmt.Errorf("invalid deploy id %q: %w", deployID, err)
@@ -284,7 +199,7 @@ func (c *BillingClient) UpdateDeployStatus(ctx context.Context, deployID string,
 	return c.Repo.UpdateStatus(ctx, id, status, failureReason)
 }
 
-func (c *BillingClient) SetDeployRunning(ctx context.Context, deployID string, req billing.SetRunningRequest) error {
+func (c *DeploymentStore) SetDeployRunning(ctx context.Context, deployID string, req deployments.SetRunningRequest) error {
 	id, err := uuid.Parse(deployID)
 	if err != nil {
 		return fmt.Errorf("invalid deploy id %q: %w", deployID, err)
@@ -292,7 +207,7 @@ func (c *BillingClient) SetDeployRunning(ctx context.Context, deployID string, r
 	return c.Repo.SetRunning(ctx, id, req.ImageRef, req.EndpointURL, req.Subdomain, req.ContainerID, req.TTLExpiresAt)
 }
 
-func (c *BillingClient) MarkDeployImageDeleted(ctx context.Context, deployID string) error {
+func (c *DeploymentStore) MarkDeployImageDeleted(ctx context.Context, deployID string) error {
 	id, err := uuid.Parse(deployID)
 	if err != nil {
 		return fmt.Errorf("invalid deploy id %q: %w", deployID, err)
@@ -300,24 +215,23 @@ func (c *BillingClient) MarkDeployImageDeleted(ctx context.Context, deployID str
 	return c.Repo.MarkImageDeleted(ctx, id)
 }
 
-// GetDeploy returns the stored deploy. A missing row is billing.ErrDeployNotFound
-// so the runtime's ownership checks keep distinguishing "unknown deploy" from
-// "lookup failed" — the first is a refusal, the second is worth retrying.
-func (c *BillingClient) GetDeploy(ctx context.Context, deployID string) (*billing.DeployInfo, error) {
+// GetDeploy returns the stored deploy. A missing row is deployments.ErrNotFound
+// so ownership checks distinguish "unknown deploy" from a failed lookup.
+func (c *DeploymentStore) GetDeploy(ctx context.Context, deployID string) (*deployments.Info, error) {
 	id, err := uuid.Parse(deployID)
 	if err != nil {
-		return nil, billing.ErrDeployNotFound
+		return nil, deployments.ErrNotFound
 	}
 	d, err := c.Repo.Get(ctx, id)
 	if err != nil {
 		// The repository wraps sql.ErrNoRows rather than exporting a sentinel
 		// of its own, so that is what "no such deploy" looks like here.
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, billing.ErrDeployNotFound
+			return nil, deployments.ErrNotFound
 		}
 		return nil, err
 	}
-	info := &billing.DeployInfo{
+	info := &deployments.Info{
 		DeployID: d.ID.String(),
 		UserID:   d.UserID.String(),
 		Status:   d.Status,
@@ -332,16 +246,16 @@ func (c *BillingClient) GetDeploy(ctx context.Context, deployID string) (*billin
 }
 
 // ListExpiredDeploys is what the watchdog sweeps. The repository decides what
-// counts as expired — un-aliased past TTL, an alias idle too long, or a build
-// beyond the per-project retention — and an aliased deploy is never returned.
-func (c *BillingClient) ListExpiredDeploys(ctx context.Context, limit int) ([]billing.ExpiredDeploy, error) {
+// counts as expired — un-aliased past TTL or beyond per-project retention —
+// and an aliased deploy is never returned.
+func (c *DeploymentStore) ListExpiredDeploys(ctx context.Context, limit int) ([]deployments.Expired, error) {
 	rows, err := c.Repo.FindExpiredWithDetails(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]billing.ExpiredDeploy, 0, len(rows))
+	out := make([]deployments.Expired, 0, len(rows))
 	for _, r := range rows {
-		e := billing.ExpiredDeploy{ID: r.ID.String(), UserID: r.UserID.String()}
+		e := deployments.Expired{ID: r.ID.String(), UserID: r.UserID.String()}
 		if r.ContainerID != nil {
 			e.ContainerID = *r.ContainerID
 		}
@@ -350,24 +264,24 @@ func (c *BillingClient) ListExpiredDeploys(ctx context.Context, limit int) ([]bi
 	return out, nil
 }
 
-func (c *BillingClient) ListImagesPendingCleanup(ctx context.Context, limit int) ([]billing.ImageCleanup, error) {
+func (c *DeploymentStore) ListImagesPendingCleanup(ctx context.Context, limit int) ([]deployments.ImageCleanup, error) {
 	rows, err := c.Repo.FindImagesPendingCleanup(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]billing.ImageCleanup, 0, len(rows))
+	out := make([]deployments.ImageCleanup, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, billing.ImageCleanup{ID: row.ID.String(), ImageRef: row.ImageRef})
+		out = append(out, deployments.ImageCleanup{ID: row.ID.String(), ImageRef: row.ImageRef})
 	}
 	return out, nil
 }
 
-func (c *BillingClient) ReclaimStoppedDeploys(ctx context.Context, limit int) (int, error) {
+func (c *DeploymentStore) ReclaimStoppedDeploys(ctx context.Context, limit int) (int, error) {
 	return c.Repo.ReclaimStoppedDeploys(ctx, limit)
 }
 
 // ---------------------------------------------------------------------------
-// gateway → control
+// HTTP authentication → control
 // ---------------------------------------------------------------------------
 
 // SessionVerifier satisfies middleware.SessionVerifier by reading the session
@@ -394,7 +308,7 @@ func (v *SessionVerifier) Verify(ctx context.Context, token string) (middleware.
 }
 
 // DeployOwnership satisfies wslogs.DeployOwner. The log stream authorises the
-// subscriber against the deploy's owner, which needs a lookup the gateway has
+// subscriber against the deploy's owner, which needs a repository lookup
 // no repository of its own for.
 type DeployOwnership struct {
 	Repo *deploy.Repository
@@ -442,16 +356,8 @@ func (v *KeyVerifier) Verify(ctx context.Context, key string) (string, error) {
 // everything → the log bus
 // ---------------------------------------------------------------------------
 
-// The control plane, the build pipeline and the runtime each declare their own
-// LogLine and Publisher, identically, because they were three processes that
-// met on a Redis channel. Rather than collapse the three into one type — a wide
-// diff through every call site that publishes a log line — each keeps its
-// interface and gets an adapter onto internal/logbus.
-//
-// None of them can fail any more. The error in the signature is what the Redis
-// implementations returned nil for anyway: publishing a log line sits on the
-// build pipeline's critical path, and a caller has nothing useful to do about
-// it going wrong.
+// Each component declares the log shape it consumes and gets a narrow adapter
+// onto internal/logbus. This avoids making components depend on the bus itself.
 
 // ControlLogPublisher satisfies logs.Publisher for the saga's progress lines.
 type ControlLogPublisher struct{ Bus *logbus.Bus }

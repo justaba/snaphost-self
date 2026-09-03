@@ -13,7 +13,7 @@ import (
 //   - Read-only root filesystem with tmpfs for /tmp and /run
 //   - All Linux capabilities dropped except NET_BIND_SERVICE
 //   - No new privileges via security opt
-//   - No automatic restart (runner-svc controls the lifecycle)
+//   - No automatic restart (the runtime controls the lifecycle)
 func BuildHostConfig(cfg *config.Config, networkName string) *container.HostConfig {
 	pidsLimit := int64(256)
 

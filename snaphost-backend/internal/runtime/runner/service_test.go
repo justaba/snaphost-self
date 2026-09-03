@@ -11,42 +11,44 @@ import (
 	"go.uber.org/zap"
 
 	"snaphost/internal/runtime/backend"
-	"snaphost/internal/runtime/billing"
 	"snaphost/internal/runtime/config"
+	"snaphost/internal/runtime/deployments"
 	"snaphost/internal/runtime/logs"
 )
 
-// fakeBilling implements BillingClient. Only GetDeploy is exercised by
+// fakeDeploymentStore implements DeploymentStore. Only GetDeploy is exercised by
 // validation tests; the other methods panic so accidental calls surface
 // in tests rather than hiding behind no-ops.
-type fakeBilling struct {
-	info *billing.DeployInfo
+type fakeDeploymentStore struct {
+	info *deployments.Info
 	err  error
 }
 
-func (f *fakeBilling) GetDeploy(_ context.Context, _ string) (*billing.DeployInfo, error) {
+func (f *fakeDeploymentStore) GetDeploy(_ context.Context, _ string) (*deployments.Info, error) {
 	return f.info, f.err
 }
-func (f *fakeBilling) UpdateDeployStatus(context.Context, string, string, *string) error {
+func (f *fakeDeploymentStore) UpdateDeployStatus(context.Context, string, string, *string) error {
 	panic("not used")
 }
-func (f *fakeBilling) SetDeployRunning(context.Context, string, billing.SetRunningRequest) error {
+func (f *fakeDeploymentStore) SetDeployRunning(context.Context, string, deployments.SetRunningRequest) error {
 	panic("not used")
 }
-func (f *fakeBilling) MarkDeployImageDeleted(context.Context, string) error { panic("not used") }
+func (f *fakeDeploymentStore) MarkDeployImageDeleted(context.Context, string) error {
+	panic("not used")
+}
 
 const (
 	testDeployID = "b132cb0d-ce92-4009-a8f3-221d86d8607c"
 	testUserID   = "a4a355f8-9769-454f-b5c0-9782acceebc0"
-	testPrefix   = "host.docker.internal:5000/snaphost"
+	testPrefix   = "snaphost"
 	testImageRef = testPrefix + "/proj-x:" + testDeployID
 )
 
-func newSvc(t *testing.T, cfg *config.Config, b BillingClient) *Service {
+func newSvc(t *testing.T, cfg *config.Config, store DeploymentStore) *Service {
 	t.Helper()
 	return &Service{
 		cfg:     cfg,
-		billing: b,
+		deploys: store,
 		log:     zap.NewNop(),
 	}
 }
@@ -63,8 +65,8 @@ func (p *recordingPublisher) Publish(deployID string, line logs.LogLine) error {
 
 func (p *recordingPublisher) Close() error { return nil }
 
-type deployBilling struct {
-	info                 *billing.DeployInfo
+type recordingDeploymentStore struct {
+	info                 *deployments.Info
 	err                  error
 	setRunningErr        error
 	statuses             []string
@@ -73,23 +75,23 @@ type deployBilling struct {
 	markedImages         []string
 }
 
-func (b *deployBilling) GetDeploy(context.Context, string) (*billing.DeployInfo, error) {
+func (b *recordingDeploymentStore) GetDeploy(context.Context, string) (*deployments.Info, error) {
 	if b.err != nil {
 		return nil, b.err
 	}
 	return b.info, nil
 }
-func (b *deployBilling) UpdateDeployStatus(_ context.Context, _ string, status string, _ *string) error {
+func (b *recordingDeploymentStore) UpdateDeployStatus(_ context.Context, _ string, status string, _ *string) error {
 	b.statuses = append(b.statuses, status)
 	return nil
 }
-func (b *deployBilling) SetDeployRunning(ctx context.Context, _ string, _ billing.SetRunningRequest) error {
+func (b *recordingDeploymentStore) SetDeployRunning(ctx context.Context, _ string, _ deployments.SetRunningRequest) error {
 	if b.setRunningContextErr != nil {
 		*b.setRunningContextErr = ctx.Err()
 	}
 	return b.setRunningErr
 }
-func (b *deployBilling) MarkDeployImageDeleted(_ context.Context, deployID string) error {
+func (b *recordingDeploymentStore) MarkDeployImageDeleted(_ context.Context, deployID string) error {
 	b.markedImages = append(b.markedImages, deployID)
 	return b.markImageErr
 }
@@ -160,9 +162,9 @@ func looseCfg() *config.Config {
 
 // deployableInfo returns a DeployInfo in the canonical "ready to deploy"
 // state. Status is "building" — the only value in deployableStatuses.
-// See deploys.status state machine in user-billing migrations.
-func deployableInfo() *billing.DeployInfo {
-	return &billing.DeployInfo{
+// See the deploys.status state machine in control migrations.
+func deployableInfo() *deployments.Info {
+	return &deployments.Info{
 		DeployID:    testDeployID,
 		UserID:      testUserID,
 		Status:      "building",
@@ -180,7 +182,7 @@ func req() DeployRequest {
 }
 
 func TestValidate_Happy(t *testing.T) {
-	svc := newSvc(t, strictCfg(), &fakeBilling{info: deployableInfo()})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{info: deployableInfo()})
 	if err := svc.validateDeployRequest(context.Background(), req()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -189,7 +191,7 @@ func TestValidate_Happy(t *testing.T) {
 func TestValidate_WrongRegistryPrefix(t *testing.T) {
 	r := req()
 	r.ImageRef = "evil.example.com/snaphost/proj-x:" + testDeployID
-	svc := newSvc(t, strictCfg(), &fakeBilling{info: deployableInfo()})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{info: deployableInfo()})
 	err := svc.validateDeployRequest(context.Background(), r)
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
@@ -200,7 +202,7 @@ func TestValidate_WrongRegistryPrefix(t *testing.T) {
 func TestValidate_TagMismatch(t *testing.T) {
 	r := req()
 	r.ImageRef = testPrefix + "/proj-x:something-else"
-	svc := newSvc(t, strictCfg(), &fakeBilling{info: deployableInfo()})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{info: deployableInfo()})
 	err := svc.validateDeployRequest(context.Background(), r)
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
@@ -211,7 +213,7 @@ func TestValidate_TagMismatch(t *testing.T) {
 func TestValidate_MissingTag(t *testing.T) {
 	r := req()
 	r.ImageRef = testPrefix + "/proj-x"
-	svc := newSvc(t, strictCfg(), &fakeBilling{info: deployableInfo()})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{info: deployableInfo()})
 	err := svc.validateDeployRequest(context.Background(), r)
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
@@ -222,7 +224,7 @@ func TestValidate_MissingTag(t *testing.T) {
 func TestValidate_UserIDMismatch(t *testing.T) {
 	info := deployableInfo()
 	info.UserID = "11111111-1111-1111-1111-111111111111"
-	svc := newSvc(t, strictCfg(), &fakeBilling{info: info})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{info: info})
 	err := svc.validateDeployRequest(context.Background(), req())
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
@@ -233,7 +235,7 @@ func TestValidate_UserIDMismatch(t *testing.T) {
 func TestValidate_AlreadyRunning(t *testing.T) {
 	info := deployableInfo()
 	info.Status = "running"
-	svc := newSvc(t, strictCfg(), &fakeBilling{info: info})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{info: info})
 	err := svc.validateDeployRequest(context.Background(), req())
 	if !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("want ErrAlreadyRunning, got %v", err)
@@ -243,7 +245,7 @@ func TestValidate_AlreadyRunning(t *testing.T) {
 func TestValidate_StatusDeleted(t *testing.T) {
 	info := deployableInfo()
 	info.Status = "deleted"
-	svc := newSvc(t, strictCfg(), &fakeBilling{info: info})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{info: info})
 	err := svc.validateDeployRequest(context.Background(), req())
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
@@ -254,7 +256,7 @@ func TestValidate_StatusDeleted(t *testing.T) {
 func TestValidate_StatusFailed(t *testing.T) {
 	info := deployableInfo()
 	info.Status = "failed"
-	svc := newSvc(t, strictCfg(), &fakeBilling{info: info})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{info: info})
 	err := svc.validateDeployRequest(context.Background(), req())
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
@@ -265,7 +267,7 @@ func TestValidate_StatusFailed(t *testing.T) {
 func TestValidate_StatusPending(t *testing.T) {
 	info := deployableInfo()
 	info.Status = "pending"
-	svc := newSvc(t, strictCfg(), &fakeBilling{info: info})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{info: info})
 	err := svc.validateDeployRequest(context.Background(), req())
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
@@ -274,7 +276,7 @@ func TestValidate_StatusPending(t *testing.T) {
 }
 
 func TestValidate_DeployNotFound(t *testing.T) {
-	svc := newSvc(t, strictCfg(), &fakeBilling{err: billing.ErrDeployNotFound})
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{err: deployments.ErrNotFound})
 	err := svc.validateDeployRequest(context.Background(), req())
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
@@ -282,8 +284,8 @@ func TestValidate_DeployNotFound(t *testing.T) {
 	}
 }
 
-func TestValidate_BillingTransientError(t *testing.T) {
-	svc := newSvc(t, strictCfg(), &fakeBilling{err: fmt.Errorf("billing returned 503: ...")})
+func TestValidate_DeploymentStoreTransientError(t *testing.T) {
+	svc := newSvc(t, strictCfg(), &fakeDeploymentStore{err: fmt.Errorf("database temporarily unavailable: ...")})
 	err := svc.validateDeployRequest(context.Background(), req())
 	if !errors.Is(err, ErrTransient) {
 		t.Fatalf("want ErrTransient, got %v", err)
@@ -294,26 +296,26 @@ func TestValidate_BillingTransientError(t *testing.T) {
 	}
 }
 
-func TestValidate_LooseModeSkipsBilling(t *testing.T) {
-	// fakeBilling.GetDeploy would panic if called (info nil, err nil, but
+func TestValidate_LooseModeSkipsDeploymentLookup(t *testing.T) {
+	// fakeDeploymentStore.GetDeploy would panic if called (info nil, err nil, but
 	// strict path is the only code path that calls it). Verify that loose
-	// mode never touches it: use a billing that fails the assertion.
+	// mode never touches it: use a deployment store that fails the assertion.
 	called := false
-	fb := assertingBilling{onGet: func() { called = true }}
+	fb := assertingDeploymentStore{onGet: func() { called = true }}
 	svc := newSvc(t, looseCfg(), &fb)
 	err := svc.validateDeployRequest(context.Background(), req())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if called {
-		t.Fatal("billing.GetDeploy should not be called in loose mode")
+		t.Fatal("deploymentStore.GetDeploy should not be called in loose mode")
 	}
 }
 
 func TestValidate_LooseModeStillEnforcesPrefixAndTag(t *testing.T) {
 	r := req()
 	r.ImageRef = "evil.example.com/x:" + testDeployID
-	svc := newSvc(t, looseCfg(), assertingBilling{onGet: func() { t.Fatal("billing should not be called") }})
+	svc := newSvc(t, looseCfg(), assertingDeploymentStore{onGet: func() { t.Fatal("deployment store should not be called") }})
 	err := svc.validateDeployRequest(context.Background(), r)
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
@@ -329,32 +331,26 @@ func TestImageRefMatchesAllowedPrefix(t *testing.T) {
 		want     bool
 	}{
 		{
-			name:     "yandex production prefix",
-			imageRef: "cr.yandex/crp123/snaphost/proj-abcdef12:" + testDeployID,
-			prefix:   "cr.yandex/crp123/snaphost",
+			name:     "configured namespace",
+			imageRef: "snaphost/proj-abcdef12:" + testDeployID,
+			prefix:   "snaphost",
 			want:     true,
 		},
 		{
-			name:     "yandex production prefix with trailing slash",
-			imageRef: "cr.yandex/crp123/snaphost/proj-abcdef12:" + testDeployID,
-			prefix:   "cr.yandex/crp123/snaphost/",
-			want:     true,
-		},
-		{
-			name:     "docker dev prefix",
-			imageRef: "registry:5000/snaphost/proj-abcdef12:" + testDeployID,
-			prefix:   "registry:5000/snaphost",
+			name:     "configured namespace with trailing slash",
+			imageRef: "snaphost/proj-abcdef12:" + testDeployID,
+			prefix:   "snaphost/",
 			want:     true,
 		},
 		{
 			name:     "reject shared textual prefix without path boundary",
-			imageRef: "cr.yandex/crp123/snaphostevil/proj-abcdef12:" + testDeployID,
-			prefix:   "cr.yandex/crp123/snaphost",
+			imageRef: "snaphostevil/proj-abcdef12:" + testDeployID,
+			prefix:   "snaphost",
 			want:     false,
 		},
 		{
 			name:     "reject empty prefix",
-			imageRef: "cr.yandex/crp123/snaphost/proj-abcdef12:" + testDeployID,
+			imageRef: "snaphost/proj-abcdef12:" + testDeployID,
 			prefix:   "",
 			want:     false,
 		},
@@ -369,15 +365,15 @@ func TestImageRefMatchesAllowedPrefix(t *testing.T) {
 	}
 }
 
-func TestValidate_YandexProductionPrefix(t *testing.T) {
+func TestValidate_ConfiguredImageNamespace(t *testing.T) {
 	cfg := &config.Config{
-		AllowedImagePrefixes:  []string{"cr.yandex/crp123/snaphost"},
+		AllowedImagePrefixes:  []string{"snaphost"},
 		StrictImageValidation: true,
 	}
-	imageRef := "cr.yandex/crp123/snaphost/proj-abcdef12:" + testDeployID
+	imageRef := "snaphost/proj-abcdef12:" + testDeployID
 	info := deployableInfo()
 	info.ImageRef = imageRef
-	svc := newSvc(t, cfg, &fakeBilling{info: info})
+	svc := newSvc(t, cfg, &fakeDeploymentStore{info: info})
 	err := svc.validateDeployRequest(context.Background(), DeployRequest{
 		DeployID: testDeployID,
 		UserID:   testUserID,
@@ -392,7 +388,7 @@ func TestDeployPublishesLifecycleLogs(t *testing.T) {
 	pub := &recordingPublisher{}
 	svc := NewService(
 		fakeBackend{},
-		&deployBilling{info: deployableInfo()},
+		&recordingDeploymentStore{info: deployableInfo()},
 		pub,
 		strictCfg(),
 		zap.NewNop(),
@@ -415,7 +411,7 @@ func TestDeployPublishesLifecycleLogs(t *testing.T) {
 
 func TestDeployPublishesValidationFailureLog(t *testing.T) {
 	pub := &recordingPublisher{}
-	svc := NewService(fakeBackend{}, &deployBilling{info: deployableInfo()}, pub, strictCfg(), zap.NewNop())
+	svc := NewService(fakeBackend{}, &recordingDeploymentStore{info: deployableInfo()}, pub, strictCfg(), zap.NewNop())
 	r := req()
 	r.ImageRef = "evil.example.com/proj-x:" + testDeployID
 
@@ -434,7 +430,7 @@ func TestDeployPublishesBackendFailureLog(t *testing.T) {
 	pub := &recordingPublisher{}
 	svc := NewService(
 		fakeBackend{runErr: fmt.Errorf("provider failed\nwith token=redacted?")},
-		&deployBilling{info: deployableInfo()},
+		&recordingDeploymentStore{info: deployableInfo()},
 		pub,
 		strictCfg(),
 		zap.NewNop(),
@@ -454,7 +450,7 @@ func TestDeployRollsBackContainerWhenRunningStateCannotPersist(t *testing.T) {
 	var stopContextErr error
 	var persistContextErr error
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
-	bill := &deployBilling{
+	store := &recordingDeploymentStore{
 		info:                 deployableInfo(),
 		setRunningErr:        errors.New("database is busy"),
 		setRunningContextErr: &persistContextErr,
@@ -465,7 +461,7 @@ func TestDeployRollsBackContainerWhenRunningStateCannotPersist(t *testing.T) {
 			stopContextErr: &stopContextErr,
 			onRun:          cancelRequest,
 		},
-		bill,
+		store,
 		pub,
 		strictCfg(),
 		zap.NewNop(),
@@ -487,7 +483,7 @@ func TestDeployRollsBackContainerWhenRunningStateCannotPersist(t *testing.T) {
 	if stopContextErr != nil {
 		t.Fatalf("cleanup inherited cancelled request context: %v", stopContextErr)
 	}
-	if got, want := strings.Join(bill.statuses, ","), "provisioning,building"; got != want {
+	if got, want := strings.Join(store.statuses, ","), "provisioning,building"; got != want {
 		t.Fatalf("status updates = %q, want %q", got, want)
 	}
 	assertLogContains(t, pub.lines, "could not persist the running deployment")
@@ -526,7 +522,7 @@ func TestUndeployPublishesStopFailureLog(t *testing.T) {
 	pub := &recordingPublisher{}
 	svc := NewService(
 		fakeBackend{stopErr: errors.New("delete failed\nraw details")},
-		&deployBilling{info: deployableInfo()},
+		&recordingDeploymentStore{info: deployableInfo()},
 		pub,
 		strictCfg(),
 		zap.NewNop(),
@@ -545,7 +541,7 @@ func TestUndeployMatchingStoredContainerAllowsStop(t *testing.T) {
 	calls := 0
 	svc := NewService(
 		fakeBackend{stopCalls: &calls},
-		&deployBilling{info: deployableInfo()},
+		&recordingDeploymentStore{info: deployableInfo()},
 		nil,
 		strictCfg(),
 		zap.NewNop(),
@@ -568,10 +564,10 @@ func TestUndeployMatchingStoredContainerAllowsStop(t *testing.T) {
 // image was removed, the restart button has quietly become decoration.
 func TestUndeployKeepsTheImageSoTheDeployCanStartAgain(t *testing.T) {
 	var removed []string
-	bill := &deployBilling{info: deployableInfo()}
+	store := &recordingDeploymentStore{info: deployableInfo()}
 	svc := NewService(
 		fakeBackend{removedImages: &removed},
-		bill,
+		store,
 		nil,
 		strictCfg(),
 		zap.NewNop(),
@@ -583,11 +579,11 @@ func TestUndeployKeepsTheImageSoTheDeployCanStartAgain(t *testing.T) {
 	if len(removed) != 0 {
 		t.Fatalf("stopping removed %v; a stopped deploy has to keep its image", removed)
 	}
-	if len(bill.markedImages) != 0 {
-		t.Fatalf("stopping recorded image cleanup that did not happen: %v", bill.markedImages)
+	if len(store.markedImages) != 0 {
+		t.Fatalf("stopping recorded image cleanup that did not happen: %v", store.markedImages)
 	}
-	if len(bill.statuses) != 1 || bill.statuses[0] != "stopped" {
-		t.Fatalf("statuses = %v, want exactly one transition to stopped", bill.statuses)
+	if len(store.statuses) != 1 || store.statuses[0] != "stopped" {
+		t.Fatalf("statuses = %v, want exactly one transition to stopped", store.statuses)
 	}
 }
 
@@ -595,10 +591,10 @@ func TestUndeployKeepsTheImageSoTheDeployCanStartAgain(t *testing.T) {
 // backend failure must not leave a row claiming reclaimed disk that is still
 // occupied — that row would never be swept again.
 func TestRemoveImageDoesNotRecordCleanupThatDidNotHappen(t *testing.T) {
-	bill := &deployBilling{info: deployableInfo()}
+	store := &recordingDeploymentStore{info: deployableInfo()}
 	svc := NewService(
 		fakeBackend{removeImageErr: errors.New("image is referenced by a running container")},
-		bill,
+		store,
 		nil,
 		strictCfg(),
 		zap.NewNop(),
@@ -607,8 +603,8 @@ func TestRemoveImageDoesNotRecordCleanupThatDidNotHappen(t *testing.T) {
 	if err := svc.RemoveImage(context.Background(), testDeployID, testImageRef); err == nil {
 		t.Fatal("RemoveImage reported success while the backend refused")
 	}
-	if len(bill.markedImages) != 0 {
-		t.Fatalf("marked %v as cleaned up despite the backend failing", bill.markedImages)
+	if len(store.markedImages) != 0 {
+		t.Fatalf("marked %v as cleaned up despite the backend failing", store.markedImages)
 	}
 }
 
@@ -617,10 +613,10 @@ func TestRemoveImageDoesNotRecordCleanupThatDidNotHappen(t *testing.T) {
 // be a lie.
 func TestRemoveImageIsANoOpWithoutAnImageRef(t *testing.T) {
 	var removed []string
-	bill := &deployBilling{info: deployableInfo()}
+	store := &recordingDeploymentStore{info: deployableInfo()}
 	svc := NewService(
 		fakeBackend{removedImages: &removed},
-		bill,
+		store,
 		nil,
 		strictCfg(),
 		zap.NewNop(),
@@ -629,8 +625,8 @@ func TestRemoveImageIsANoOpWithoutAnImageRef(t *testing.T) {
 	if err := svc.RemoveImage(context.Background(), testDeployID, "   "); err != nil {
 		t.Fatalf("RemoveImage() error = %v", err)
 	}
-	if len(removed) != 0 || len(bill.markedImages) != 0 {
-		t.Fatalf("an empty image_ref reached the backend (%v) or the marker (%v)", removed, bill.markedImages)
+	if len(removed) != 0 || len(store.markedImages) != 0 {
+		t.Fatalf("an empty image_ref reached the backend (%v) or the marker (%v)", removed, store.markedImages)
 	}
 }
 
@@ -638,7 +634,7 @@ func TestUndeployMismatchedContainerRejectedBeforeStop(t *testing.T) {
 	calls := 0
 	svc := NewService(
 		fakeBackend{stopCalls: &calls},
-		&deployBilling{info: deployableInfo()},
+		&recordingDeploymentStore{info: deployableInfo()},
 		nil,
 		strictCfg(),
 		zap.NewNop(),
@@ -658,7 +654,7 @@ func TestUndeployMissingDeployRejectedBeforeStop(t *testing.T) {
 	calls := 0
 	svc := NewService(
 		fakeBackend{stopCalls: &calls},
-		&deployBilling{err: billing.ErrDeployNotFound},
+		&recordingDeploymentStore{err: deployments.ErrNotFound},
 		nil,
 		strictCfg(),
 		zap.NewNop(),
@@ -680,7 +676,7 @@ func TestUndeployEmptyStoredContainerRejectedBeforeStop(t *testing.T) {
 	info.ContainerID = ""
 	svc := NewService(
 		fakeBackend{stopCalls: &calls},
-		&deployBilling{info: info},
+		&recordingDeploymentStore{info: info},
 		nil,
 		strictCfg(),
 		zap.NewNop(),
@@ -701,7 +697,7 @@ func TestUndeployBackendStopFailurePropagatesAfterOwnershipCheck(t *testing.T) {
 	stopErr := errors.New("provider stop failed")
 	svc := NewService(
 		fakeBackend{stopCalls: &calls, stopErr: stopErr},
-		&deployBilling{info: deployableInfo()},
+		&recordingDeploymentStore{info: deployableInfo()},
 		nil,
 		strictCfg(),
 		zap.NewNop(),
@@ -718,7 +714,7 @@ func TestUndeployBackendStopFailurePropagatesAfterOwnershipCheck(t *testing.T) {
 
 func TestStopExpiredPublishesTTLLogs(t *testing.T) {
 	pub := &recordingPublisher{}
-	svc := NewService(fakeBackend{}, &deployBilling{info: deployableInfo()}, pub, strictCfg(), zap.NewNop())
+	svc := NewService(fakeBackend{}, &recordingDeploymentStore{info: deployableInfo()}, pub, strictCfg(), zap.NewNop())
 
 	if err := svc.StopExpired(context.Background(), testDeployID, "container-id"); err != nil {
 		t.Fatalf("StopExpired() error = %v", err)
@@ -767,21 +763,23 @@ func assertLogContains(t *testing.T, lines []logs.LogLine, needle string) {
 	t.Fatalf("missing log containing %q in %v", needle, got)
 }
 
-// assertingBilling lets a test fail when GetDeploy is unexpectedly called.
-type assertingBilling struct {
+// assertingDeploymentStore lets a test fail when GetDeploy is unexpectedly called.
+type assertingDeploymentStore struct {
 	onGet func()
 }
 
-func (a assertingBilling) GetDeploy(context.Context, string) (*billing.DeployInfo, error) {
+func (a assertingDeploymentStore) GetDeploy(context.Context, string) (*deployments.Info, error) {
 	if a.onGet != nil {
 		a.onGet()
 	}
 	return nil, errors.New("should not be called")
 }
-func (a assertingBilling) UpdateDeployStatus(context.Context, string, string, *string) error {
+func (a assertingDeploymentStore) UpdateDeployStatus(context.Context, string, string, *string) error {
 	panic("not used")
 }
-func (a assertingBilling) SetDeployRunning(context.Context, string, billing.SetRunningRequest) error {
+func (a assertingDeploymentStore) SetDeployRunning(context.Context, string, deployments.SetRunningRequest) error {
 	panic("not used")
 }
-func (a assertingBilling) MarkDeployImageDeleted(context.Context, string) error { panic("not used") }
+func (a assertingDeploymentStore) MarkDeployImageDeleted(context.Context, string) error {
+	panic("not used")
+}

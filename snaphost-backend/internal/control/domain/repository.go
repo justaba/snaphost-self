@@ -235,34 +235,6 @@ func (r *Repository) PromoteToDeploy(ctx context.Context, deployID uuid.UUID) (i
 	return int(affected), nil
 }
 
-// IsVerifiedHost reports whether the hostname is an attached domain that has
-// proven ownership. It is the question the TLS edge asks before issuing a
-// certificate, so it deliberately looks at nothing else: not the target
-// deploy, not whether that deploy is running. A verified domain whose target
-// is down should still hold a certificate and answer with the router's 404 —
-// dropping the certificate would turn a dead page into a browser TLS warning,
-// and re-issuing it later costs an ACME round trip against rate limits we do
-// not control.
-//
-// Owner-scoped lookups elsewhere in this repository take a user ID because
-// they serve a request from that user. This one answers a question about a
-// hostname on behalf of the edge, which has no user, so the caller's
-// authorization is the webhook secret rather than ownership.
-func (r *Repository) IsVerifiedHost(ctx context.Context, host string) (bool, error) {
-	var exists bool
-	err := r.db.QueryRowContext(ctx,
-		`SELECT EXISTS (
-		    SELECT 1 FROM custom_domains
-		    WHERE domain = ? AND status = 'verified'
-		 )`,
-		host,
-	).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("check verified host: %w", err)
-	}
-	return exists, nil
-}
-
 // DueForCheck returns domains the verifier should resolve: everything still
 // pending, plus verified domains whose last check is older than reverifyAfter.
 // Re-verification is what catches a domain that stopped pointing at us or was

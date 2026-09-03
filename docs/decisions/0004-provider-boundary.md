@@ -23,8 +23,9 @@ Do not preserve provider abstraction where the underlying concern disappeared.
 The registry provider boundary was removed because images never leave the host,
 and cloud credentials or build tags are not supported configuration.
 
-RUNNER_BACKEND accepts only docker. Any other value is a startup error rather
-than an unused compatibility option.
+There is no runtime selector in configuration while Docker is the only
+implementation. The Go interface remains a test seam and a place to evaluate a
+real future backend without advertising one that does not exist.
 
 ## Consequences
 

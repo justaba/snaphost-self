@@ -21,10 +21,7 @@ const (
 // PublicRoutes defines routes that skip authentication and authorization.
 // Both Auth and Casbin consult it, so a route added here is exempt from both.
 //
-// It used to name auth/register and auth/login, and neither route existed:
-// registration went straight from the browser to Supabase, and the gateway
-// carried entries for endpoints it had never served. Login is a real route
-// now, and it is the only public one — everything else presents either the
+// Login is the only public application route — everything else presents either the
 // cookie login hands out or an sk_ API key.
 var PublicRoutes = map[string]bool{
 	"POST:/api/v1/auth/login": true,

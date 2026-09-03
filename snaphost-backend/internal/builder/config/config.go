@@ -8,10 +8,8 @@ import (
 	"strings"
 )
 
-// Config holds all configuration values for the builder-svc service.
+// Config holds build-pipeline configuration.
 type Config struct {
-	// Port is the HTTP listen port for the API process.
-	Port string
 	// BuildKitHost is the gRPC address of the BuildKit daemon.
 	BuildKitHost string
 	// WorkdirRoot is the base directory for per-build temporary workspaces.
@@ -32,12 +30,6 @@ type Config struct {
 	// empty, falls back to AllowedBaseImagePrefixes (i.e. strict mode for
 	// everything).
 	AllowedBaseImagePrefixesPermissive []string
-	// WebhookSecret is the shared secret for authenticating service-to-service calls.
-	WebhookSecret string
-	// AIOrchestratorURL is the HTTP endpoint for the AI Dockerfile generator.
-	AIOrchestratorURL string
-	// UserBillingURL is the HTTP endpoint for the user-billing service.
-	UserBillingURL string
 	// MaxArchiveFiles caps entries extracted from an uploaded archive
 	// (source_type=archive, Task 14b-2).
 	MaxArchiveFiles int
@@ -51,17 +43,8 @@ type Config struct {
 // Required fields without defaults cause an error if unset.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Port:              envOrDefault("PORT", "8082"),
-		BuildKitHost:      envOrDefault("BUILDKIT_HOST", "tcp://buildkitd:1234"),
-		WorkdirRoot:       envOrDefault("WORKDIR_ROOT", "/var/snaphost/builds"),
-		AIOrchestratorURL: envOrDefault("AI_ORCHESTRATOR_URL", "http://ai-orchestrator:8087"),
-		UserBillingURL:    envOrDefault("USER_BILLING_URL", "http://user-billing:8081"),
-	}
-
-	// Required: WEBHOOK_SECRET
-	cfg.WebhookSecret = os.Getenv("WEBHOOK_SECRET")
-	if cfg.WebhookSecret == "" {
-		return nil, fmt.Errorf("config: WEBHOOK_SECRET is required but not set")
+		BuildKitHost: envOrDefault("BUILDKIT_HOST", "tcp://buildkitd:1234"),
+		WorkdirRoot:  envOrDefault("WORKDIR_ROOT", "/var/snaphost/builds"),
 	}
 
 	// MaxRepoSizeMB

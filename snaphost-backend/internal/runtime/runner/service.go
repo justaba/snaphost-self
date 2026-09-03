@@ -1,6 +1,5 @@
-// Package runner provides the business logic layer that orchestrates backend
-// calls and billing updates for container deployments. HTTP handlers call into
-// this service — they never interact with the backend or billing client directly.
+// Package runner orchestrates container lifecycle operations and their durable
+// deploy state.
 package runner
 
 import (
@@ -14,22 +13,21 @@ import (
 	"go.uber.org/zap"
 
 	"snaphost/internal/runtime/backend"
-	"snaphost/internal/runtime/billing"
 	"snaphost/internal/runtime/config"
+	"snaphost/internal/runtime/deployments"
 	"snaphost/internal/runtime/logs"
 )
 
-// BillingClient is the subset of billing.Client used by Service. It exists
-// so tests can inject a fake without spinning up an HTTP server.
-type BillingClient interface {
+// DeploymentStore is the runtime's narrow view of durable deploy state.
+type DeploymentStore interface {
 	UpdateDeployStatus(ctx context.Context, deployID string, status string, failureReason *string) error
-	SetDeployRunning(ctx context.Context, deployID string, req billing.SetRunningRequest) error
+	SetDeployRunning(ctx context.Context, deployID string, req deployments.SetRunningRequest) error
 	MarkDeployImageDeleted(ctx context.Context, deployID string) error
-	GetDeploy(ctx context.Context, deployID string) (*billing.DeployInfo, error)
+	GetDeploy(ctx context.Context, deployID string) (*deployments.Info, error)
 }
 
 // statusRunning indicates a deploy is already live; validateDeployRequest
-// returns ErrAlreadyRunning so the HTTP layer can map it to 409.
+// returns ErrAlreadyRunning to prevent a duplicate container.
 const statusRunning = "running"
 
 const (
@@ -38,8 +36,8 @@ const (
 )
 
 // deployableStatuses lists statuses in which the saga is allowed to invoke
-// runner-svc for a deploy. Currently only "building" — saga moves the deploy
-// into this status at reservation time and calls runner-svc concurrently with
+// the runtime for a deploy. Currently only "building" — the saga moves the deploy
+// into this status at reservation time and calls the runtime concurrently with
 // the build. After successful backend.Run, saga transitions through
 // "provisioning" → "running".
 //
@@ -56,13 +54,13 @@ var deployableStatuses = map[string]bool{
 	"provisioning": true,
 }
 
-// DeployRequest is the input for Service.Deploy, coming from the HTTP handler.
+// DeployRequest is the input for Service.Deploy.
 type DeployRequest struct {
-	// DeployID is the deploy UUID from user-billing.
+	// DeployID is the deploy UUID.
 	DeployID string
 	// UserID is the owning user's UUID.
 	UserID string
-	// ImageRef is the full image reference produced by builder-svc.
+	// ImageRef is the full image reference produced by the build pipeline.
 	ImageRef string
 	// Env holds environment variables to inject into the container.
 	Env map[string]string
@@ -82,20 +80,20 @@ type DeployResult struct {
 	ContainerID string
 }
 
-// Service orchestrates the backend and billing client for deploy operations.
+// Service orchestrates the backend and durable state for deploy operations.
 type Service struct {
 	backend   backend.Backend
-	billing   BillingClient
+	deploys   DeploymentStore
 	publisher logs.Publisher
 	cfg       *config.Config
 	log       *zap.Logger
 }
 
 // NewService creates a new runner Service.
-func NewService(b backend.Backend, billingClient BillingClient, pub logs.Publisher, cfg *config.Config, log *zap.Logger) *Service {
+func NewService(b backend.Backend, deploys DeploymentStore, pub logs.Publisher, cfg *config.Config, log *zap.Logger) *Service {
 	return &Service{
 		backend:   b,
-		billing:   billingClient,
+		deploys:   deploys,
 		publisher: pub,
 		cfg:       cfg,
 		log:       log,
@@ -118,8 +116,8 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult,
 
 	s.publishLog(req.DeployID, "runtime-startup", "preparing deployment")
 
-	// Report provisioning status to billing.
-	if err := s.billing.UpdateDeployStatus(ctx, req.DeployID, "provisioning", nil); err != nil {
+	// Persist the provisioning transition.
+	if err := s.deploys.UpdateDeployStatus(ctx, req.DeployID, "provisioning", nil); err != nil {
 		s.log.Warn("failed to report provisioning status", zap.Error(err))
 		// Non-fatal: continue with the deployment.
 	}
@@ -146,19 +144,19 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult,
 	result, err := s.backend.Run(ctx, backendReq)
 	if err != nil {
 		s.publishLogLevel(req.DeployID, "runtime-startup", "backend run failed: "+userVisibleError(err), "error")
-		// Report failure to billing.
+		// Persist the failure.
 		errMsg := err.Error()
-		if billingErr := s.billing.UpdateDeployStatus(ctx, req.DeployID, "failed", &errMsg); billingErr != nil {
-			s.log.Error("failed to report deploy failure to billing", zap.Error(billingErr))
+		if stateErr := s.deploys.UpdateDeployStatus(ctx, req.DeployID, "failed", &errMsg); stateErr != nil {
+			s.log.Error("failed to persist deploy failure", zap.Error(stateErr))
 		}
 		return nil, fmt.Errorf("backend run failed: %w", err)
 	}
 
 	// Liveness probe (Task 15b). Until this passes, "running" means "started",
 	// which is not the same thing: on 2026-07-19 a deploy whose server was
-	// bound to a fixed port reached running, committed the user's coins, and
-	// answered every request with UserCodeError. Nothing may report running
-	// before something answers on the port we injected.
+	// bound to a fixed port reached running and answered every request with
+	// UserCodeError. Nothing may report running before something answers on
+	// the port we injected.
 	if err := s.probeRuntime(ctx, req, result); err != nil {
 		s.teardownAfterProbeFailure(ctx, req.DeployID, result.ContainerID, req.ImageRef)
 		return nil, err
@@ -168,7 +166,7 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult,
 	// can disconnect after the container starts; cancellation of that request
 	// must not prevent the control plane from recording what now exists.
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), runningPersistenceTimeout)
-	err = s.billing.SetDeployRunning(persistCtx, req.DeployID, billing.SetRunningRequest{
+	err = s.deploys.SetDeployRunning(persistCtx, req.DeployID, deployments.SetRunningRequest{
 		ImageRef:     req.ImageRef,
 		EndpointURL:  result.EndpointURL,
 		Subdomain:    subdomain,
@@ -229,7 +227,7 @@ func (s *Service) rollbackUncommittedRuntime(deployID, containerID string) error
 
 	// Strict validation only permits a fresh run from building. Reset the
 	// transient provisioning marker after the container has actually gone.
-	if err := s.billing.UpdateDeployStatus(cleanupCtx, deployID, "building", nil); err != nil {
+	if err := s.deploys.UpdateDeployStatus(cleanupCtx, deployID, "building", nil); err != nil {
 		s.log.Error("failed to restore deploy status after running-state failure",
 			zap.String("deploy_id", deployID),
 			zap.Error(err),
@@ -282,9 +280,9 @@ func (s *Service) probeRuntime(ctx context.Context, req DeployRequest, result *b
 }
 
 // teardownAfterProbeFailure removes the runtime that will never serve and
-// records the failure, so the saga's compensation only has to refund. Both
-// steps are best-effort: the deploy is already failing, and the watchdog and
-// the saga's own status write are the backstops.
+// records the failure, so the saga's compensation finds nothing left to undo.
+// Both steps are best-effort: the deploy is already failing, and the watchdog
+// and the saga's own status write are the backstops.
 func (s *Service) teardownAfterProbeFailure(ctx context.Context, deployID, containerID, imageRef string) {
 	if err := s.backend.Stop(ctx, deployID, containerID); err != nil {
 		s.log.Error("failed to stop container after probe failure",
@@ -301,8 +299,8 @@ func (s *Service) teardownAfterProbeFailure(ctx context.Context, deployID, conta
 		)
 	}
 	reason := probeFailureReason
-	if err := s.billing.UpdateDeployStatus(ctx, deployID, "failed", &reason); err != nil {
-		s.log.Error("failed to report probe failure to billing",
+	if err := s.deploys.UpdateDeployStatus(ctx, deployID, "failed", &reason); err != nil {
+		s.log.Error("failed to persist probe failure",
 			zap.String("deploy_id", deployID), zap.Error(err))
 	}
 }
@@ -333,8 +331,8 @@ func (s *Service) Undeploy(ctx context.Context, deployID, containerID string) er
 		)
 		return fmt.Errorf("stop container: %w", err)
 	}
-	if err := s.billing.UpdateDeployStatus(ctx, deployID, "stopped", nil); err != nil {
-		s.log.Warn("failed to report stopped status to billing", zap.Error(err))
+	if err := s.deploys.UpdateDeployStatus(ctx, deployID, "stopped", nil); err != nil {
+		s.log.Warn("failed to persist stopped status", zap.Error(err))
 	}
 
 	s.publishLog(deployID, "runtime-shutdown", "stopped cleanly, image kept for restart")
@@ -362,32 +360,32 @@ func (s *Service) RemoveImage(ctx context.Context, deployID, imageRef string) er
 		)
 		return fmt.Errorf("remove deploy image: %w", err)
 	}
-	if err := s.billing.MarkDeployImageDeleted(ctx, deployID); err != nil {
+	if err := s.deploys.MarkDeployImageDeleted(ctx, deployID); err != nil {
 		return wrapTransient(fmt.Errorf("record deploy image cleanup: %w", err))
 	}
 	s.log.Info("deploy image removed", zap.String("deploy_id", deployID), zap.String("image_ref", imageRef))
 	return nil
 }
 
-func (s *Service) validateUndeployRequest(ctx context.Context, deployID, containerID string) (*billing.DeployInfo, error) {
-	info, err := s.billing.GetDeploy(ctx, deployID)
+func (s *Service) validateUndeployRequest(ctx context.Context, deployID, containerID string) (*deployments.Info, error) {
+	info, err := s.deploys.GetDeploy(ctx, deployID)
 	if err != nil {
-		if errors.Is(err, billing.ErrDeployNotFound) {
-			return nil, &ValidationError{Err: errors.New("deploy not found in billing")}
+		if errors.Is(err, deployments.ErrNotFound) {
+			return nil, &ValidationError{Err: errors.New("deploy not found")}
 		}
-		return nil, wrapTransient(fmt.Errorf("get deploy from billing: %w", err))
+		return nil, wrapTransient(fmt.Errorf("get deploy state: %w", err))
 	}
 
 	if strings.TrimSpace(info.ContainerID) == "" {
 		return nil, &ValidationError{Err: errors.New("deploy has no stored container mapping")}
 	}
 	if info.ContainerID != containerID {
-		return nil, &ValidationError{Err: errors.New("container_id does not match billing deploy mapping")}
+		return nil, &ValidationError{Err: errors.New("container_id does not match the deploy mapping")}
 	}
 	return info, nil
 }
 
-// StopExpired is used by runner-watchdog for TTL cleanup. It publishes
+// StopExpired is used by the watchdog for TTL cleanup. It publishes
 // explicit TTL lifecycle messages around the same cleanup path as manual
 // undeploy, so deploy logs show why the runtime was stopped.
 func (s *Service) StopExpired(ctx context.Context, deployID, containerID string) error {
@@ -400,7 +398,7 @@ func (s *Service) StopExpired(ctx context.Context, deployID, containerID string)
 	return nil
 }
 
-// StreamContainerLogs tails container logs and forwards them to the Redis publisher.
+// StreamContainerLogs tails container logs and forwards them to the log bus.
 // Blocks until the channel closes (container died) or the context is cancelled.
 func (s *Service) StreamContainerLogs(ctx context.Context, deployID, containerID string) {
 	ch, err := s.backend.StreamLogs(ctx, containerID)
@@ -442,22 +440,20 @@ func (s *Service) BackendName() string {
 // Format: proj-<32-hex>, e.g. proj-269ce67ccbc44d17a720467e50447918
 // Total length 37 characters; well within RFC 1035 subdomain label limit (63).
 //
-// Existing deploys recorded with the legacy 8-hex format remain routable —
-// their subdomain column is read as-is and matched verbatim by Traefik /
-// the Yandex API Gateway. Only deploys created after this change use the
-// full-UUID form. No data migration needed.
+// Existing deploys recorded with the older 8-hex format remain routable because
+// their stored subdomain is read as-is. New deploys use the full-UUID form.
 func generateSubdomain(deployID string) string {
 	clean := strings.ReplaceAll(deployID, "-", "")
 	return fmt.Sprintf("proj-%s", clean)
 }
 
 // validateDeployRequest performs pre-flight checks before invoking the
-// backend. Returns *ValidationError for caller-fixable problems (400),
-// ErrAlreadyRunning for idempotent-replay (409), or a transient-wrapped
-// error for retriable upstream failures (e.g. billing 5xx).
+// backend. Returns *ValidationError for caller-fixable problems,
+// ErrAlreadyRunning for idempotent replay, or a transient-wrapped error for
+// retriable state-store failures.
 //
-// Order matters: cheap local checks first (prefix, tag), billing
-// roundtrip last (only under StrictImageValidation).
+// Order matters: cheap local checks first (prefix, tag), durable-state lookup
+// last (only under StrictImageValidation).
 func (s *Service) validateDeployRequest(ctx context.Context, req DeployRequest) error {
 	// 1. Registry prefix check (provider-agnostic; values come from config).
 	if len(s.cfg.AllowedImagePrefixes) == 0 {
@@ -488,22 +484,21 @@ func (s *Service) validateDeployRequest(ctx context.Context, req DeployRequest) 
 		return &ValidationError{Err: fmt.Errorf("image_ref tag %q does not match deploy_id %q", tag, req.DeployID)}
 	}
 
-	// 3. Billing cross-check (only in strict mode).
+	// 3. Durable-state cross-check (only in strict mode).
 	if !s.cfg.StrictImageValidation {
 		return nil
 	}
 
-	info, err := s.billing.GetDeploy(ctx, req.DeployID)
+	info, err := s.deploys.GetDeploy(ctx, req.DeployID)
 	if err != nil {
-		if errors.Is(err, billing.ErrDeployNotFound) {
-			return &ValidationError{Err: errors.New("deploy not found in billing")}
+		if errors.Is(err, deployments.ErrNotFound) {
+			return &ValidationError{Err: errors.New("deploy not found")}
 		}
-		// Anything else (network, 5xx, decode error) is transient.
-		return wrapTransient(fmt.Errorf("get deploy from billing: %w", err))
+		return wrapTransient(fmt.Errorf("get deploy state: %w", err))
 	}
 
 	if info.UserID != req.UserID {
-		return &ValidationError{Err: fmt.Errorf("user_id mismatch: request=%s billing=%s", req.UserID, info.UserID)}
+		return &ValidationError{Err: fmt.Errorf("user_id mismatch: request=%s stored=%s", req.UserID, info.UserID)}
 	}
 
 	if info.Status == statusRunning {

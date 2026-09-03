@@ -1,7 +1,5 @@
 // Package logs carries build pipeline output. The Publisher interface is
-// satisfied by an adapter over internal/logbus; it used to be a Redis pub/sub
-// client, because the builder was its own process and the browser reading its
-// output was on the far side of a broker.
+// satisfied by an adapter over internal/logbus.
 package logs
 
 import (

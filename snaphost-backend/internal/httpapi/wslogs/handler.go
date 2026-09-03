@@ -1,4 +1,4 @@
-// Package wslogs implements a WebSocket endpoint that streams deploy logs to
+// Package wslogs implements the WebSocket endpoint that streams deploy logs to
 // the browser.
 //
 // It is registered before the standard middleware chain and authenticates
@@ -28,7 +28,7 @@ import (
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
-	"snaphost/internal/gateway/middleware"
+	"snaphost/internal/httpapi/middleware"
 	"snaphost/internal/logbus"
 	"snaphost/internal/shared"
 )

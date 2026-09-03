@@ -1,19 +1,16 @@
 package apikey
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
-// Handler serves the public key-management endpoints and the internal
-// verification endpoint used by api-gateway.
+// Handler serves the public key-management endpoints.
 type Handler struct {
 	repo *Repository
 	log  *zap.Logger
@@ -28,7 +25,7 @@ func errResponse(code, message string) gin.H {
 	return gin.H{"error": code, "message": message}
 }
 
-// userIDFromHeader reads the api-gateway-injected X-User-ID header.
+// userIDFromHeader reads the identity header written by authentication middleware.
 func userIDFromHeader(c *gin.Context) (uuid.UUID, error) {
 	return uuid.Parse(c.GetHeader("X-User-ID"))
 }
@@ -121,44 +118,4 @@ func (h *Handler) RevokeKey(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
-}
-
-// verifyRequest is the body of POST /internal/keys/verify.
-type verifyRequest struct {
-	Key string `json:"key" binding:"required"`
-}
-
-// VerifyKey handles POST /internal/keys/verify — api-gateway presents a key and
-// receives the owning user id. Protected by the shared webhook secret.
-func (h *Handler) VerifyKey(c *gin.Context) {
-	var req verifyRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, errResponse("invalid_body", err.Error()))
-		return
-	}
-	if !HasKeyPrefix(req.Key) {
-		c.JSON(http.StatusUnauthorized, errResponse("invalid_key", "not an api key"))
-		return
-	}
-	userID, keyID, err := h.repo.VerifyByHash(c.Request.Context(), Hash(req.Key))
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			c.JSON(http.StatusUnauthorized, errResponse("invalid_key", "unknown or revoked key"))
-			return
-		}
-		h.log.Error("verify api key failed", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to verify key"))
-		return
-	}
-
-	// Best-effort activity timestamp; never block auth on it.
-	go func(id uuid.UUID) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := h.repo.TouchLastUsed(ctx, id); err != nil {
-			h.log.Debug("touch api key last_used failed", zap.Error(err))
-		}
-	}(keyID)
-
-	c.JSON(http.StatusOK, gin.H{"user_id": userID.String(), "key_id": keyID.String()})
 }

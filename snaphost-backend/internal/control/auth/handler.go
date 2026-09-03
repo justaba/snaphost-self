@@ -103,7 +103,7 @@ func (h *Handler) Logout(c *gin.Context) {
 
 // Me reports who the request is authenticated as.
 //
-// It reads the headers the gateway middleware wrote from a verified session or
+// It reads the headers the authentication middleware wrote from a verified session or
 // API key rather than re-reading the cookie, so it answers for both credential
 // kinds and cannot disagree with what authorisation decided.
 func (h *Handler) Me(c *gin.Context) {

@@ -26,11 +26,6 @@ func TestImageRefForJob(t *testing.T) {
 		t.Fatalf("imageRefForJob() = %q leaks the user id", got)
 	}
 
-	// A registry host would send the runtime looking for something to pull.
-	// The image is built into the local daemon and never leaves it.
-	if strings.Contains(got, ":5000") || strings.Contains(got, "cr.yandex") {
-		t.Fatalf("imageRefForJob() = %q names a registry", got)
-	}
 }
 
 // Two deploys by the same account share a namespace; two accounts must not.

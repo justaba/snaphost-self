@@ -13,7 +13,7 @@ import (
 )
 
 // keyPrefix is the human-visible marker identifying a SnapHost API key. The
-// gateway uses it to decide whether an Authorization bearer value is an API key
+// authentication middleware uses it to decide whether a bearer value is an API key
 // or a credential it does not accept.
 const keyPrefix = "sk_"
 
@@ -55,7 +55,7 @@ func Hash(plaintext string) string {
 }
 
 // HasKeyPrefix reports whether a bearer credential looks like a SnapHost API key
-// rather than a JWT. Used by the gateway to route authentication.
+// rather than a JWT. Used by HTTP authentication middleware.
 func HasKeyPrefix(cred string) bool {
 	return strings.HasPrefix(cred, keyPrefix)
 }

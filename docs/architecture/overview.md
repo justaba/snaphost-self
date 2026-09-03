@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-08-30
+Updated: 2026-09-02
 
 snaphost-self builds a Git repository or uploaded archive into a Docker image
 and runs it on the same Docker host. It is a single-operator application, not a
@@ -71,13 +71,15 @@ The registration order in cmd/snaphost/main.go is part of the security
 contract:
 
 1. health, metrics and the self-authenticating WebSocket log route;
-2. internal routes protected by the webhook secret;
-3. recovery, CORS, request ID, logging and the embedded panel;
-4. session/API-key authentication, Casbin, identity enrichment and upload limit;
-5. public API handlers under /api/v1.
+2. recovery, CORS, request ID, logging and the embedded panel;
+3. session/API-key authentication, Casbin, identity enrichment and upload limit;
+4. public API handlers under /api/v1.
+
+There is no service-to-service HTTP API. `/internal/*` remains unrouted so a
+package boundary cannot accidentally become a privileged network boundary.
 
 The panel middleware must run before authentication so the login page is
-reachable. It never claims API, WebSocket, internal, health or metrics paths, so
+reachable. It never claims API, WebSocket, health or metrics paths, so
 a missing API route remains a JSON 404 rather than an SPA response.
 
 ## Deployment topologies

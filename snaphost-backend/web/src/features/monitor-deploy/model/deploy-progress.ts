@@ -1,6 +1,6 @@
 import type { DeployDetail } from '@/entities/deploy';
 
-export type DeployStepKey = 'queued' | 'build' | 'scan' | 'provision' | 'start' | 'live';
+export type DeployStepKey = 'queued' | 'build' | 'provision' | 'start' | 'live';
 export type DeployStepState = 'pending' | 'active' | 'done' | 'failed';
 
 export interface DeployStep {
@@ -42,7 +42,11 @@ export function deriveDeploySteps(deploy: DeployDetail | undefined): DeployStep[
       state: stateOf(status === 'pending', Boolean(status) && status !== 'pending'),
     },
     { key: 'build', label: 'Сборка', state: stateOf(buildActive, buildDone) },
-    { key: 'scan', label: 'Сканирование', state: stateOf(false, buildDone) },
+    // 'Сканирование' was here, keyed on buildDone with no active state of its
+    // own — so it showed a tick for a step that never ran on its own account,
+    // and after ADR 0003 removed the scanner it claimed a security control the
+    // platform does not perform. There is no stage between the build and the
+    // container now.
     {
       key: 'provision',
       label: 'Подготовка',

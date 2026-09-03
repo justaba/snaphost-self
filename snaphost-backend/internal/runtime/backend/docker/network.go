@@ -43,9 +43,8 @@ func DestroyNetwork(ctx context.Context, cli NetworkRemover, networkName string)
 	return nil
 }
 
-// ConnectToTraefikNetwork attaches a container to the shared Traefik network so
-// that Traefik can route traffic to it. In dev this is a local bridge network;
-// in prod with the Yandex backend this function is not called (cloud-native routing).
+// ConnectToTraefikNetwork attaches a container to the shared routing network
+// so the local edge can reach it.
 func ConnectToTraefikNetwork(ctx context.Context, cli *client.Client, containerID string) error {
 	if err := cli.NetworkConnect(ctx, config.TraefikNetwork, containerID, nil); err != nil {
 		return fmt.Errorf("connect container %s to %s: %w", containerID, config.TraefikNetwork, err)

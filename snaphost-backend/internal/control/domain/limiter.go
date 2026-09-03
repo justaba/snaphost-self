@@ -12,9 +12,8 @@ import (
 // exists to cap the DNS lookups and certificate issuance attempts one account
 // can trigger, not to shape traffic.
 //
-// It was an INCR and an EXPIRE against Redis. Losing the counter on a restart
-// is the entire behavioural difference, and for a gate on a deliberate action
-// by one operator that is not worth a daemon.
+// Counters are intentionally process-local; losing this coarse abuse-control
+// window on restart does not affect domain ownership or verification state.
 type MemoryLimiter struct {
 	max    int
 	window time.Duration
@@ -26,8 +25,7 @@ type MemoryLimiter struct {
 type window struct {
 	count int
 	// resets is when this user's window ends. The first hit in a window owns
-	// its expiry, which is what the Redis version's "set the TTL only when
-	// INCR returned 1" was doing.
+	// its expiry.
 	resets time.Time
 }
 

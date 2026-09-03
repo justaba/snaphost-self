@@ -32,18 +32,6 @@ TARGET_SHA=
 PREVIOUS_SHA=
 BACKUP_PATH=
 IMAGE_DIGESTS=
-SENSITIVE_TEMP_FILE=
-
-cleanup_sensitive_temp() {
-  if [[ -n "$SENSITIVE_TEMP_FILE" ]]; then
-    rm -f -- "$SENSITIVE_TEMP_FILE"
-    SENSITIVE_TEMP_FILE=
-  fi
-}
-trap cleanup_sensitive_temp EXIT
-trap 'cleanup_sensitive_temp; exit 130' INT
-trap 'cleanup_sensitive_temp; exit 143' TERM
-
 log() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
 action() {
@@ -146,9 +134,9 @@ preflight() {
   fi
   local key
   for key in \
-    SNAPHOST_VERSION GHCR_IMAGE_PREFIX API_GATEWAY_BIND_ADDRESS API_GATEWAY_PORT DOMAIN_SUFFIX \
-    WEBHOOK_SECRET CORS_ALLOW_ORIGINS RUN_MIGRATIONS \
-    SAGA_WORKER_ENABLED SAGA_BUILD_TIMEOUT_MIN SAGA_RESUME_INTERVAL_SEC \
+    SNAPHOST_VERSION GHCR_IMAGE_PREFIX SNAPHOST_BIND_ADDRESS SNAPHOST_PORT DOMAIN_SUFFIX \
+    CORS_ALLOW_ORIGINS RUN_MIGRATIONS \
+    SAGA_BUILD_TIMEOUT_MIN SAGA_RESUME_INTERVAL_SEC \
     DEPLOY_DEFAULT_PORT LOG_LEVEL \
     MAX_REPO_SIZE_MB MAX_BUILD_TIME_MIN MAX_CONCURRENT_PER_USER \
     ALLOWED_GIT_HOSTS ALLOWED_BASE_IMAGES ALLOWED_BASE_IMAGES_PERMISSIVE \
@@ -156,17 +144,14 @@ preflight() {
     STRICT_IMAGE_VALIDATION ALLOWED_IMAGE_PREFIXES \
     RUNTIME_PROBE_ENABLED RUNTIME_PROBE_TIMEOUT_SEC RESERVED_DOMAINS \
     DEPLOY_TTL_MIN DEPLOY_TTL_MAX_MIN MAX_DOMAINS_PER_USER DOMAIN_ATTACH_REQUIRE_IDENTITY DOMAIN_ATTACH_PER_HOUR \
-    DOMAIN_VERIFY_INTERVAL_SEC DOMAIN_REVERIFY_HOURS DOMAIN_VERIFY_GRACE_HOURS ALIAS_IDLE_GC_DAYS PROJECT_DEPLOY_RETENTION \
-    LLM_BASE_URL LLM_JSON_MODE OPENROUTER_API_KEY OPENROUTER_MODEL OPENROUTER_REFERER OPENROUTER_APP_NAME LLM_TIMEOUT LLM_MAX_RETRIES \
-    CACHE_TTL_DAYS MAX_FILE_SIZE_KB MAX_FILES_PER_REQUEST CONTROL_PLANE_CPU_LIMIT CONTROL_PLANE_MEMORY_LIMIT \
+    DOMAIN_VERIFY_INTERVAL_SEC DOMAIN_REVERIFY_HOURS DOMAIN_VERIFY_GRACE_HOURS PROJECT_DEPLOY_RETENTION \
+    LLM_BASE_URL LLM_JSON_MODE OPENROUTER_API_KEY OPENROUTER_MODEL OPENROUTER_REFERER OPENROUTER_APP_NAME LLM_TIMEOUT \
+    SNAPHOST_CPU_LIMIT SNAPHOST_MEMORY_LIMIT \
     BUILDKIT_CPU_LIMIT BUILDKIT_MEMORY_LIMIT; do
     require_env "$key"
   done
-  # The builder and runner service-account keys, and the guard that checked a
-  # key belonged to this environment, went with the cloud runtime. The
-  # privilege they represented did not disappear — it moved to the Docker
-  # socket the runner now mounts, which is a larger one and has no equivalent
-  # identity check.
+  # The Docker socket is the runtime's largest privilege and has no
+  # environment-specific identity check.
   if [[ -n "$GHCR_USERNAME" ]]; then
     check_protected_file "GHCR token" "$GHCR_TOKEN_FILE"
   fi
@@ -370,10 +355,8 @@ rollout() {
   PHASE=migrations-applied
   write_progress rolling-out applied pending
 
-  # One service, so the dependency-ordered rollout that used to publish the
-  # gateway last collapses into a single step. What it cost to have seven was
-  # a partially-updated control plane on any failure between them; what it
-  # costs to have one is that the whole thing restarts at once.
+  # The application is one process, so it is updated in one atomic container
+  # restart after infrastructure and migrations are ready.
   action "update snaphost" compose up -d --no-deps snaphost
   check_stable_container snaphost
   probe_internal snaphost http://snaphost:8080/health
@@ -382,31 +365,18 @@ rollout() {
 smoke() {
   [[ "$DRY_RUN" == true ]] && { log "DRY-RUN: run public HTTPS smoke checks"; return; }
   curl --fail --silent --max-time 15 "${PUBLIC_SMOKE_URL%/}/health" >/dev/null || die "public API health smoke failed"
-  local secret code
-  secret=$(env_value WEBHOOK_SECRET)
-  SENSITIVE_TEMP_FILE=$(mktemp)
-  chmod 600 "$SENSITIVE_TEMP_FILE"
-  printf 'header = "X-Webhook-Secret: %s"\n' "$secret" >"$SENSITIVE_TEMP_FILE"
-  if ! code=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 15 --config "$SENSITIVE_TEMP_FILE" "${PUBLIC_SMOKE_URL%/}/internal/routes?host=definitely-absent.invalid"); then
-    cleanup_sensitive_temp
-    die "authenticated route lookup smoke request failed"
+  local code
+  if ! code=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 15 "${PUBLIC_SMOKE_URL%/}/api/v1/projects"); then
+    die "authentication-boundary smoke request failed"
   fi
-  cleanup_sensitive_temp
-  [[ "$code" == 404 ]] || die "authenticated route lookup smoke returned unexpected status $code"
-  code=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 15 -H 'X-Webhook-Secret: intentionally-wrong' "${PUBLIC_SMOKE_URL%/}/internal/routes?host=definitely-absent.invalid")
-  [[ "$code" == 401 ]] || die "invalid-secret smoke returned unexpected status $code"
+  [[ "$code" == 401 ]] || die "unauthenticated API smoke returned unexpected status $code"
 }
 
 rollback_to() {
   local sha=$1 service
   validate_sha "$sha" || return 1
   TARGET_SHA=$sha
-  # This list named seven services that stopped existing when the control plane
-  # became one process, so the first `compose up -d --no-deps user-billing`
-  # returned non-zero and every rollback failed at its first step. The tests did
-  # not catch it because they fake `docker`, and a fake does not object to a
-  # service that is not in the manifest. Rolling back is the operation nobody
-  # exercises until they need it.
+  # Roll back the same manifest-derived service list used for rollout.
   for service in "${EXPECTED_SERVICES[@]}"; do
     action "rollback $service" compose up -d --no-deps "$service" || return 1
     wait_health "$service" || return 1

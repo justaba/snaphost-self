@@ -103,7 +103,7 @@ func TestFinalizeAsFailed_PublishesBuildFailedAndReportsStatus(t *testing.T) {
 func TestFinalizeAsFailed_ReportFailedErrorIsSwallowed(t *testing.T) {
 	pub := &recPublisher{}
 	ev := &recEvents{}
-	st := &recStatus{failReturns: errors.New("billing down")}
+	st := &recStatus{failReturns: errors.New("database unavailable")}
 	r := newFinalizeRunner(pub, ev, st)
 
 	// Must not panic; must still publish the event.

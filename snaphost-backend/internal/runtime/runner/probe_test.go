@@ -9,8 +9,8 @@ import (
 	"go.uber.org/zap"
 
 	"snaphost/internal/runtime/backend"
-	"snaphost/internal/runtime/billing"
 	"snaphost/internal/runtime/config"
+	"snaphost/internal/runtime/deployments"
 )
 
 // probingBackend is a fakeBackend that also implements backend.Prober, so the
@@ -28,21 +28,21 @@ func (b probingBackend) Probe(context.Context, backend.ProbeRequest) error {
 	return b.probeErr
 }
 
-// runningBilling records whether the deploy was ever reported as running, which
-// is the whole point of Task 15b: a deploy that does not answer must not be.
-type runningBilling struct {
-	deployBilling
+// runningDeploymentStore records whether the deploy was ever reported as
+// running; a deploy that does not answer must never reach that state.
+type runningDeploymentStore struct {
+	recordingDeploymentStore
 	runningCalls int
 	statuses     []string
 	reasons      []string
 }
 
-func (b *runningBilling) SetDeployRunning(context.Context, string, billing.SetRunningRequest) error {
+func (b *runningDeploymentStore) SetDeployRunning(context.Context, string, deployments.SetRunningRequest) error {
 	b.runningCalls++
 	return nil
 }
 
-func (b *runningBilling) UpdateDeployStatus(_ context.Context, _ string, status string, reason *string) error {
+func (b *runningDeploymentStore) UpdateDeployStatus(_ context.Context, _ string, status string, reason *string) error {
 	b.statuses = append(b.statuses, status)
 	if reason != nil {
 		b.reasons = append(b.reasons, *reason)
@@ -59,10 +59,10 @@ func probeCfg(enabled bool) *config.Config {
 	return cfg
 }
 
-func newDeployingSvc(b backend.Backend, bc BillingClient, cfg *config.Config) *Service {
+func newDeployingSvc(b backend.Backend, store DeploymentStore, cfg *config.Config) *Service {
 	return &Service{
 		backend:   b,
-		billing:   bc,
+		deploys:   store,
 		publisher: &recordingPublisher{},
 		cfg:       cfg,
 		log:       zap.NewNop(),
@@ -71,14 +71,14 @@ func newDeployingSvc(b backend.Backend, bc BillingClient, cfg *config.Config) *S
 
 func TestDeployRefusesToReportRunningWhenProbeFails(t *testing.T) {
 	stopCalls, probeCalls := 0, 0
-	bc := &runningBilling{deployBilling: deployBilling{info: deployableInfo()}}
+	store := &runningDeploymentStore{recordingDeploymentStore: recordingDeploymentStore{info: deployableInfo()}}
 	svc := newDeployingSvc(
 		probingBackend{
 			fakeBackend: fakeBackend{stopCalls: &stopCalls},
 			probeErr:    backend.ErrProbeFailed,
 			probeCalls:  &probeCalls,
 		},
-		bc,
+		store,
 		probeCfg(true),
 	)
 
@@ -91,29 +91,29 @@ func TestDeployRefusesToReportRunningWhenProbeFails(t *testing.T) {
 	if probeCalls != 1 {
 		t.Fatalf("probe calls = %d, want 1", probeCalls)
 	}
-	if bc.runningCalls != 0 {
-		t.Fatal("a deploy that never answered must not be reported running — that is what billed a dead URL on 2026-07-19")
+	if store.runningCalls != 0 {
+		t.Fatal("a deploy that never answered must not be reported running")
 	}
 	if stopCalls != 1 {
 		t.Fatalf("stop calls = %d, want 1: the runtime that will never serve has to be torn down", stopCalls)
 	}
-	if len(bc.statuses) == 0 || bc.statuses[len(bc.statuses)-1] != "failed" {
-		t.Fatalf("statuses = %v, want the deploy marked failed", bc.statuses)
+	if len(store.statuses) == 0 || store.statuses[len(store.statuses)-1] != "failed" {
+		t.Fatalf("statuses = %v, want the deploy marked failed", store.statuses)
 	}
-	if len(bc.reasons) == 0 || !strings.Contains(bc.reasons[len(bc.reasons)-1], "PORT") {
-		t.Fatalf("reasons = %v, want a reason naming PORT", bc.reasons)
+	if len(store.reasons) == 0 || !strings.Contains(store.reasons[len(store.reasons)-1], "PORT") {
+		t.Fatalf("reasons = %v, want a reason naming PORT", store.reasons)
 	}
 }
 
 func TestDeployReportsRunningWhenProbePasses(t *testing.T) {
 	stopCalls, probeCalls := 0, 0
-	bc := &runningBilling{deployBilling: deployBilling{info: deployableInfo()}}
+	store := &runningDeploymentStore{recordingDeploymentStore: recordingDeploymentStore{info: deployableInfo()}}
 	svc := newDeployingSvc(
 		probingBackend{
 			fakeBackend: fakeBackend{stopCalls: &stopCalls},
 			probeCalls:  &probeCalls,
 		},
-		bc,
+		store,
 		probeCfg(true),
 	)
 
@@ -124,8 +124,8 @@ func TestDeployReportsRunningWhenProbePasses(t *testing.T) {
 	if result.ContainerID != "container-id" {
 		t.Fatalf("container id = %q", result.ContainerID)
 	}
-	if probeCalls != 1 || bc.runningCalls != 1 {
-		t.Fatalf("probe calls = %d, running calls = %d, want 1 and 1", probeCalls, bc.runningCalls)
+	if probeCalls != 1 || store.runningCalls != 1 {
+		t.Fatalf("probe calls = %d, running calls = %d, want 1 and 1", probeCalls, store.runningCalls)
 	}
 	if stopCalls != 0 {
 		t.Fatal("a healthy deploy must not be torn down")
@@ -134,10 +134,10 @@ func TestDeployReportsRunningWhenProbePasses(t *testing.T) {
 
 func TestDeploySkipsProbeWhenDisabled(t *testing.T) {
 	probeCalls := 0
-	bc := &runningBilling{deployBilling: deployBilling{info: deployableInfo()}}
+	store := &runningDeploymentStore{recordingDeploymentStore: recordingDeploymentStore{info: deployableInfo()}}
 	svc := newDeployingSvc(
 		probingBackend{probeErr: backend.ErrProbeFailed, probeCalls: &probeCalls},
-		bc,
+		store,
 		probeCfg(false),
 	)
 
@@ -147,22 +147,21 @@ func TestDeploySkipsProbeWhenDisabled(t *testing.T) {
 	if probeCalls != 0 {
 		t.Fatalf("probe calls = %d, want 0 when RUNTIME_PROBE_ENABLED=false", probeCalls)
 	}
-	if bc.runningCalls != 1 {
-		t.Fatal("with the probe off the pre-15 behavior stands: started means running")
+	if store.runningCalls != 1 {
+		t.Fatal("with the probe disabled, a started container should be reported running")
 	}
 }
 
-// A backend with no Prober implementation must deploy exactly as before rather
-// than fail closed — the probe is a check we added, not a contract backends
-// must satisfy to work at all.
+// A backend with no Prober implementation remains valid because probing is an
+// optional capability.
 func TestDeployWithoutProberProceeds(t *testing.T) {
-	bc := &runningBilling{deployBilling: deployBilling{info: deployableInfo()}}
-	svc := newDeployingSvc(fakeBackend{}, bc, probeCfg(true))
+	store := &runningDeploymentStore{recordingDeploymentStore: recordingDeploymentStore{info: deployableInfo()}}
+	svc := newDeployingSvc(fakeBackend{}, store, probeCfg(true))
 
 	if _, err := svc.Deploy(context.Background(), req()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if bc.runningCalls != 1 {
-		t.Fatalf("running calls = %d, want 1", bc.runningCalls)
+	if store.runningCalls != 1 {
+		t.Fatalf("running calls = %d, want 1", store.runningCalls)
 	}
 }

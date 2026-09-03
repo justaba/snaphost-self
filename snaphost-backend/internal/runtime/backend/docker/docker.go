@@ -1,6 +1,5 @@
-// Package docker implements the backend.Backend interface using the local Docker
-// daemon. All Docker SDK calls are isolated in this package — nothing outside
-// internal/backend/docker/ may import the Docker SDK.
+// Package docker implements backend.Backend using the local Docker daemon. All
+// Docker SDK calls are isolated here.
 package docker
 
 import (
@@ -85,7 +84,7 @@ func (b *DockerBackend) Run(ctx context.Context, req backend.RunRequest) (*backe
 	// and starting a pull would turn that into a confusing registry error.
 	if _, _, err := b.cli.ImageInspectWithRaw(ctx, req.ImageRef); err != nil {
 		return nil, fmt.Errorf("%w: image %s is not in the local store: %s",
-			backend.ErrImagePullFailed, req.ImageRef, err.Error())
+			backend.ErrImageUnavailable, req.ImageRef, err.Error())
 	}
 
 	// 2. Create isolated network.

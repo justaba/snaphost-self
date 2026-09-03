@@ -1,7 +1,6 @@
 // Package logs carries runtime container output. The Publisher interface is
-// satisfied by an adapter over internal/logbus; it used to be a Redis pub/sub
-// client, because the runtime was its own process.
-// The channel shape and LogLine format match builder-svc for UI consistency.
+// satisfied by an adapter over internal/logbus.
+// The channel shape and LogLine format match build logs for UI consistency.
 package logs
 
 import "time"

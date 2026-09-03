@@ -106,7 +106,6 @@ setup_case() {
   : >"$COMPOSE"
   cat >"$ENV_FILE" <<EOF
 SNAPHOST_VERSION=$SHA
-WEBHOOK_SECRET=internal-secret-value
 EOF
   chmod 600 "$ENV_FILE"
   write_tables users deploys deploy_sagas api_keys projects custom_domains admin_audit_log

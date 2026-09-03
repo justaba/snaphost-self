@@ -15,7 +15,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"snaphost/internal/builder/ai"
+	aillm "snaphost/internal/ai/llm"
+	aiservice "snaphost/internal/ai/service"
 	"snaphost/internal/builder/build"
 	"snaphost/internal/builder/clone"
 	"snaphost/internal/builder/config"
@@ -54,7 +55,12 @@ type StatusReporter interface {
 	ReportImageLoaded(ctx context.Context, deployID, imageRef string) error
 }
 
-// AIClient interface moved to internal/ai
+// DockerfileGenerator produces a Dockerfile for a detected project. The
+// concrete generator runs in this process; this interface keeps the pipeline
+// independently testable without pretending there is a remote service.
+type DockerfileGenerator interface {
+	GenerateDockerfile(context.Context, aillm.GenerateRequest) (*aiservice.ServiceResponse, error)
+}
 
 // ImageRemover deletes an image from the local Docker daemon.
 //
@@ -81,10 +87,10 @@ type Runner struct {
 	Cloner *clone.Cloner
 	// Builder performs BuildKit builds.
 	Builder *build.Builder
-	// Status reports deploy status to user-billing.
+	// Status records deploy status in the control-plane repository.
 	Status StatusReporter
-	// AI generates Dockerfiles when none is provided.
-	AIClient ai.Client
+	// Dockerfiles generates a Dockerfile when none is provided.
+	Dockerfiles DockerfileGenerator
 	// Images cleans up an artifact when its durable reference cannot be
 	// recorded. Optional; nil disables cleanup in tests that do not exercise
 	// that failure path.
@@ -455,7 +461,7 @@ func (r *Runner) executePipeline(ctx context.Context, job queue.Job, log *zap.Lo
 		return "", "", 0, Permanent(fmt.Errorf("unsupported project type: %s", project.UnsupportedReason))
 	}
 
-	// 9. If no Dockerfile found, generate one via AI Orchestrator.
+	// 9. If no Dockerfile was found, generate one.
 	if project.DockerfilePath == "" {
 		_ = r.Publisher.Publish(job.DeployID, logs.LogLine{
 			Stage:     "detect",
@@ -464,12 +470,16 @@ func (r *Runner) executePipeline(ctx context.Context, job queue.Job, log *zap.Lo
 			Timestamp: time.Now().UTC(),
 		})
 
-		aiResp, err := r.AIClient.GenerateDockerfile(ctx, ai.GenerateRequest{
-			DeployID:    job.DeployID,
-			UserID:      job.UserID,
-			ProjectInfo: project,
-			FileTree:    buildFileTree(workdir.Path, 3, 50),
-			KeyFiles:    readKeyFiles(workdir.Path),
+		aiResp, err := r.Dockerfiles.GenerateDockerfile(ctx, aillm.GenerateRequest{
+			DeployID: job.DeployID,
+			UserID:   job.UserID,
+			ProjectInfo: aillm.ProjectInfo{
+				Language:  project.Language,
+				Framework: project.Framework,
+				BuildTool: project.BuildTool,
+			},
+			FileTree: buildFileTree(workdir.Path, 3, 50),
+			KeyFiles: readKeyFiles(workdir.Path),
 		})
 		if err != nil {
 			return "", "", 0, classifyAIError(fmt.Errorf("AI generation failed: %w", err), log)
@@ -666,8 +676,7 @@ func (r *Runner) unpackUpload(ctx context.Context, job queue.Job, workdirPath st
 		return Permanent(fmt.Errorf("archive source: upload %s does not belong to the requesting user", job.UploadID))
 	}
 
-	// Streamed from the file rather than read into memory first: this is the
-	// path a 50 MB tar.gz takes, and the point of moving it off Redis.
+	// Stream directly from the staged file to keep large archives out of memory.
 	res, err := unpack.TarGzFrom(archive, size, workdirPath, r.UnpackLimits)
 	if err != nil {
 		// Every unpack failure is attacker-controllable input — permanent,

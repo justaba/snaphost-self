@@ -8,7 +8,7 @@ import (
 )
 
 // Worker drives two concurrent loops:
-//   - a queue consumer that pulls jobs off the saga stream and runs the
+//   - a queue consumer that pulls jobs from memory and runs the
 //     orchestrator,
 //   - a sweeper that periodically re-enqueues jobs for sagas that have
 //     been stuck mid-flight (resume after crash).
@@ -30,11 +30,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	// build, so it is enqueued again rather than waiting out its whole build
 	// timeout to discover nobody is building it.
 	//
-	// This is what the Redis Stream's un-acked message used to do, and it is
-	// closer to correct than that was: redelivering the build request would
-	// have re-run a pipeline whose uploaded archive and git credential are
-	// deleted the moment they are consumed, so for two of the three source
-	// types the redelivery could only fail.
+	// Replaying the old build request would be incorrect because uploaded
+	// archives and credentials are consumed by the pipeline. Rewind durable
+	// state and create fresh work instead.
 	if n, err := w.Repo.RewindInterruptedBuilds(ctx); err != nil {
 		w.Log.Warn("could not rewind interrupted builds", zap.Error(err))
 	} else if n > 0 {

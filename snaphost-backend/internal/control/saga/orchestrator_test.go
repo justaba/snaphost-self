@@ -3,59 +3,80 @@ package saga
 import (
 	"context"
 	"errors"
-	"net/http"
 	"testing"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
-func TestStatusErrorPermanence(t *testing.T) {
+func TestOperationErrorPermanence(t *testing.T) {
 	cases := []struct {
 		name          string
-		status        int
+		retryable     bool
 		wantPermanent bool
 	}{
-		// Task 15b: the container started and never answered. Retrying the
-		// same image fails the same way; the reservation must be refunded.
-		{"probe failure", http.StatusUnprocessableEntity, true},
-		{"validation failure", http.StatusBadRequest, true},
-		{"already running", http.StatusConflict, true},
-		{"rate limited is worth waiting on", http.StatusTooManyRequests, false},
-		{"runner down", http.StatusBadGateway, false},
-		{"runner error", http.StatusInternalServerError, false},
+		{"validation failure", false, true},
+		{"temporary runtime failure", true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := &StatusError{StatusCode: tc.status}
+			err := &OperationError{Retryable: tc.retryable}
 			if got := err.Permanent(); got != tc.wantPermanent {
-				t.Fatalf("Permanent() = %v for %d, want %v", got, tc.status, tc.wantPermanent)
+				t.Fatalf("Permanent() = %v, want %v", got, tc.wantPermanent)
 			}
 		})
 	}
 }
 
-func TestStatusErrorUserReasonPrefersServerMessage(t *testing.T) {
-	withMessage := &StatusError{
-		StatusCode: http.StatusUnprocessableEntity,
-		Code:       "probe_failed",
-		Message:    "the container started but nothing answered on the port the runtime injects.",
+func TestOperationErrorUserReasonPrefersMessage(t *testing.T) {
+	withMessage := &OperationError{
+		Code:    "probe_failed",
+		Message: "the container started but nothing answered on the port the runtime injects.",
 	}
 	if withMessage.UserReason() != withMessage.Message {
 		t.Fatalf("UserReason() = %q, want the downstream message verbatim", withMessage.UserReason())
 	}
 
-	bare := &StatusError{StatusCode: http.StatusUnprocessableEntity}
+	bare := &OperationError{Code: "probe_failed"}
 	if bare.UserReason() == "" {
 		t.Fatal("a reason is shown to the deploy owner; it must never be empty")
 	}
 }
 
-func TestStatusErrorIsMatchable(t *testing.T) {
-	var target *StatusError
-	wrapped := errors.Join(errors.New("runner deploy"), &StatusError{StatusCode: http.StatusUnprocessableEntity})
+func TestOperationErrorIsMatchable(t *testing.T) {
+	var target *OperationError
+	wrapped := errors.Join(errors.New("runtime deploy"), &OperationError{Code: "probe_failed"})
 	if !errors.As(wrapped, &target) {
-		t.Fatal("the orchestrator matches with errors.As; a wrapped StatusError must still be found")
+		t.Fatal("the orchestrator matches with errors.As; a wrapped OperationError must still be found")
+	}
+}
+
+type rejectingBuildScheduler struct{ err error }
+
+func (s rejectingBuildScheduler) EnqueueBuild(context.Context, BuildRequest) error {
+	return s.err
+}
+
+func TestEnqueueBuildClassifiesOperationErrors(t *testing.T) {
+	tests := []struct {
+		name         string
+		retryable    bool
+		wantTerminal bool
+	}{
+		{"invalid request is terminal", false, true},
+		{"temporary pressure is retryable", true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := &Orchestrator{Builds: rejectingBuildScheduler{err: &OperationError{
+				Code: "build_rejected", Message: "build cannot be scheduled", Retryable: tc.retryable,
+			}}}
+			err := o.stepEnqueueBuild(context.Background(), SagaJob{}, uuid.New(), &SagaState{})
+			var terminal *terminalError
+			if got := errors.As(err, &terminal); got != tc.wantTerminal {
+				t.Fatalf("terminal = %v, want %v (error %v)", got, tc.wantTerminal, err)
+			}
+		})
 	}
 }
 
@@ -69,7 +90,7 @@ func TestTTLMinutesEnforcesTierCeiling(t *testing.T) {
 		{"within ceiling", 1440, 1440, 1440},
 		{"above ceiling is clamped", 10080, 1440, 1440},
 		{"no ceiling configured", 10080, 0, 10080},
-		{"unset ttl leaves runner on its own default", 0, 1440, 0},
+		{"unset ttl leaves runtime on its own default", 0, 1440, 0},
 		{"negative ttl is treated as unset", -5, 1440, 0},
 	}
 	for _, tc := range cases {
@@ -83,7 +104,7 @@ func TestTTLMinutesEnforcesTierCeiling(t *testing.T) {
 }
 
 // --- alias promotion (Task 16a item 4) ------------------------------------
-// Publishing happens after the deploy is running and paid for. That ordering
+// Publishing happens after the deploy is running. That ordering
 // is the whole guarantee: the previous build serves until the new one answers,
 // so a redeploy is invisible from outside and a failed build takes nothing
 // down. It also means a promotion failure arrives too late to be fatal.
@@ -119,8 +140,8 @@ func TestPromoteAliasesPublishesTheNewDeploy(t *testing.T) {
 	}
 }
 
-// The deploy is running and the coins are committed by the time this runs, so
-// a bookkeeping failure must not be allowed to tear it down. The domain keeps
+// The deploy is running by the time this executes, so a bookkeeping failure
+// must not be allowed to tear it down. The domain keeps
 // serving the previous build — stale, not broken.
 func TestPromoteAliasesSurvivesAFailure(t *testing.T) {
 	p := &fakePromoter{err: errors.New("database is having a moment")}

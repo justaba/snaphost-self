@@ -36,16 +36,15 @@ The current Docker runtime uses TTLs because every live container consumes host
 resources. The watchdog may stop an expired or excess deploy, but never one
 currently selected by a verified alias.
 
-ALIAS_IDLE_GC_DAYS and PROJECT_DEPLOY_RETENTION add project-aware reclamation.
+PROJECT_DEPLOY_RETENTION adds project-aware reclamation.
 Task 2 will make TTL opt-in for long-lived sites and add persistent project
 configuration; this ADR does not by itself make deploys permanent.
 
 ### Route lookup
 
-Generated hosts resolve through deploys.subdomain. A custom host resolves
-through a verified custom_domains row and its target deploy. Both branches
-require a running deploy with stored runtime details. Unknown, unverified and
-revoked hosts fail closed.
+Generated hosts resolve from Docker labels. Custom-host routing is intentionally
+left to the dedicated edge contract described by ADR 0007; the application no
+longer exposes the old central-router lookup endpoint.
 
 ### Consistency
 

@@ -80,13 +80,11 @@ The deletion is not recoverable from the panel: rows are hard-deleted rather
 than marked, and the images are gone from the daemon. A SQLite backup restores
 the records; it does not rebuild an image.
 
-Internal HTTP routes require WEBHOOK_SECRET using constant-time comparison and
-are registered before user authentication. Most package-to-package calls are
-now direct and never traverse those routes. The TLS authorization handler is
-currently inside this protected group too. Standard Caddy ask cannot add the
-secret header, so the edge integration is incomplete; making that path usable
-requires a narrowly scoped loopback adapter or an equally explicit boundary,
-not exposing all internal routes.
+Components communicate through typed Go interfaces in one process. There is no
+service-to-service HTTP surface and no shared webhook secret. `/internal/*`
+paths are deliberately unrouted. A future TLS edge integration must introduce
+its own narrow contract rather than reopening lifecycle, key-verification or
+repository endpoints over HTTP.
 
 ## Source and build controls
 
@@ -141,17 +139,17 @@ fact.
 Local Traefik also reads the Docker socket. The chosen Caddy direction removes
 that second socket consumer, but its dynamic Docker routing is not implemented.
 
-Protect WEBHOOK_SECRET, OPENROUTER_API_KEY, backup credentials and the operator
+Protect OPENROUTER_API_KEY, backup credentials and the operator
 session as host-level secrets. Do not commit infra/.env or production env files.
 
 ## Browser and edge boundary
 
 Serve the control plane on a registrable domain separate from user deploys.
 This prevents deployed code from setting cookies received by the operator
-panel. Only verified custom domains may pass the TLS authorization gate.
+panel. Only verified custom domains may be published by the future TLS edge.
 
 The current production edge is incomplete for the single-binary Docker model.
-Do not rely on the inherited router-svc or cloud-gateway documentation.
+Do not rely on the retired cloud-router documentation.
 
 ## Known gaps
 

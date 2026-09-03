@@ -1,19 +1,13 @@
-// Package logs is the control plane's view of deploy log output: the interface
+// Package logs is orchestration's view of deploy log output: the interface
 // the saga publishes progress through, and the reader that serves history back
 // over HTTP.
-//
-// Both used to be Redis — a pub/sub channel logs:{deploy_id} and a capped
-// stream logs-history:{deploy_id} — because the saga, the build pipeline and
-// the runtime were separate processes that had to meet somewhere. They are one
-// process now and meet in internal/logbus.
 package logs
 
 import "time"
 
 // LogLine is a single structured log entry for a deploy. The build pipeline
-// and the runtime have their own identical declarations, which is what four
-// services publishing to one channel produced; the adapters in internal/wiring
-// convert between them and the bus.
+// and the runtime have component-local declarations; adapters in
+// internal/wiring convert them to the common bus representation.
 type LogLine struct {
 	DeployID  string    `json:"deploy_id"`
 	Stage     string    `json:"stage"`

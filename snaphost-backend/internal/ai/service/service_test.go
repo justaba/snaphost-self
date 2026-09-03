@@ -8,7 +8,7 @@ import (
 
 // TestLLMConstraintsUseConfigAllowList is a regression guard against
 // re-introducing a hardcoded base image list. The whole point of Task 9.2
-// was to make ai-orchestrator share the same env-driven list as builder-svc.
+// keeps generation and downstream validation on the same env-driven list.
 // If this test fails, someone replaced s.cfg.AllowedBaseImagePrefixes with
 // a literal slice in service.go.
 func TestLLMConstraintsUseConfigAllowList(t *testing.T) {

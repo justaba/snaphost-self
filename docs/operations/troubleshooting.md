@@ -9,8 +9,8 @@ current stack has one application process, BuildKit, Docker and an edge.
 
 ## Application does not start
 
-Check snaphost logs for configuration validation. WEBHOOK_SECRET and
-OPENROUTER_API_KEY are required. RUNNER_BACKEND must be docker. With
+Check snaphost logs for configuration validation. OPENROUTER_API_KEY is
+required. With
 STRICT_IMAGE_VALIDATION=true, ALLOWED_IMAGE_PREFIXES must be non-empty.
 
 If Docker calls fail with permission denied, compare DOCKER_SOCKET_GID with the

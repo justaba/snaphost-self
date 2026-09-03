@@ -56,7 +56,7 @@ type Metadata struct {
 	TokensUsed int `json:"tokens_used"`
 }
 
-// ServiceResponse is the HTTP response body for the generate-dockerfile endpoint.
+// ServiceResponse is the result of Dockerfile generation.
 type ServiceResponse struct {
 	Dockerfile   string            `json:"dockerfile"`
 	ExposePort   int               `json:"expose_port"`
@@ -138,8 +138,7 @@ func (s *Service) GenerateDockerfile(ctx context.Context, req llm.GenerateReques
 	}
 
 	// 5. LLM fallback — enforce standard security constraints.
-	// Allow-list is sourced from config (same env var as builder-svc's
-	// validator). Single source of truth across both services.
+	// Allow-list is sourced from the same config as the build validator.
 	req.Constraints = s.buildLLMConstraints()
 
 	resp, err := s.llm.Generate(ctx, req)

@@ -83,9 +83,8 @@ rather than disappearing.
 
 The watchdog finds expired or excess deploys through the control repository and
 stops their stored container IDs. A deploy selected by a verified domain alias
-is not reclaimed. Retention and idle-alias rules are controlled by
-DEPLOY_TTL_MIN, DEPLOY_TTL_MAX_MIN, ALIAS_IDLE_GC_DAYS and
-PROJECT_DEPLOY_RETENTION.
+is not reclaimed. Retention is controlled by DEPLOY_TTL_MIN,
+DEPLOY_TTL_MAX_MIN and PROJECT_DEPLOY_RETENTION.
 
 ## Image reclamation
 

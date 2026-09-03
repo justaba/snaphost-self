@@ -1,20 +1,16 @@
 // Package buildevents carries the one signal the saga waits on: whether a
 // build finished, and with what.
 //
-// It replaces a Redis pub/sub channel, build-events:{deploy_id}, which existed
-// because the build pipeline and the saga were separate processes. It is
-// deliberately not the log bus: log lines are a stream of text for a person to
-// read and may be dropped for a slow reader, while this is a state transition
-// the saga acts on and must not be.
+// It is deliberately separate from the log bus: log lines are text for a
+// person to read and may be dropped for a slow reader, while this is a state
+// transition the saga acts on and must not lose.
 //
 // # Why the last event is retained
 //
 // Enqueueing the build and waiting for it are two separate saga steps, so a
-// build can finish between them. Pub/sub has no retention, so the event went
-// to nobody and the saga waited out its whole build timeout before recovering.
-// That was survivable — the orchestrator re-reads the persisted image ref
-// before subscribing, which is what actually closed the race — but the window
-// between that check and the subscription was real.
+// build can finish between them. The orchestrator re-reads the persisted image
+// ref before waiting, but retaining the event also closes the smaller race
+// between that read and listener registration.
 //
 // Retaining the terminal event closes it: a waiter that arrives after the
 // build finished is answered immediately instead of waiting for a timeout it

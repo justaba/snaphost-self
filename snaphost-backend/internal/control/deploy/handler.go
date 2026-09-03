@@ -1,8 +1,4 @@
-// Package deploy provides HTTP handlers for deploy-related endpoints.
-// Internal endpoints are called by runner-svc to update deploy lifecycle
-// state. Public endpoints are exposed through api-gateway for the
-// frontend to create, inspect, and list deploys; CreateDeploy enqueues
-// a saga and returns 202 immediately.
+// Package deploy provides the public deploy API and orchestration entrypoints.
 package deploy
 
 import (
@@ -14,8 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"time"
-
-	"database/sql"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -34,16 +28,10 @@ type Repo interface {
 	Create(ctx context.Context, d Deploy) error
 	Get(ctx context.Context, deployID uuid.UUID) (*Deploy, error)
 	ListByUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Deploy, error)
-	UpdateStatus(ctx context.Context, deployID uuid.UUID, status string, failureReason *string) error
-	SetRunning(ctx context.Context, deployID uuid.UUID, imageRef, endpointURL, subdomain, containerID string, ttlExpiresAt time.Time) error
 	MarkDeleted(ctx context.Context, deployID uuid.UUID) error
-	MarkImageDeleted(ctx context.Context, deployID uuid.UUID) error
 	BeginRestart(ctx context.Context, deployID uuid.UUID, defaultPort int) (*RestartTarget, error)
 	AbandonRestart(ctx context.Context, deployID uuid.UUID, reason string) error
 	GetSaga(ctx context.Context, deployID uuid.UUID) (*SagaView, error)
-	FindExpiredWithDetails(ctx context.Context, limit int) ([]ExpiredDeploy, error)
-	FindImagesPendingCleanup(ctx context.Context, limit int) ([]ImageCleanup, error)
-	FindRouteByHost(ctx context.Context, host string) (*RouteInfo, error)
 }
 
 // Projects resolves the permanent publish target a new deploy belongs to
@@ -53,10 +41,10 @@ type Projects interface {
 	Ensure(ctx context.Context, userID uuid.UUID, sourceKey string) (*project.Project, error)
 }
 
-// RuntimeCleaner is the saga runtime surface plus explicit artifact cleanup
+// RuntimeCleaner is the container lifecycle surface plus explicit artifact cleanup
 // for terminal deploys that never acquired a container.
 type RuntimeCleaner interface {
-	saga.RunnerClient
+	saga.Runtime
 	RemoveImage(ctx context.Context, deployID, imageRef string) error
 }
 
@@ -130,160 +118,6 @@ const (
 	defaultRestartPort       = 3000
 	defaultRestartTTLMinutes = 30
 )
-
-// updateStatusRequest is the JSON body for POST /internal/deploys/:id/status.
-type updateStatusRequest struct {
-	Status        string  `json:"status" binding:"required"`
-	FailureReason *string `json:"failure_reason"`
-}
-
-// UpdateStatus handles POST /internal/deploys/:id/status — updates the deploy's
-// status and optionally sets a failure reason.
-func (h *Handler) UpdateStatus(c *gin.Context) {
-	deployID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, errResponse("invalid_deploy_id", "id must be a valid UUID"))
-		return
-	}
-
-	var req updateStatusRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, errResponse("invalid_body", err.Error()))
-		return
-	}
-
-	if err := h.repo.UpdateStatus(c.Request.Context(), deployID, req.Status, req.FailureReason); err != nil {
-		h.log.Error("failed to update deploy status",
-			zap.String("deploy_id", deployID.String()),
-			zap.String("status", req.Status),
-			zap.Error(err),
-		)
-		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to update deploy status"))
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "updated"})
-}
-
-// setRunningRequest is the JSON body for POST /internal/deploys/:id/running.
-type setRunningRequest struct {
-	ImageRef     string    `json:"image_ref" binding:"required"`
-	EndpointURL  string    `json:"endpoint_url" binding:"required"`
-	Subdomain    string    `json:"subdomain" binding:"required"`
-	ContainerID  string    `json:"container_id" binding:"required"`
-	TTLExpiresAt time.Time `json:"ttl_expires_at" binding:"required"`
-}
-
-// SetRunning handles POST /internal/deploys/:id/running — transitions the deploy
-// to running status with all runtime details populated.
-func (h *Handler) SetRunning(c *gin.Context) {
-	deployID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, errResponse("invalid_deploy_id", "id must be a valid UUID"))
-		return
-	}
-
-	var req setRunningRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, errResponse("invalid_body", err.Error()))
-		return
-	}
-
-	if err := h.repo.SetRunning(c.Request.Context(), deployID, req.ImageRef, req.EndpointURL, req.Subdomain, req.ContainerID, req.TTLExpiresAt); err != nil {
-		h.log.Error("failed to set deploy running",
-			zap.String("deploy_id", deployID.String()),
-			zap.Error(err),
-		)
-		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to set deploy running"))
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "running"})
-}
-
-// MarkImageDeleted records successful local artifact cleanup. The runtime only
-// calls this after Docker confirms the image is absent.
-func (h *Handler) MarkImageDeleted(c *gin.Context) {
-	deployID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, errResponse("invalid_deploy_id", "id must be a valid UUID"))
-		return
-	}
-	if err := h.repo.MarkImageDeleted(c.Request.Context(), deployID); err != nil {
-		h.log.Error("failed to mark deploy image deleted", zap.String("deploy_id", deployID.String()), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to record image cleanup"))
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
-}
-
-// ListExpired handles GET /internal/deploys/expired?limit=N — returns deploys
-// with status='running' whose TTL has expired, for the watchdog to stop.
-func (h *Handler) ListExpired(c *gin.Context) {
-	limitStr := c.DefaultQuery("limit", "50")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-
-	deploys, err := h.repo.FindExpiredWithDetails(c.Request.Context(), limit)
-	if err != nil {
-		h.log.Error("failed to list expired deploys", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to list expired deploys"))
-		return
-	}
-
-	if deploys == nil {
-		deploys = []ExpiredDeploy{}
-	}
-
-	c.JSON(http.StatusOK, deploys)
-}
-
-// ListImagesPendingCleanup returns terminal deploy artifacts the watchdog must
-// remove. Successful removals disappear after MarkImageDeleted.
-func (h *Handler) ListImagesPendingCleanup(c *gin.Context) {
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	images, err := h.repo.FindImagesPendingCleanup(c.Request.Context(), limit)
-	if err != nil {
-		h.log.Error("failed to list deploy images pending cleanup", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to list image cleanup work"))
-		return
-	}
-	if images == nil {
-		images = []ImageCleanup{}
-	}
-	c.JSON(http.StatusOK, images)
-}
-
-// LookupRouteByHost handles GET /internal/routes?host=<host>. It returns the
-// minimal runtime mapping needed by the central router.
-func (h *Handler) LookupRouteByHost(c *gin.Context) {
-	host := c.Query("host")
-	if host == "" {
-		c.JSON(http.StatusBadRequest, errResponse("missing_host", "host query parameter is required"))
-		return
-	}
-
-	route, err := h.repo.FindRouteByHost(c.Request.Context(), host)
-	if err != nil {
-		if errors.Is(err, ErrRouteNotFound) {
-			c.JSON(http.StatusNotFound, errResponse("route_not_found", "no running deploy for host"))
-			return
-		}
-		h.log.Error("failed to lookup route by host", zap.String("host", host), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to lookup route"))
-		return
-	}
-
-	c.JSON(http.StatusOK, route)
-}
 
 // CreateDeployRequest is the body of POST /api/v1/deploys. SourceType
 // defaults to git_public, which keeps the pre-14b request shape
@@ -415,7 +249,7 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 	}
 	// Archive deploys must reference a live upload owned by the caller.
 	// The blob may expire between this check and the build (short TTL);
-	// the builder then fails the deploy and the saga refunds — this check
+	// the builder then fails the deploy and the saga compensates — this check
 	// only keeps the obvious mistakes cheap.
 	if req.SourceType == SourceArchive {
 		if h.uploads == nil {
@@ -518,10 +352,7 @@ func (h *Handler) CreateDeploy(c *gin.Context) {
 		return
 	}
 
-	// logs_channel and events_channel used to be here, naming the Redis
-	// channels a client was invited to subscribe to. There is no broker to
-	// subscribe to any more, and there never was one a client could reach —
-	// Redis was on an internal network. What a caller actually uses is below.
+	// Return only public polling and streaming URLs.
 	c.JSON(http.StatusAccepted, gin.H{
 		"deploy_id":  deployID.String(),
 		"status":     "pending",
@@ -553,9 +384,7 @@ func (h *Handler) UploadArchive(c *gin.Context) {
 		return
 	}
 
-	// The body is streamed to disk rather than read into memory. It used to be
-	// io.ReadAll into a []byte that was then handed to Redis, so a 50 MB
-	// archive existed twice in this process before it existed anywhere useful.
+	// Stream the body to disk so large archives are never held in memory.
 	body := http.MaxBytesReader(c.Writer, c.Request.Body, h.maxUploadBytes)
 
 	// The gzip magic is checked on the first two bytes as they go past, so a
@@ -860,18 +689,17 @@ func (h *Handler) StartDeploy(c *gin.Context) {
 	defer cancel()
 
 	resp, err := h.runner.Deploy(runCtx, saga.DeployRequest{
-		DeployID:       deployID.String(),
-		UserID:         userID.String(),
-		ImageRef:       target.ImageRef,
-		Port:           target.Port,
-		TTLMinutes:     h.restartTTLMin,
-		IdempotencyKey: deployID.String() + ":start",
+		DeployID:   deployID.String(),
+		UserID:     userID.String(),
+		ImageRef:   target.ImageRef,
+		Port:       target.Port,
+		TTLMinutes: h.restartTTLMin,
 	})
 	if err != nil {
 		reason := "start failed"
-		var statusErr *saga.StatusError
-		if errors.As(err, &statusErr) {
-			reason = statusErr.UserReason()
+		var operationErr *saga.OperationError
+		if errors.As(err, &operationErr) {
+			reason = operationErr.UserReason()
 		}
 		h.abandonRestart(deployID, reason)
 		h.log.Error("failed to start stopped deploy",
@@ -949,7 +777,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"entries": entries, "next_since": next})
 }
 
-// userIDFromHeader extracts the api-gateway-injected X-User-ID header.
+// userIDFromHeader extracts the identity header written by authentication middleware.
 func userIDFromHeader(c *gin.Context) (uuid.UUID, error) {
 	raw := c.GetHeader("X-User-ID")
 	if raw == "" {
@@ -972,55 +800,4 @@ func (e httpError) Error() string { return string(e) }
 // errResponse builds a standard JSON error body.
 func errResponse(code, message string) gin.H {
 	return gin.H{"error": code, "message": message}
-}
-
-// DeployInfo is the response shape for GET /internal/deploys/:id.
-// All four fields are always serialized — callers (runner-svc) rely on
-// presence-vs-empty distinction (e.g. empty image_ref must reach the
-// validator as "", not be absent).
-type DeployInfo struct {
-	DeployID    string `json:"deploy_id"`
-	UserID      string `json:"user_id"`
-	Status      string `json:"status"`
-	ImageRef    string `json:"image_ref"`
-	ContainerID string `json:"container_id"`
-}
-
-// GetDeployInternal handles GET /internal/deploys/:id — webhook-secret
-// protected, returns the minimal DeployInfo for service-to-service
-// validation (runner-svc cross-checks image_ref / user_id / status
-// before launching a container).
-func (h *Handler) GetDeployInternal(c *gin.Context) {
-	deployID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, errResponse("invalid_deploy_id", "id must be a valid UUID"))
-		return
-	}
-
-	d, err := h.repo.Get(c.Request.Context(), deployID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "deploy not found"})
-			return
-		}
-		h.log.Error("failed to get deploy for internal lookup",
-			zap.String("deploy_id", deployID.String()),
-			zap.Error(err),
-		)
-		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "failed to get deploy"))
-		return
-	}
-
-	info := DeployInfo{
-		DeployID: d.ID.String(),
-		UserID:   d.UserID.String(),
-		Status:   d.Status,
-	}
-	if d.ImageRef != nil {
-		info.ImageRef = *d.ImageRef
-	}
-	if d.ContainerID != nil {
-		info.ContainerID = *d.ContainerID
-	}
-	c.JSON(http.StatusOK, info)
 }

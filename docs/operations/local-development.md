@@ -15,13 +15,12 @@ run the Compose stack.
 
 ## Configure
 
-Copy the tracked example and replace both required placeholder secrets:
+Copy the tracked example and replace the required API-key placeholder:
 
 ~~~bash
 cp infra/.env.example infra/.env
 ~~~
 
-WEBHOOK_SECRET authenticates internal routes and must be a long random value.
 OPENROUTER_API_KEY is currently required at startup even when a built-in
 Dockerfile template would satisfy a particular deploy. Do not commit
 infra/.env.

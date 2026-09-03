@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"snaphost/internal/builder/ai"
+	"snaphost/internal/ai/llm"
 	"snaphost/internal/builder/clone"
 )
 
@@ -89,22 +89,14 @@ func TestClassifyGitError(t *testing.T) {
 
 func TestClassifyAIError(t *testing.T) {
 	log := zap.NewNop()
-	t.Run("ErrAIUnavailable → transient", func(t *testing.T) {
-		got := classifyAIError(fmt.Errorf("gen: %w", ai.ErrAIUnavailable), log)
+	for _, sentinel := range []error{llm.ErrTimeout, llm.ErrRateLimited, llm.ErrCircuitOpen, llm.ErrUpstream} {
+		got := classifyAIError(fmt.Errorf("gen: %w", sentinel), log)
 		if !IsTransient(got) {
-			t.Errorf("want transient, got %v", got)
+			t.Errorf("%v: want transient, got %v", sentinel, got)
 		}
-	})
-	t.Run("ErrAIRefused (422) → permanent", func(t *testing.T) {
-		got := classifyAIError(fmt.Errorf("gen: %w: cannot generate", ai.ErrAIRefused), log)
-		if !IsPermanent(got) {
-			t.Errorf("want permanent, got %v", got)
-		}
-	})
-	t.Run("ErrAIRefused 400 → permanent (with WARN log)", func(t *testing.T) {
-		// We don't assert on log output here (NewNop discards) — just
-		// verify classification. WARN emission is visual at runtime.
-		got := classifyAIError(fmt.Errorf("gen: %w: status 400: bad request", ai.ErrAIRefused), log)
+	}
+	t.Run("invalid model output → permanent", func(t *testing.T) {
+		got := classifyAIError(fmt.Errorf("gen: %w", llm.ErrInvalidOutput), log)
 		if !IsPermanent(got) {
 			t.Errorf("want permanent, got %v", got)
 		}
