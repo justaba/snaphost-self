@@ -18,6 +18,7 @@ that disagrees with them is a documentation defect.
 ## Develop and operate it
 
 - [Local development](operations/local-development.md)
+- [Install and upgrade](operations/install-and-upgrade.md)
 - [CI and deployment](operations/ci-cd.md)
 - [Custom domains](operations/custom-domains.md)
 - [Backup and restore](operations/backups.md)
@@ -25,10 +26,10 @@ that disagrees with them is a documentation defect.
 - [Rollback](operations/rollback.md)
 - [Troubleshooting](operations/troubleshooting.md)
 
-The production deployment scripts are maintained and tested, but they still
-target the original operator's hosts. They are not an installation contract for
-third-party machines. That boundary is tracked by
-[Task 7](tasks/planned/0007-install-and-upgrade.md).
+The versioned installation contract is implemented in `infra/snaphostctl` and
+documented in the install runbook. It still needs the real-host acceptance
+drills tracked by [Task 7](tasks/planned/0007-install-and-upgrade.md), and it
+does not make the incomplete production routing edge disappear.
 
 ## Decisions and work status
 

@@ -24,12 +24,11 @@ set -Eeuo pipefail
 #   backup.sh verify <dump>               checksum + structural check of one file
 #   backup.sh list                        show what is on disk
 #
-# `tls` runs as root from its own timer, not as the deployment user. The
-# certificate store is caddy:caddy 0700 and must stay that way: the deployer
-# account is the one CD logs in as, and widening it to read TLS private keys
-# would be a downgrade. Encryption therefore happens while the artifact is
-# still root-owned, so plaintext key material never reaches a less-privileged
-# account.
+# `tls` runs as root from its own timer. The certificate store is caddy:caddy
+# 0700 and must stay that way; widening it so an ordinary host account can read
+# TLS private keys would be a downgrade. Encryption therefore happens while
+# the artifact is still root-owned, so plaintext key material never reaches a
+# less-privileged account.
 
 COMPOSE_FILE=${SNAPHOST_COMPOSE_FILE:-/opt/snaphost/infra/docker-compose.prod.yml}
 COMPOSE_PROJECT=${SNAPHOST_COMPOSE_PROJECT:-snaphost}
@@ -141,6 +140,10 @@ state_value() {
 # version the same way deploy.sh records it.
 resolve_version() {
   local version
+  if version=$(state_value current.env version 2>/dev/null) && [[ -n "$version" ]]; then
+    printf '%s' "$version"
+    return
+  fi
   if version=$(state_value current.env sha 2>/dev/null) && [[ -n "$version" ]]; then
     printf '%s' "$version"
     return

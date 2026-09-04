@@ -12,12 +12,14 @@ collapsed into one Go process; the completed work and its measurements are in
 
 ## Status
 
-The single-binary architecture is implemented and tested. The repository is
-usable for development, but it is **not yet a generally installable self-hosted
-product**: repository-owned SSH deployment has been removed and the production
-manifest now uses pinned SemVer images, but the first-install and checkout
-upgrade procedure is still unfinished. Installation, upgrades and the
-supported release contract are [Task 7](docs/tasks/planned/0007-install-and-upgrade.md).
+The single-binary architecture is implemented and tested. A versioned
+first-install, checkout-aware upgrade and coordinated rollback command now
+exist, with the operator procedure in the
+[install and upgrade runbook](docs/operations/install-and-upgrade.md). The
+project is still **not production-ready**: that path has not been rehearsed on
+a fresh real VPS, and the production routing edge described below is not done.
+The remaining proof is tracked in
+[Task 7](docs/tasks/planned/0007-install-and-upgrade.md).
 
 Current limitations that matter operationally:
 
@@ -64,6 +66,8 @@ contract.
 ## Requirements
 
 - Docker 24+ with Compose v2
+- systemd, AppArmor and Git for a production install (the supplied profile
+  targets Ubuntu 24.04)
 - Go version from `snaphost-backend/go.mod` for local Go builds
 - Node.js and pnpm 11 only when developing the panel outside the image build
 
@@ -126,6 +130,21 @@ make clean               remove containers, networks and local volumes
 ```
 
 `make clean` deletes the local SQLite and BuildKit volumes.
+
+## Production installation
+
+The supported layout is a release-tag checkout at `/opt/snaphost`. Start with
+the [install and upgrade runbook](docs/operations/install-and-upgrade.md); do
+not invent a `latest` tag or deploy from `main`. The operator command is:
+
+```text
+snaphostctl install <vMAJOR.MINOR.PATCH>
+snaphostctl upgrade [vMAJOR.MINOR.PATCH]
+snaphostctl rollback [--dry-run]
+```
+
+The installer does not solve the unfinished Caddy/generated-domain edge. A
+production operator must provide HTTPS and routing as an explicit prerequisite.
 
 ## Relationship to upstream
 

@@ -1,0 +1,540 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+INSTALL_ROOT=${SNAPHOST_INSTALL_ROOT:-/opt/snaphost}
+CHECKOUT_ROOT=${SNAPHOST_CHECKOUT_ROOT:-$INSTALL_ROOT}
+ENV_FILE=${SNAPHOST_ENV_FILE:-$INSTALL_ROOT/env/production.env}
+STATE_DIR=${SNAPHOST_STATE_DIR:-$INSTALL_ROOT/state}
+BACKUP_DIR=${SNAPHOST_BACKUP_DIR:-$INSTALL_ROOT/backups}
+COMPOSE_FILE=${SNAPHOST_COMPOSE_FILE:-$INSTALL_ROOT/infra/docker-compose.prod.yml}
+COMPOSE_PROJECT=${SNAPHOST_COMPOSE_PROJECT:-snaphost}
+DOCKER_SOCKET=${SNAPHOST_DOCKER_SOCKET:-/var/run/docker.sock}
+APPARMOR_DIR=${SNAPHOST_APPARMOR_DIR:-/etc/apparmor.d}
+SYSTEMD_DIR=${SNAPHOST_SYSTEMD_DIR:-/etc/systemd/system}
+CLI_TARGET=${SNAPHOST_CLI_TARGET:-/usr/local/sbin/snaphostctl}
+UPGRADE_REMOTE=${SNAPHOST_UPGRADE_REMOTE:-origin}
+
+log() { printf '%s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage: snaphostctl install <vMAJOR.MINOR.PATCH>
+       snaphostctl upgrade [vMAJOR.MINOR.PATCH]
+       snaphostctl rollback [--dry-run]
+
+Install input:
+  SNAPHOST_INSTALL_DOMAIN_SUFFIX             generated-site domain suffix
+  SNAPHOST_INSTALL_OPENROUTER_KEY_FILE       0400/0600 file containing the API key
+  SNAPHOST_INSTALL_OPERATOR_EMAIL            optional operator email
+  SNAPHOST_INSTALL_PUBLIC_URL                optional health/smoke URL
+  SNAPHOST_INSTALL_ALLOW_HTTP=true            explicitly permit an HTTP URL
+EOF
+}
+
+is_version() {
+  [[ ${1:-} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+}
+
+is_legacy_sha() {
+  [[ ${1:-} =~ ^[[:xdigit:]]{40}$ ]]
+}
+
+validate_version() {
+  is_version "$1" || die "version must match vMAJOR.MINOR.PATCH (for example v1.2.3)"
+}
+
+require_root() {
+  local effective_uid=${SNAPHOST_TEST_EUID:-$EUID}
+  [[ "$effective_uid" == 0 ]] || die "install, upgrade and rollback must run as root"
+}
+
+require_tools() {
+  local tool
+  for tool in docker git install realpath stat awk sed grep sort tail mktemp chmod chown mv mkdir dirname apparmor_parser systemctl; do
+    command -v "$tool" >/dev/null || die "required command is unavailable: $tool"
+  done
+  docker compose version >/dev/null || die "Docker Compose v2 is unavailable"
+  docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
+}
+
+require_checkout() {
+  local expected actual
+  expected=$(realpath -m "$INSTALL_ROOT")
+  actual=$(realpath -m "$CHECKOUT_ROOT")
+  [[ "$actual" == "$expected" ]] || die "repository must be cloned at $expected (running from $actual)"
+  [[ $(git -C "$CHECKOUT_ROOT" rev-parse --is-inside-work-tree 2>/dev/null) == true ]] || die "$CHECKOUT_ROOT is not a Git checkout"
+  local top
+  top=$(git -C "$CHECKOUT_ROOT" rev-parse --show-toplevel) || die "cannot resolve Git checkout root"
+  [[ $(realpath -m "$top") == "$actual" ]] || die "Git checkout root does not match $actual"
+}
+
+require_clean_checkout() {
+  local changes
+  changes=$(git -C "$CHECKOUT_ROOT" status --porcelain=v1 --untracked-files=normal) || die "cannot inspect checkout state"
+  [[ -z "$changes" ]] || die "checkout has local changes; commit or remove them before install/upgrade/rollback"
+}
+
+tag_commit() {
+  git -C "$CHECKOUT_ROOT" rev-parse --verify "refs/tags/$1^{commit}" 2>/dev/null
+}
+
+require_checkout_at_release() {
+  local release=$1 head expected
+  head=$(git -C "$CHECKOUT_ROOT" rev-parse HEAD) || die "cannot resolve checkout HEAD"
+  if is_version "$release"; then
+    expected=$(tag_commit "$release") || die "release tag does not exist in checkout: $release"
+  elif is_legacy_sha "$release"; then
+    expected=$release
+  else
+    die "saved release is neither SemVer nor a legacy Git SHA"
+  fi
+  [[ "$head" == "$expected" ]] || die "checkout HEAD $head does not match installed release $release ($expected)"
+}
+
+host_artifacts_present() {
+  [[ -x "$CHECKOUT_ROOT/infra/deploy.sh" ]] \
+    && [[ -f "$CHECKOUT_ROOT/infra/docker-compose.prod.yml" ]] \
+    && [[ -f "$CHECKOUT_ROOT/infra/apparmor/snaphost-buildkit-rootless" ]] \
+    && [[ -f "$CHECKOUT_ROOT/infra/systemd/snaphost-backup.service" ]] \
+    && [[ -f "$CHECKOUT_ROOT/infra/systemd/snaphost-backup.timer" ]]
+}
+
+release_artifacts_present() {
+  [[ -x "$CHECKOUT_ROOT/infra/snaphostctl" ]] && host_artifacts_present
+}
+
+state_value() {
+  local file=$1 key=$2
+  awk -F= -v key="$key" '$1==key {sub(/^[^=]*=/, ""); print; found=1; exit} END {if (!found) exit 1}' "$STATE_DIR/$file"
+}
+
+state_file_release() {
+  local file=$1 value
+  value=$(state_value "$file" version 2>/dev/null || true)
+  if [[ -z "$value" ]]; then
+    value=$(state_value "$file" sha 2>/dev/null || true)
+  fi
+  [[ -n "$value" ]] || die "cannot resolve release from $STATE_DIR/$file"
+  printf '%s\n' "$value"
+}
+
+state_release() { state_file_release current.env; }
+
+env_value() {
+  local key=$1
+  awk -v key="$key" 'index($0, key "=")==1 {sub(/^[^=]*=/, ""); print; found=1; exit} END {if (!found) exit 1}' "$ENV_FILE"
+}
+
+check_protected_file() {
+  local label=$1 path=$2 mode
+  [[ -f "$path" && ! -L "$path" ]] || die "$label is not a regular file: $path"
+  mode=$(stat -c '%a' "$path") || die "cannot inspect permissions for $label: $path"
+  case "$mode" in
+    400|600) ;;
+    *) die "$label permissions must be 0600 or 0400: $path" ;;
+  esac
+}
+
+socket_gid() {
+  if [[ -n ${SNAPHOST_TEST_DOCKER_SOCKET_GID:-} ]]; then
+    printf '%s\n' "$SNAPHOST_TEST_DOCKER_SOCKET_GID"
+    return
+  fi
+  [[ -S "$DOCKER_SOCKET" ]] || die "Docker socket is unavailable or is not a Unix socket: $DOCKER_SOCKET"
+  stat -c '%g' "$DOCKER_SOCKET"
+}
+
+set_env_value() {
+  local key=$1 value=$2 dir tmp line found=false
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$key contains a newline"
+  dir=$(dirname "$ENV_FILE")
+  tmp=$(mktemp "$dir/.production.env.XXXXXX")
+  chmod 600 "$tmp"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$key="* ]]; then
+      if [[ "$found" == false ]]; then
+        printf '%s=%s\n' "$key" "$value" >>"$tmp"
+        found=true
+      fi
+    else
+      printf '%s\n' "$line" >>"$tmp"
+    fi
+  done <"$ENV_FILE"
+  if [[ "$found" == false ]]; then
+    printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  fi
+  chown --reference="$ENV_FILE" "$tmp" || { rm -f -- "$tmp"; die "cannot preserve env ownership"; }
+  mv -f -- "$tmp" "$ENV_FILE" || { rm -f -- "$tmp"; die "cannot publish env update"; }
+}
+
+validate_domain_suffix() {
+  local value=$1
+  (( ${#value} <= 253 )) || die "domain suffix is too long"
+  [[ "$value" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || \
+    die "domain suffix must be a lowercase DNS name"
+}
+
+validate_public_url() {
+  local value=$1
+  [[ -z "$value" ]] && return
+  if [[ "$value" =~ ^https://[^[:space:]]+$ ]]; then
+    return
+  fi
+  if [[ ${SNAPHOST_INSTALL_ALLOW_HTTP:-false} == true && "$value" =~ ^http://[^[:space:]]+$ ]]; then
+    return
+  fi
+  die "public URL must use HTTPS (or set SNAPHOST_INSTALL_ALLOW_HTTP=true explicitly)"
+}
+
+read_install_inputs() {
+  INSTALL_DOMAIN_SUFFIX=${SNAPHOST_INSTALL_DOMAIN_SUFFIX:-}
+  INSTALL_OPERATOR_EMAIL=${SNAPHOST_INSTALL_OPERATOR_EMAIL:-}
+  INSTALL_PUBLIC_URL=${SNAPHOST_INSTALL_PUBLIC_URL:-}
+
+  if [[ -z "$INSTALL_DOMAIN_SUFFIX" ]]; then
+    [[ -t 0 ]] || die "SNAPHOST_INSTALL_DOMAIN_SUFFIX is required for non-interactive install"
+    read -r -p 'Generated-site domain suffix: ' INSTALL_DOMAIN_SUFFIX
+  fi
+  validate_domain_suffix "$INSTALL_DOMAIN_SUFFIX"
+  validate_public_url "$INSTALL_PUBLIC_URL"
+  if [[ -n "$INSTALL_OPERATOR_EMAIL" && ! "$INSTALL_OPERATOR_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]]; then
+    die "operator email is invalid"
+  fi
+
+  local key_file=${SNAPHOST_INSTALL_OPENROUTER_KEY_FILE:-}
+  if [[ -n "$key_file" ]]; then
+    check_protected_file "OpenRouter key file" "$key_file"
+    INSTALL_OPENROUTER_KEY=$(<"$key_file")
+  else
+    [[ -t 0 ]] || die "SNAPHOST_INSTALL_OPENROUTER_KEY_FILE is required for non-interactive install"
+    read -r -s -p 'OpenRouter API key: ' INSTALL_OPENROUTER_KEY
+    printf '\n'
+  fi
+  [[ "$INSTALL_OPENROUTER_KEY" =~ ^[A-Za-z0-9._-]+$ ]] || die "OpenRouter API key is empty or contains unsupported characters"
+}
+
+create_install_env() {
+  local version=$1 gid=$2 template=$CHECKOUT_ROOT/infra/.env.production.example
+  [[ -f "$template" ]] || die "production env template is missing: $template"
+  mkdir -p "$INSTALL_ROOT/env" "$STATE_DIR" "$BACKUP_DIR"
+  chmod 700 "$INSTALL_ROOT/env" "$STATE_DIR" "$BACKUP_DIR"
+  command install -m 600 "$template" "$ENV_FILE"
+  set_env_value SNAPHOST_VERSION "$version"
+  set_env_value DOMAIN_SUFFIX "$INSTALL_DOMAIN_SUFFIX"
+  set_env_value OPENROUTER_API_KEY "$INSTALL_OPENROUTER_KEY"
+  set_env_value DOCKER_SOCKET_GID "$gid"
+  if [[ -n "$INSTALL_OPERATOR_EMAIL" ]]; then
+    set_env_value OPERATOR_EMAIL "$INSTALL_OPERATOR_EMAIL"
+  fi
+  if [[ -n "$INSTALL_PUBLIC_URL" ]]; then
+    set_env_value SNAPHOST_PUBLIC_SMOKE_URL "$INSTALL_PUBLIC_URL"
+    if [[ "$INSTALL_PUBLIC_URL" == http://* ]]; then
+      set_env_value SNAPHOST_ALLOW_HTTP_SMOKE true
+      set_env_value SESSION_COOKIE_SECURE false
+    fi
+  fi
+  unset INSTALL_OPENROUTER_KEY
+}
+
+ensure_socket_gid_env() {
+  local gid
+  gid=$(socket_gid)
+  [[ "$gid" =~ ^[0-9]+$ ]] || die "Docker socket group is not numeric: $gid"
+  set_env_value DOCKER_SOCKET_GID "$gid"
+}
+
+install_apparmor_profile() {
+  local source=$CHECKOUT_ROOT/infra/apparmor/snaphost-buildkit-rootless
+  local target=$APPARMOR_DIR/snaphost-buildkit-rootless
+  [[ -f "$source" ]] || { printf 'ERROR: AppArmor profile is missing: %s\n' "$source" >&2; return 1; }
+  mkdir -p "$APPARMOR_DIR" || return 1
+  command install -m 644 "$source" "$target" || return 1
+  apparmor_parser -r "$target" || return 1
+}
+
+render_systemd_unit() {
+  local source=$1 target=$2 tmp line
+  tmp=$(mktemp "$SYSTEMD_DIR/.snaphost-unit.XXXXXX")
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\n' "${line//\/opt\/snaphost/$INSTALL_ROOT}" >>"$tmp"
+  done <"$source"
+  chmod 644 "$tmp"
+  mv -f -- "$tmp" "$target"
+}
+
+install_systemd_units() {
+  local service=$CHECKOUT_ROOT/infra/systemd/snaphost-backup.service
+  local timer=$CHECKOUT_ROOT/infra/systemd/snaphost-backup.timer
+  [[ -f "$service" && -f "$timer" ]] || die "backup systemd units are missing"
+  mkdir -p "$SYSTEMD_DIR"
+  render_systemd_unit "$service" "$SYSTEMD_DIR/snaphost-backup.service"
+  render_systemd_unit "$timer" "$SYSTEMD_DIR/snaphost-backup.timer"
+  systemctl daemon-reload
+  systemctl enable --now snaphost-backup.timer
+}
+
+install_operator_cli() {
+  local source=$CHECKOUT_ROOT/infra/snaphostctl
+  [[ -x "$source" ]] || die "operator CLI is missing or not executable: $source"
+  mkdir -p "$(dirname "$CLI_TARGET")"
+  command install -m 755 "$source" "$CLI_TARGET"
+}
+
+run_deploy() {
+  local version=$1
+  SNAPHOST_COMPOSE_FILE="$COMPOSE_FILE" \
+  SNAPHOST_ENV_FILE="$ENV_FILE" \
+  SNAPHOST_STATE_DIR="$STATE_DIR" \
+  SNAPHOST_BACKUP_DIR="$BACKUP_DIR" \
+  SNAPHOST_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
+    "$CHECKOUT_ROOT/infra/deploy.sh" deploy "$version"
+}
+
+run_rollback() {
+  local dry_run=${1:-}
+  local -a args=()
+  if [[ "$dry_run" == --dry-run ]]; then
+    args+=(--dry-run)
+  fi
+  SNAPHOST_COMPOSE_FILE="$COMPOSE_FILE" \
+  SNAPHOST_ENV_FILE="$ENV_FILE" \
+  SNAPHOST_STATE_DIR="$STATE_DIR" \
+  SNAPHOST_BACKUP_DIR="$BACKUP_DIR" \
+  SNAPHOST_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
+    "$CHECKOUT_ROOT/infra/deploy.sh" "${args[@]}" rollback
+}
+
+print_first_login() {
+  local password
+  password=$(SNAPHOST_VERSION="$(env_value SNAPHOST_VERSION)" docker compose \
+    --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+    logs --no-color snaphost 2>/dev/null \
+    | sed -n 's/.*"password":"\([^"]*\)".*/\1/p' | tail -n 1)
+  log ""
+  log "SnapHost installation completed."
+  log "Operator email: $(env_value OPERATOR_EMAIL 2>/dev/null || printf 'operator@localhost')"
+  if [[ -n "$password" ]]; then
+    log "One-time operator password: $password"
+    log "Store it now; it cannot be recovered from the database."
+  else
+    log "WARNING: the one-time password was not found in container logs."
+    log "Inspect it now: docker compose --env-file $ENV_FILE -f $COMPOSE_FILE logs snaphost"
+  fi
+  if [[ -n ${INSTALL_PUBLIC_URL:-} ]]; then
+    log "Open: $INSTALL_PUBLIC_URL"
+  else
+    log "No public URL was configured; install an HTTPS edge before browser login."
+  fi
+}
+
+install_release() {
+  local version=$1 gid
+  validate_version "$version"
+  require_root
+  require_tools
+  require_checkout
+  require_clean_checkout
+  [[ ! -f "$STATE_DIR/current.env" ]] || die "SnapHost is already installed; use upgrade"
+  require_checkout_at_release "$version"
+  release_artifacts_present || die "checkout does not contain the complete install contract"
+
+  gid=$(socket_gid)
+  [[ "$gid" =~ ^[0-9]+$ ]] || die "Docker socket group is not numeric: $gid"
+  if [[ -f "$ENV_FILE" ]]; then
+    check_protected_file "production env file" "$ENV_FILE"
+    [[ $(env_value SNAPHOST_VERSION) == "$version" ]] || die "incomplete install env targets a different version"
+    log "Resuming incomplete installation from $ENV_FILE"
+    ensure_socket_gid_env
+  else
+    read_install_inputs
+    create_install_env "$version" "$gid"
+  fi
+
+  install_apparmor_profile
+  run_deploy "$version"
+  install_systemd_units
+  install_operator_cli
+  print_first_login
+}
+
+fetch_releases() {
+  [[ "$UPGRADE_REMOTE" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid Git remote name: $UPGRADE_REMOTE"
+  git -C "$CHECKOUT_ROOT" fetch --prune "$UPGRADE_REMOTE" \
+    "+refs/heads/main:refs/remotes/$UPGRADE_REMOTE/main" \
+    "refs/tags/*:refs/tags/*"
+}
+
+newest_version() {
+  local candidate
+  while IFS= read -r candidate; do
+    if is_version "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done < <(git -C "$CHECKOUT_ROOT" for-each-ref --sort=-version:refname --format='%(refname:short)' 'refs/tags/v*')
+  die "no published semantic-version tag was found"
+}
+
+require_forward_upgrade() {
+  local current=$1 target=$2 newest
+  [[ "$current" != "$target" ]] || die "$target is already installed"
+  if is_version "$current"; then
+    newest=$(printf '%s\n%s\n' "$current" "$target" | sort -V | tail -n 1)
+    [[ "$newest" == "$target" ]] || die "upgrade cannot move backward from $current to $target; use rollback"
+  elif ! is_legacy_sha "$current"; then
+    die "current release state is malformed: $current"
+  fi
+}
+
+restore_checkout() {
+  local commit=$1
+  git -C "$CHECKOUT_ROOT" checkout --detach --quiet "$commit" || return 1
+  install_apparmor_profile || return 1
+}
+
+release_commit() {
+  local release=$1
+  if is_version "$release"; then
+    tag_commit "$release"
+  elif is_legacy_sha "$release"; then
+    git -C "$CHECKOUT_ROOT" rev-parse --verify "$release^{commit}" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+upgrade_release() {
+  local requested=${1:-} current configured original target target_commit_value rc
+  if [[ -n "$requested" ]]; then
+    validate_version "$requested"
+  fi
+  require_root
+  require_tools
+  require_checkout
+  require_clean_checkout
+  [[ -f "$ENV_FILE" && -f "$STATE_DIR/current.env" ]] || die "SnapHost is not installed; use install"
+  check_protected_file "production env file" "$ENV_FILE"
+
+  current=$(state_release)
+  configured=$(env_value SNAPHOST_VERSION) || die "SNAPHOST_VERSION is missing from env file"
+  [[ "$configured" == "$current" ]] || die "env version $configured does not match installed state $current"
+  require_checkout_at_release "$current"
+  ensure_socket_gid_env
+
+  fetch_releases
+  if [[ -n "$requested" ]]; then
+    target=$requested
+  else
+    target=$(newest_version)
+    log "Newest published version: $target"
+  fi
+  target_commit_value=$(tag_commit "$target") || die "release tag was not fetched from $UPGRADE_REMOTE: $target"
+  git -C "$CHECKOUT_ROOT" merge-base --is-ancestor "$target_commit_value" "refs/remotes/$UPGRADE_REMOTE/main" \
+    || die "release tag $target is not reachable from $UPGRADE_REMOTE/main"
+  require_forward_upgrade "$current" "$target"
+
+  original=$(git -C "$CHECKOUT_ROOT" rev-parse HEAD)
+  git -C "$CHECKOUT_ROOT" checkout --detach --quiet "$target_commit_value"
+  release_artifacts_present || {
+    git -C "$CHECKOUT_ROOT" checkout --detach --quiet "$original" || true
+    die "target release does not contain the complete install/upgrade contract"
+  }
+  if ! install_apparmor_profile; then
+    restore_checkout "$original" || die "target AppArmor profile failed and the original checkout could not be restored"
+    die "target AppArmor profile could not be installed; original checkout restored"
+  fi
+
+  if run_deploy "$target"; then
+    :
+  else
+    rc=$?
+    log "Upgrade deploy failed; restoring checkout $current"
+    restore_checkout "$original" || die "upgrade failed and the original checkout/AppArmor profile could not be restored"
+    return "$rc"
+  fi
+
+  install_systemd_units || die "release $target is running, but systemd unit refresh failed"
+  install_operator_cli || die "release $target is running, but operator CLI refresh failed"
+  log "Upgrade completed: $current -> $target"
+}
+
+rollback_release() {
+  local dry_run=${1:-} current configured original previous previous_commit rc
+  require_root
+  require_tools
+  require_checkout
+  require_clean_checkout
+  [[ -f "$ENV_FILE" && -f "$STATE_DIR/current.env" && -f "$STATE_DIR/previous.env" ]] \
+    || die "current/previous deployment state is unavailable"
+  check_protected_file "production env file" "$ENV_FILE"
+
+  current=$(state_release)
+  previous=$(state_file_release previous.env)
+  configured=$(env_value SNAPHOST_VERSION) || die "SNAPHOST_VERSION is missing from env file"
+  [[ "$configured" == "$current" ]] || die "env version $configured does not match installed state $current"
+  require_checkout_at_release "$current"
+  previous_commit=$(release_commit "$previous") || die "saved rollback release is unavailable in checkout: $previous"
+  original=$(git -C "$CHECKOUT_ROOT" rev-parse HEAD)
+
+  if [[ "$dry_run" == --dry-run ]]; then
+    run_rollback --dry-run
+    log "DRY-RUN: checkout would move from $current to $previous ($previous_commit)"
+    return
+  fi
+
+  # Refuse migration-incompatible or missing-image rollback before even
+  # temporarily loading the target release's host integration.
+  run_rollback --dry-run
+
+  # Prove that the target checkout and its host integration are usable before
+  # changing the runtime. The active profile is restored while the current
+  # image is still running; after rollback the already-validated target profile
+  # is installed again.
+  git -C "$CHECKOUT_ROOT" checkout --detach --quiet "$previous_commit"
+  if ! host_artifacts_present || ! install_apparmor_profile; then
+    restore_checkout "$original" || die "rollback preflight failed and the original checkout/profile could not be restored"
+    die "saved rollback release does not contain usable host artifacts; original checkout restored"
+  fi
+  restore_checkout "$original" || die "rollback preflight could not restore the current checkout/profile"
+
+  if run_rollback; then
+    :
+  else
+    rc=$?
+    return "$rc"
+  fi
+
+  git -C "$CHECKOUT_ROOT" checkout --detach --quiet "$previous_commit" \
+    || die "runtime rolled back to $previous, but checkout could not be switched; manual intervention is required"
+  install_apparmor_profile \
+    || die "runtime and checkout rolled back to $previous, but AppArmor refresh failed"
+  install_systemd_units \
+    || die "runtime and checkout rolled back to $previous, but systemd unit refresh failed"
+  # The first SemVer upgrade may return to a legacy SHA that predates this
+  # command. Keep the stable host copy in that one transition; otherwise make
+  # the command move with the checked-out release like every other artifact.
+  if [[ -x "$CHECKOUT_ROOT/infra/snaphostctl" ]]; then
+    install_operator_cli \
+      || die "runtime and checkout rolled back to $previous, but operator CLI refresh failed"
+  fi
+  log "Checkout rollback completed: $current -> $previous"
+}
+
+command=${1:-}
+shift || true
+case "$command" in
+  install)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    install_release "$1"
+    ;;
+  upgrade)
+    [[ $# -le 1 ]] || { usage; exit 2; }
+    upgrade_release "${1:-}"
+    ;;
+  rollback)
+    [[ $# -eq 0 || ( $# -eq 1 && ${1:-} == --dry-run ) ]] || { usage; exit 2; }
+    rollback_release "${1:-}"
+    ;;
+  *) usage; exit 2 ;;
+esac

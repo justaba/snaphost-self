@@ -1,7 +1,8 @@
 # Task 7 — Install and upgrade without us
 
-**Status:** In progress. The version and registry decision below is settled as
-of 2026-09-03, which unblocks the rest of the work plan.
+**Status:** In progress. The portable operator command and runbook are
+implemented as of 2026-09-04. The inherited uptime workflow decision and the
+real-host acceptance drills remain.
 **Created:** 2026-08-29
 **Updated:** 2026-09-04
 
@@ -16,7 +17,8 @@ start of this task it deployed *one specific machine*, `135.106.166.76`, from
 CI over SSH: a job built an image tagged with a Git SHA, pushed it to a private
 GHCR package, `scp`ed a release tarball to `/opt/snaphost/releases/<sha>/`,
 moved a `current` symlink, and ran `deploy.sh` on the far end. Item 2 has
-removed that path; a supported replacement is still being built here.
+removed that path. `infra/snaphostctl` is now its portable replacement; its
+fake-command coverage does not yet satisfy the real-host acceptance criteria.
 
 ## Why this is a task rather than a fix
 
@@ -105,11 +107,12 @@ derivable from the code.
    The `DEPLOY_SSH_*` secrets and the `production` and `staging` GitHub
    environments still exist as repository settings. Nothing reads them now.
 
-3. [ ] **An `install` path, which does not exist today.** The production box was
-   brought up by hand, so there is no first-run story at all: create the
-   directories, write an env file from a template, pull, migrate, start, and print
-   the operator password once. Item 6a of Task 1 already generates that
-   password; this is the same idea applied to the rest of the install.
+3. [x] **An `install` path.** `infra/snaphostctl install <version>` validates a
+   clean checkout at the exact release tag, creates protected env/state/backup
+   directories, derives the Docker socket group, installs the BuildKit
+   AppArmor profile, deploys, installs the backup timer and a stable CLI copy,
+   and prints the generated operator password. A failed pre-migration first
+   deploy can resume without rewriting the protected env file.
 
 4. [x] **Shrink the environment surface.** `preflight` requires three variables
    where it required forty-five: `SNAPHOST_VERSION`, `DOMAIN_SUFFIX` and
@@ -154,7 +157,7 @@ derivable from the code.
    started, because ADR 0008 removed `WEBHOOK_SECRET`, `RUNNER_BACKEND` and
    `ALIAS_IDLE_GC_DAYS` along with the machinery that read them.
 
-5. [ ] **Rework `deploy.sh` into an operator CLI.** Most of its logic survives
+5. [x] **Rework `deploy.sh` into an operator CLI.** Most of its logic survives
    and changes meaning rather than disappearing — see the table below.
 
    The first slice landed on 2026-09-04. `preflight` and `deploy` now accept
@@ -174,12 +177,15 @@ derivable from the code.
    Docker healthcheck, the runtime image contains its `curl` client, and
    `deploy.sh` waits specifically for `healthy` rather than treating a merely
    running container as ready. The suite has an explicit cross-file regression
-   check for that contract and now covers 52 scenarios.
+   check for that contract and now covers 53 scenarios.
 
-   Still missing from this item: the `upgrade` command which fetches and checks
-   out a release tag (including no-argument newest-version resolution), and its
-   integration with the first-install path. Those cannot be honestly called
-   complete until exercised on a real host.
+   The outer `snaphostctl` command now owns the host and Git lifecycle.
+   `upgrade` fetches tags and `origin/main`, rejects dirty/skewed/downgrade/
+   off-main targets, selects the newest strict SemVer when no target is given,
+   checks out the target and invokes that release's deploy engine. A failed
+   deploy restores the original checkout and AppArmor profile. `rollback`
+   moves runtime, state, checkout, AppArmor and systemd together; its dry-run
+   is read-only. The separate suite covers 21 scenarios.
 
 6. [x] **How the manifest reaches the operator: a `git clone` at the version
    tag.** Settled with the version model above. Every path in `deploy.sh` and
@@ -200,13 +206,14 @@ derivable from the code.
    [monitoring.md](../../operations/monitoring.md) — an independent monitor,
    because GitHub's schedules are best-effort and disabled after inactivity.
 
-8. [ ] **Docs.** [ci-cd.md](../../operations/ci-cd.md) is mostly deleted.
+8. [x] **Docs.** [ci-cd.md](../../operations/ci-cd.md) is mostly deleted.
    [rollback.md](../../operations/rollback.md),
    [backups.md](../../operations/backups.md),
    [monitoring.md](../../operations/monitoring.md) and
    [deployment-model.md](../../architecture/deployment-model.md) are edited. A
-   new install-and-upgrade runbook is written, and it is the product's front
-   door — there is nothing occupying that position now.
+   [install-and-upgrade.md](../../operations/install-and-upgrade.md) is the new
+   product front door and explicitly records the incomplete edge and real-host
+   proof boundary.
 
 ## What survives, what changes, what goes
 

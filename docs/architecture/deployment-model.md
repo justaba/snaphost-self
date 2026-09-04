@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-08-30
+Updated: 2026-09-04
 
 ## Data model
 
@@ -80,9 +80,10 @@ SQLite -> named snaphost_data volume
 
 The production manifest contains snaphost, the one-shot migration profile and
 BuildKit. It pins one application image to a `vMAJOR.MINOR.PATCH` tag and leaves
-TLS and public routing to the host. It is an environment-specific deployment
-artifact, not yet a supported installer.
+TLS and public routing to the host. `infra/snaphostctl` installs that manifest
+from a tag checkout at `/opt/snaphost` and keeps checkout, env and state on the
+same release during upgrade and rollback.
 
 Task 2 changes preview TTLs into opt-in expiry and adds persistent per-project
-configuration. Task 4 completes the Caddy edge. Task 7 defines portable install,
-upgrade and rollback.
+configuration. Task 4 completes the Caddy edge. Task 7 still owns the real-host
+proof of the implemented install, upgrade and rollback contract.

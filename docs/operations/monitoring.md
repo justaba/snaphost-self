@@ -2,7 +2,7 @@
 
 Status: Current capabilities documented; no integrated metrics stack
 Type: Operations
-Updated: 2026-08-30
+Updated: 2026-09-04
 
 ## Available signals
 
@@ -115,7 +115,8 @@ run, not that a future run remains scheduled.
   operator actions are not an alertable signal;
 - the uptime probe does not create a real deploy;
 - no 1 GB build-pressure baseline is recorded;
-- no portable edge health contract exists before Task 4 and Task 7.
+- no portable edge health contract exists before Task 4; Task 7's installer
+  treats that edge as an explicit prerequisite.
 
 Related: [backup and restore](backups.md) and
 [troubleshooting](troubleshooting.md).

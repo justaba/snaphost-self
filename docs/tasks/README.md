@@ -1,12 +1,14 @@
 # Task catalog
 
 Status: Current
-Updated: 2026-09-02
+Updated: 2026-09-04
 
 ## Active
 
-No active task is recorded. Task 7 is the next fully scoped task but remains
-blocked on its version and registry decision.
+Task 7 is in progress. Its version/registry model, CI separation, first-install
+command and checkout-aware upgrade/rollback implementation are done. The
+inherited uptime workflow decision and the real-host install, restore and
+low-memory acceptance drills remain.
 
 Four pieces of work landed outside the numbered tasks. Two closed recorded
 gaps, one is the smallest useful part of Task 6, and one removed structure that
@@ -77,7 +79,7 @@ Real build pressure on a 1 GB host is also still unmeasured.
 | 4 — The edge | Integrate Caddy with verified-domain authorization and dynamic Docker routing; remove Traefik from the intended production path. | — |
 | 5 — Git webhooks | Deploy on push. | — |
 | 6 — Operator actions *(partially completed)* | Stop, start, project deletion and the audit read surface are done. Audited shell access into a container remains. | — |
-| 7 — Install and upgrade without us | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
+| 7 — Install and upgrade without us *(in progress)* | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. Code and runbook exist; real-host proof remains. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
 
 Tasks 2, 3 and 6 include their corresponding panel work. Task 1 delivered the
 first operator UI rather than a final interface for future resources.

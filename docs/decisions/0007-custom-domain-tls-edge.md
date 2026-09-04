@@ -55,8 +55,9 @@ end-to-end feature.
   domain owner.
 - ACME issuance state and private keys live on the edge and require an encrypted
   off-host backup.
-- Caddy becomes a public, stateful prerequisite until Task 7 defines how the
-  product installs and upgrades it.
+- Caddy becomes a public, stateful prerequisite until Task 4 integrates it.
+  Task 7's installer deliberately treats HTTPS and routing as an external host
+  prerequisite rather than installing a knowingly incomplete edge.
 - On-demand TLS without a working authorization gate is forbidden.
 - Control-plane and deploy suffix should remain separate registrable domains so
   deployed code cannot set cookies received by the operator panel.

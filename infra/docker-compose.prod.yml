@@ -17,14 +17,15 @@ name: snaphost-self
 # inside the one container that has the file.
 #
 # The image comes from a public package, so there is no registry credential on
-# the host and nothing here for us to issue per operator (Task 7). What is not
-# finished is the first-install path itself; deploy and rollback now use the
-# version tag this file names.
+# the host and nothing here for us to issue per operator (Task 7). snaphostctl
+# installs this manifest and keeps its pinned version aligned with release
+# state and the Git checkout.
 #
 # Public routing is also incomplete after the collapse. The old Caddy example
 # depended on the removed router-svc/cloud path, while Docker currently emits
 # Traefik labels only for local generated hostnames. Do not treat this manifest
-# as a complete third-party production install until Tasks 4 and 7 land.
+# as a complete production edge until Task 4 lands, or the operator supplies
+# an equivalent HTTPS and routing layer.
 
 services:
   snaphost:
@@ -46,6 +47,11 @@ services:
       # The whole store. One file, held open by this process, which is why the
       # backup runs `sqlite3 .dump` in here rather than copying the volume.
       - snaphost_data:/var/snaphost/data
+    # The process stays uid 1000, but joins the numeric group owning the host
+    # socket. snaphostctl derives and pins this value during install/upgrade.
+    # Docker Desktop uses gid 0; a Linux host normally uses its docker group.
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
     depends_on:
       buildkitd:
         condition: service_healthy

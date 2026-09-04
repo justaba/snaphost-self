@@ -8,7 +8,7 @@ STATE_DIR=${SNAPHOST_STATE_DIR:-/opt/snaphost/state}
 BACKUP_DIR=${SNAPHOST_BACKUP_DIR:-/opt/snaphost/backups}
 PUBLIC_SMOKE_URL=${SNAPHOST_PUBLIC_SMOKE_URL:-}
 DRY_RUN=${SNAPHOST_DRY_RUN:-false}
-ALLOW_HTTP_SMOKE=${SNAPHOST_ALLOW_HTTP_SMOKE:-false}
+ALLOW_HTTP_SMOKE=${SNAPHOST_ALLOW_HTTP_SMOKE:-}
 MIGRATIONS_BACKWARD_COMPATIBLE=${MIGRATIONS_BACKWARD_COMPATIBLE:-false}
 MIN_FREE_KB=${SNAPHOST_MIN_FREE_KB:-5242880}
 READINESS_TIMEOUT=${SNAPHOST_READINESS_TIMEOUT:-180}
@@ -172,13 +172,20 @@ preflight_checks() {
   # because they now carry defaults in the manifest. An empty value there would
   # render an invalid manifest rather than fall back, which is why they need the
   # default at that layer instead of an assertion at this one.
-  local key configured_version
+  local key configured_version configured_value
   for key in SNAPHOST_VERSION DOMAIN_SUFFIX OPENROUTER_API_KEY; do
     require_env "$key"
   done
   configured_version=$(env_value SNAPHOST_VERSION)
   is_version "$configured_version" || is_legacy_sha "$configured_version" || \
     die "SNAPHOST_VERSION in env file must be vMAJOR.MINOR.PATCH (or a legacy 40-character Git SHA during transition)"
+  if [[ -z "$PUBLIC_SMOKE_URL" ]]; then
+    PUBLIC_SMOKE_URL=$(env_value SNAPHOST_PUBLIC_SMOKE_URL 2>/dev/null || true)
+  fi
+  if [[ -z "$ALLOW_HTTP_SMOKE" ]]; then
+    configured_value=$(env_value SNAPHOST_ALLOW_HTTP_SMOKE 2>/dev/null || true)
+    ALLOW_HTTP_SMOKE=${configured_value:-false}
+  fi
   # The Docker socket is the runtime's largest privilege and has no
   # environment-specific identity check.
   #

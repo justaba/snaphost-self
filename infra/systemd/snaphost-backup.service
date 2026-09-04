@@ -1,37 +1,35 @@
 [Unit]
-Description=SnapHost scheduled PostgreSQL backup
-Documentation=https://github.com/justaba/snaphost/blob/main/docs/operations/backups.md
-# The backup talks to the postgres container through the Docker socket, so
+Description=SnapHost scheduled SQLite backup
+Documentation=https://github.com/justaba/snaphost-self/blob/main/docs/operations/backups.md
+# The backup runs sqlite3 inside the application container through Docker, so
 # there is nothing to back up before Docker is up.
 After=docker.service
 Requires=docker.service
 
 [Service]
 Type=oneshot
-# Same non-root deployment identity the release tree is owned by; it needs
-# Docker group membership and write access to /opt/snaphost/{state,backups}.
-User=deployer
-Group=deployer
+# Host integration is installed and operated by root. The application itself
+# still runs as a fixed non-root identity inside its container; this unit needs
+# the root-equivalent Docker socket in order to run sqlite3 there.
+User=root
+Group=root
 WorkingDirectory=/opt/snaphost
 
 # Everything the script needs that is not a secret. Credentials for the
 # off-host copy live in the referenced environment file, mode 0600, owned by
-# the same user — it is read by systemd, not by the shell, so it never lands
+# root — it is read by systemd, not by the shell, so it never lands
 # in a process argument list.
 EnvironmentFile=-/opt/snaphost/env/backup.env
 
 # ProtectHome=true hides $HOME, and the Docker CLI refuses to execute its
-# plugins when it cannot reach its config directory — `docker info` still lists
-# compose, but `docker compose` answers "unknown command", which surfaces as
-# "PostgreSQL is not running". Point the config somewhere the sandbox can write
-# instead of opening up the home directory.
+# plugins when it cannot reach its config directory. Point the config somewhere
+# the sandbox can write instead of opening up the home directory.
 Environment=DOCKER_CONFIG=/opt/snaphost/state/.docker
 
-# Operator-managed stable path, not a release directory: the backup has no
-# per-release coupling, and a unit pointing into releases/<sha> would break
-# the moment that release is pruned. Refresh this file when backup.sh changes.
+# Operator-managed stable tag checkout. snaphostctl refreshes this unit when
+# backup.sh moves with an upgrade or rollback.
 # WorkingDirectory above is load-bearing — `docker compose` stats its working
-# directory, and a directory the deployer cannot read fails the whole run.
+# directory, and an unreadable checkout fails the whole run.
 ExecStart=/opt/snaphost/infra/backup.sh run
 
 # A backup that takes longer than this is stuck rather than slow; the dump of
@@ -49,9 +47,8 @@ ProtectSystem=strict
 ProtectHome=true
 # The Docker socket must be writable: ProtectSystem=strict mounts the whole
 # hierarchy read-only, and connecting to a unix socket needs write permission.
-# Without this the dump fails with "PostgreSQL is not running", which points at
-# the wrong thing entirely — `compose ps` cannot reach the daemon, so it looks
-# like there is no container.
+# Without this `compose ps` cannot reach the daemon, so it looks like there is
+# no application container.
 ReadWritePaths=/opt/snaphost/backups /opt/snaphost/state /run/docker.sock
 ProtectKernelTunables=true
 ProtectKernelModules=true

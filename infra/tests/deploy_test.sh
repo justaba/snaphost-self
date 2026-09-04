@@ -107,7 +107,7 @@ FAKE
 cat >"$BIN/curl" <<'FAKE'
 #!/usr/bin/env bash
 set -u
-echo "curl called" >>"${FAKE_LOG:?}"
+echo "curl $*" >>"${FAKE_LOG:?}"
 [[ ${FAIL_SMOKE:-0} != 1 ]] || exit 22
 if [[ "$*" == *'%{http_code}'* ]]; then
   [[ ${FAIL_AUTH_SMOKE:-0} != 1 ]] || exit 22
@@ -203,6 +203,7 @@ EOF
   export SNAPHOST_STATE_DIR="$CASE_DIR/state" SNAPHOST_BACKUP_DIR="$CASE_DIR/backups"
   export SNAPHOST_PUBLIC_SMOKE_URL=https://control.invalid
   export SNAPHOST_MIN_FREE_KB=0 SNAPHOST_READINESS_TIMEOUT=1 SNAPHOST_STABILITY_DELAY=0
+  unset SNAPHOST_ALLOW_HTTP_SMOKE
   unset FAIL_CONFIG FAIL_PULL FAIL_BACKUP TRUNCATED_BACKUP FAIL_MIGRATION FAIL_READINESS FAIL_SMOKE FAIL_AUTH_SMOKE FAIL_CHECKSUM_PUBLISH FAIL_ENV_UPDATE MIGRATIONS_BACKWARD_COMPATIBLE MISSING_ROLLBACK_IMAGE WRONG_IMAGE_VERSION TMPDIR
 }
 
@@ -302,6 +303,21 @@ if [[ $RC -eq 0 ]] && grep -q 'Public smoke skipped' "$OUTPUT"; then
   pass 'deploy without a public smoke URL succeeds and announces the skip'
 else
   fail 'deploy without a public smoke URL succeeds and announces the skip'
+fi
+
+# snaphostctl persists the smoke contract in production.env because systemd or
+# a later operator shell does not inherit the environment of the first install.
+setup_case
+unset SNAPHOST_PUBLIC_SMOKE_URL
+cat >>"$ENV_FILE" <<'EOF'
+SNAPHOST_PUBLIC_SMOKE_URL=http://192.0.2.10:8080
+SNAPHOST_ALLOW_HTTP_SMOKE=true
+EOF
+run_capture deploy "$VERSION"
+if [[ $RC -eq 0 ]] && grep -q 'curl .*http://192.0.2.10:8080/health' "$FAKE_LOG"; then
+  pass 'deploy reads the persisted HTTP smoke opt-in from the env file'
+else
+  fail 'deploy reads the persisted HTTP smoke opt-in from the env file'
 fi
 
 setup_case

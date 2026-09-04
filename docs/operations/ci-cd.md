@@ -15,9 +15,10 @@ The Go job, from the single snaphost-backend module, runs:
 - go vet ./...;
 - golangci-lint v1.64.8 built with the job's Go toolchain.
 
-The shell job checks syntax and ShellCheck diagnostics for deployment, backup
-and uptime scripts, runs the 52-scenario deployment suite and 40-scenario
-backup suite, and verifies the systemd backup unit syntax.
+The shell job checks syntax and ShellCheck diagnostics for deployment, backup,
+operator and uptime scripts; runs the 53-scenario deployment, 41-scenario
+backup and 21-scenario install/upgrade suites; and verifies the systemd backup
+unit syntax.
 
 After those jobs pass, one Docker image is built. On main it is published as:
 
@@ -49,9 +50,11 @@ job, manual production workflow and remote-deploy scripts were deleted as the
 first implementation step of Task 7. Publishing a version only makes its image
 available; an operator's host pulls and deploys it locally.
 
-A supported first-install and checkout-upgrade procedure is still incomplete,
-so image publishing must not yet be presented as a finished third-party
-installer. Task 7 owns that remaining work.
+First install and checkout-aware upgrade now run on the operator's host through
+`infra/snaphostctl`; CI only tests that command and publishes the image. The
+fake-command coverage is not a real-host acceptance rehearsal, so Task 7 stays
+open and image publishing alone must not be presented as proof of an operable
+third-party installation.
 
 ## Production manifest
 
@@ -97,7 +100,8 @@ Migration rollback is never assumed. Once migrations begin, application
 rollback requires MIGRATIONS_BACKWARD_COMPATIBLE=true after an operator reviews
 the schema delta. Database restore is always a separate manual action.
 
-See [rollback](rollback.md) and [backup and restore](backups.md).
+See [install and upgrade](install-and-upgrade.md), [rollback](rollback.md) and
+[backup and restore](backups.md).
 
 ## Repository settings
 

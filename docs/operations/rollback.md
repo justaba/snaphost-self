@@ -1,7 +1,7 @@
 # Rollback
 
-Status: Scripted and covered by fake-command tests; portable installation and a
-current live rehearsal are not complete
+Status: Checkout-aware operator command implemented and covered by fake-command
+tests; a current live rehearsal is not complete
 Type: Operations
 Updated: 2026-09-04
 
@@ -20,8 +20,8 @@ keeps the pre-upgrade image recoverable without making the debugging tag part
 of the supported version interface.
 
 ~~~bash
-infra/deploy.sh --dry-run rollback
-infra/deploy.sh rollback
+sudo snaphostctl rollback --dry-run
+sudo snaphostctl rollback
 ~~~
 
 The dry run validates saved state, the manifest and local image availability
@@ -32,7 +32,7 @@ start it is blocked unless an operator has reviewed the exact schema change and
 explicitly sets:
 
 ~~~bash
-MIGRATIONS_BACKWARD_COMPATIBLE=true infra/deploy.sh rollback
+sudo env MIGRATIONS_BACKWARD_COMPATIBLE=true snaphostctl rollback
 ~~~
 
 This flag means the previous binary can safely use the current schema. It does
@@ -51,9 +51,11 @@ script immediately restores the original runtime and leaves the old state
 contract intact. A failure of that compensation is reported as manual
 intervention required.
 
-The old repository-owner SSH release layout has been removed. The scripted
-logic is tested, but the first-install and checkout-upgrade procedure is not yet
-a supported third-party installation contract.
+The outer operator command also validates the saved Git release before touching
+the runtime and, after a successful runtime rollback, switches the checkout,
+AppArmor profile and systemd units to it. Calling `infra/deploy.sh rollback`
+directly is an internal operation and leaves the checkout on the wrong release.
+See [install and upgrade](install-and-upgrade.md).
 
 ## Site rollback
 
@@ -97,3 +99,5 @@ infra/tests/deploy_test.sh exercises SemVer guards, legacy-state transition,
 env/state updates, migration compatibility decisions, missing images, health
 and smoke failures, and lock contention with fake external commands. It cannot
 prove Docker, disk, SQLite volume access or public routing on a real host.
+infra/tests/snaphostctl_test.sh separately verifies that checkout and host
+artifacts move with the runtime.

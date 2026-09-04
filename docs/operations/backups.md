@@ -3,7 +3,7 @@
 Status: Backup path implemented and tested with fakes; a current encrypted
 off-host restore drill is not recorded
 Type: Operations
-Updated: 2026-08-30
+Updated: 2026-09-04
 
 ## What must be backed up
 
@@ -89,9 +89,10 @@ Restore is a reviewed maintenance action:
 7. ensure stale -wal and -shm sidecars are absent;
 8. start snaphost and verify login, projects, deploy history and health.
 
-Exact volume-mount mechanics depend on the installation layout. The present SSH
-deployment layout is not a portable restore contract and Task 7 may change its
-paths.
+The supported checkout and host-state root is `/opt/snaphost`, but the database
+itself remains in Docker's `snaphost_data` volume. A full restore drill against
+that installed layout is still an acceptance requirement; do not infer it from
+the fake-command backup suite.
 
 Do not combine database restore with application rollback automatically. An old
 database may discard writes made after the selected backup, while an old binary
@@ -99,9 +100,10 @@ may be incompatible with the current schema; those are separate decisions.
 
 ## Timer
 
-Systemd units live in infra/systemd. The current deployment expects the stable
-script path /opt/snaphost/infra/backup.sh and a protected backup.env. Verify the
-installed timer and service logs:
+`snaphostctl install` renders the systemd units from `infra/systemd`, enables
+the timer, and keeps the stable script path
+`/opt/snaphost/infra/backup.sh`. Put optional credentials in protected
+`/opt/snaphost/env/backup.env`. Verify the installed timer and service logs:
 
 ~~~bash
 systemctl list-timers snaphost-backup.timer

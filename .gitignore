@@ -8,6 +8,11 @@ node_modules/
 .tmp-*/
 *.tsbuildinfo
 
+# Runtime state created when the supported checkout lives at /opt/snaphost.
+/env/
+/state/
+/backups/
+
 # Docker artifacts
 docker-compose.override.yml
 .docker/

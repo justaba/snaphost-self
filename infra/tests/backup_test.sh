@@ -16,6 +16,7 @@ cat >"$BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
 set -u
 echo "docker $*" >>"${FAKE_LOG:?}"
+echo "docker-version ${SNAPHOST_VERSION:-unset}" >>"${FAKE_LOG:?}"
 if [[ ${1:-} == info ]]; then exit 0; fi
 if [[ ${1:-} == inspect ]]; then
   if [[ ${APP_STOPPED:-0} == 1 ]]; then echo false; else echo true; fi
@@ -158,6 +159,16 @@ run_capture run
 if [[ $RC -eq 0 && $(count_dumps 'scheduled-*.sql') -eq 1 ]]; then
   pass 'scheduled backup produces one dump'
 else fail 'scheduled backup produces one dump'; fi
+
+setup_case
+cat >"$CASE_DIR/state/current.env" <<'EOF'
+version=v1.2.3
+status=success
+EOF
+run_capture run
+if [[ $RC -eq 0 ]] && grep -q '^docker-version v1.2.3$' "$FAKE_LOG"; then
+  pass 'scheduled backup renders Compose with the SemVer deployment state'
+else fail 'scheduled backup renders Compose with the SemVer deployment state'; fi
 
 setup_case
 run_capture run

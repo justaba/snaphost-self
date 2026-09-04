@@ -34,7 +34,7 @@ binary for applying the same SQLite baseline before a production rollout.
 | Docker daemon | Image store, user-container lifecycle and networks. Access through the socket is root-equivalent on the host. |
 | BuildKit | Rootless daemon used to build images. The result is streamed into the host Docker image store; no registry is involved. |
 | Traefik | Local-development routing from generated hostnames to user containers through Docker labels. |
-| Caddy | Chosen production edge, but the current Docker integration and installer are not complete. |
+| Caddy | Chosen production edge, but its Docker integration is not complete; the installer treats HTTPS/routing as an operator prerequisite. |
 
 ## Operator panel
 

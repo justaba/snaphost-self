@@ -1,6 +1,6 @@
 [Unit]
-Description=Run the SnapHost PostgreSQL backup daily
-Documentation=https://github.com/justaba/snaphost/blob/main/docs/operations/backups.md
+Description=Run the SnapHost SQLite backup daily
+Documentation=https://github.com/justaba/snaphost-self/blob/main/docs/operations/backups.md
 
 [Timer]
 # 02:20 UTC: after the daily low point, and deliberately not on the hour, so

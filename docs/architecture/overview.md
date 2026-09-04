@@ -89,9 +89,11 @@ application mounts the host Docker socket and joins the shared snaphost-net
 network used by deployed containers.
 
 The current production manifest runs snaphost plus buildkitd and expects an
-edge on the host. It publishes one application image pinned to an exact Git
-SHA. This manifest and the SSH release scripts are environment-specific
-carry-overs; general installation and upgrade are Task 7.
+edge on the host. It publishes one application image pinned to an exact SemVer
+tag. `infra/snaphostctl` installs it from `/opt/snaphost`, checks out release
+tags for upgrades and keeps runtime, state and checkout aligned on rollback.
+Task 7 still requires real-host rehearsal; Task 4 owns the missing production
+edge.
 
 See [packages and external components](services.md),
 [deploy lifecycle](deploy-lifecycle.md), and [security](security.md).
