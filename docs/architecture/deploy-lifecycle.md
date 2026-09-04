@@ -164,7 +164,11 @@ is what queues the watchdog's retry if the eager removal fails. The two
 watchdog sweeps do not share a failure path, so a broken expiry query cannot
 silently disable image reclamation.
 
-The BuildKit cache volume is outside all of this and still grows without bound.
+The BuildKit cache volume is outside this deploy-row lifecycle. Its own daemon
+runs periodic OCI-worker GC with a 512 MB reserved floor, a 4 GB maximum-used
+target and a 5 GB host-free-space target. Those thresholds do not limit an
+active build, and BuildKit cache records never substitute for the deploy images
+that stop/start and rollback require.
 
 The data model behind publishing is documented in
 [projects, deploys and routing](deployment-model.md).

@@ -1,5 +1,13 @@
 debug = false
 
+# Bound the standalone daemon's cache without confusing it with Docker images.
+# These are periodic GC targets rather than a hard quota during an active build.
+[worker.oci]
+  gc = true
+  reservedSpace = "512MB"
+  maxUsedSpace = "4GB"
+  minFreeSpace = "5GB"
+
 # There are no [registry."..."] sections here any more.
 #
 # They existed because the build pushed to a local plain-HTTP registry and

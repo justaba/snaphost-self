@@ -95,7 +95,8 @@ repository endpoints over HTTP.
 - Archive extraction rejects traversal and link escapes.
 - User and generated Dockerfiles are validated against separate configured
   base-image policies; untagged and latest images are rejected.
-- BuildKit is rootless and has its own resource limits and cache volume.
+- BuildKit is rootless and has its own resource limits and GC-managed cache
+  volume.
 - Short-lived Git credentials stay in process memory and are deleted after use.
 - No vulnerability scanner is bundled or run during builds. This self-hosted
   installation treats submitted source and selected base images as code trusted
@@ -153,7 +154,6 @@ Do not rely on the retired cloud-router documentation.
 
 ## Known gaps
 
-- The BuildKit cache volume is not reclaimed; deploy images now are.
 - a failed deploy cannot be retried from the panel; the only way forward is
   deploying the project again.
 - Transient build failures have no retry budget.

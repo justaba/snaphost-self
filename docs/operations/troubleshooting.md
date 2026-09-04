@@ -144,8 +144,22 @@ checked and removed counts, and look for failed to remove deploy image above it.
 The two sweeps are independent, so an expiry failure does not explain an image
 one, and neither does the reverse. Do not automate docker image prune: a
 blanket prune also removes the images of running and alias-published deploys.
-docker builder prune is the manual step for the BuildKit cache, which nothing
-reclaims.
+
+BuildKit manages its separate cache automatically against the configured
+512 MB reserved, 4 GB maximum-used and 5 GB free-space targets. Inspect the
+effective policy and current usage from the daemon that owns them:
+
+~~~bash
+docker compose -f infra/docker-compose.yml exec -T buildkitd \
+  buildctl --addr tcp://127.0.0.1:1234 debug workers --verbose
+docker compose -f infra/docker-compose.yml exec -T buildkitd \
+  buildctl --addr tcp://127.0.0.1:1234 du
+~~~
+
+These are periodic GC targets, not an active-build quota. If disk pressure
+cannot wait for the next sweep, `buildctl prune --all` through the same service
+removes only BuildKit cache and makes subsequent builds cold. `docker builder
+prune` targets Docker's builder, not this standalone daemon.
 
 ## Deleting a project is refused
 

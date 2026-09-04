@@ -79,6 +79,13 @@ The command:
 7. installs the stable command as `/usr/local/sbin/snaphostctl`;
 8. prints the generated operator password once.
 
+The installed BuildKit daemon manages its cache with three explicit targets:
+it retains at least 512 MB, starts broader reclamation above 4 GB, and tries to
+leave 5 GB free on the host filesystem. GC is periodic, so this is not a hard
+quota during an active build. Every deploy and rollback recreates BuildKit; on
+deploy that happens before migrations, so a policy change in the checked-out
+release takes effect instead of waiting for a host reboot.
+
 Store that password immediately, sign in, and change it in the panel. The
 change revokes the bootstrap password and other sessions. The original value
 can remain in Docker's retained container log, so treat the password change as
@@ -134,6 +141,10 @@ and invokes that tag's `infra/deploy.sh`. A failed deploy restores the original
 checkout and profile. A successful deploy refreshes the systemd units and the
 stable `/usr/local/sbin/snaphostctl` copy from the new release.
 
+Upgrade and rollback restart both BuildKit and the control plane. Run them when
+no application build is active; an in-flight build cannot survive either
+daemon restart.
+
 Do not edit or pull the checkout manually between releases. Operator
 customization belongs in the ignored `env/` directory or in a maintained fork
 with its own release tags and image prefix.
@@ -180,12 +191,17 @@ curl --fail http://127.0.0.1:8080/health
 sudo systemctl status snaphost-backup.timer
 sudo cat /opt/snaphost/state/current.env
 sudo git -C /opt/snaphost describe --tags --exact-match HEAD
+sudo docker compose \
+  --project-name snaphost \
+  --env-file /opt/snaphost/env/production.env \
+  -f /opt/snaphost/infra/docker-compose.prod.yml \
+  exec -T buildkitd buildctl --addr tcp://127.0.0.1:1234 du
 ~~~
 
-The last two commands must name the same release as `SNAPHOST_VERSION` in
-`env/production.env`. Also verify panel login through HTTPS, an anonymous 401
-from a protected API, a real project build, off-host backup delivery, and the
-external monitor.
+The state-file and Git commands must name the same release as
+`SNAPHOST_VERSION` in `env/production.env`. Also verify panel login through
+HTTPS, an anonymous 401 from a protected API, a real project build, off-host
+backup delivery, and the external monitor.
 
 Important paths:
 

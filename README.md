@@ -27,8 +27,6 @@ Current limitations that matter operationally:
   are future work;
 - Caddy is the chosen production edge, but the Docker/Caddy integration and
   installation flow are not implemented yet; local development uses Traefik;
-- the BuildKit cache volume is not reclaimed automatically, although deploy
-  images now are;
 - managed databases and application authentication are not implemented.
 
 ## Architecture
@@ -58,6 +56,11 @@ browser / API client
 The local Compose topology has three services: `snaphost`, rootless `buildkitd`
 and Traefik. The production manifest has `snaphost` and `buildkitd`; its edge is
 currently a host prerequisite rather than part of the product.
+
+The standalone BuildKit cache is automatically garbage-collected in both
+topologies. Its configured targets retain at least 512 MB of warm cache, start
+broader reclamation above 4 GB, and react when host free space falls below
+5 GB. These are periodic GC targets, not a hard quota during an active build.
 
 See [the architecture overview](docs/architecture/overview.md) and
 [deployment lifecycle](docs/architecture/deploy-lifecycle.md) for the detailed

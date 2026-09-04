@@ -52,10 +52,10 @@ At minimum alert on:
 - container and host memory pressure during builds;
 - TLS expiry once an edge is installed.
 
-Deploy expiry now removes the image as well as the container, so the disk
-signal that matters has shifted. Watch the BuildKit cache volume, which nothing
-reclaims, and watch for images that stay queued: a deploy with an image_ref, a
-terminal status and a null image_deleted_at is cleanup the watchdog owes and
+Deploy expiry now removes the image as well as the container, while BuildKit
+periodically manages its own cache against 512 MB reserved, 4 GB maximum-used
+and 5 GB free-space targets. Watch both mechanisms: a deploy with an image_ref,
+a terminal status and a null image_deleted_at is cleanup the watchdog owes and
 has not managed. A count that only grows means the daemon is refusing removals.
 
 ~~~bash
@@ -82,6 +82,8 @@ Useful incident commands:
 ~~~bash
 docker compose -f infra/docker-compose.yml ps
 docker compose -f infra/docker-compose.yml logs --since 30m snaphost buildkitd
+docker compose -f infra/docker-compose.yml exec -T buildkitd \
+  buildctl --addr tcp://127.0.0.1:1234 du
 docker stats --no-stream
 docker system df
 ~~~
@@ -89,8 +91,9 @@ docker system df
 Do not run broad Docker prune commands as an automatic response. The platform
 reclaims the images of terminal deploys itself; a blanket prune also removes
 the images of running and alias-published deploys, which is a site taken down
-rather than disk recovered. docker builder prune is the safe one, and it is
-manual because nothing tracks what the cache is worth.
+rather than disk recovered. BuildKit GC is automatic and isolated to its own
+cache. In an emergency, run `buildctl prune --all` inside the `buildkitd`
+service, understanding that the next builds will be cold.
 
 ## Backup heartbeat
 

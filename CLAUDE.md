@@ -463,8 +463,12 @@ starting two containers for a row that records one, and it is why
 claim must call `AbandonRestart`: nothing sweeps `provisioning`, so a leaked
 claim leaves the deploy looking like it is starting forever.
 
-Nothing removes the BuildKit cache; that is still a manual `docker builder
-prune`.
+BuildKit owns its cache separately from Docker images. Both daemon configs
+enable automatic OCI-worker GC with `reservedSpace = "512MB"`,
+`maxUsedSpace = "4GB"` and `minFreeSpace = "5GB"`. These are periodic targets,
+not a hard quota during an active build. Inspect or emergency-prune this daemon
+with `buildctl` inside the `buildkitd` service; `docker builder prune` targets
+Docker's builder and is the wrong ownership boundary here.
 
 ## Projects, deploys and domains
 
@@ -500,7 +504,7 @@ do not reintroduce the former service webhook API to implement it.
   prunes on a retention policy that never touches a dump the deployment state
   references.
 
-Changing any of those means running `infra/tests/deploy_test.sh` (55 tests),
+Changing any of those means running `infra/tests/deploy_test.sh` (57 tests),
 `infra/tests/backup_test.sh` (41) and, for the host release contract,
 `infra/tests/snaphostctl_test.sh` (22). They need GNU coreutils and
 `flock`, so on Windows run them in a Linux container. Their fakes are part of the
@@ -511,8 +515,6 @@ because a `rollback_to` naming seven deleted services once passed the suite.
 
 Written down rather than fixed, so nobody rediscovers them:
 
-- **The BuildKit cache still grows without bound.** Deploy images are reclaimed
-  now; the build cache volume is not, and nothing measures it.
 - **A failed deploy cannot be retried from the panel.** Its image was never
   usable and the sweep reclaims it, so the only way forward is deploying the
   project again. The button that used to say «Перезапустить» called an endpoint

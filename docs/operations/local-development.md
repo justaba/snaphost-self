@@ -50,6 +50,18 @@ make dev-backend starts only snaphost and BuildKit. Generated deploy URLs then
 have no local edge even though runtime creation and probing still work through
 the Docker network.
 
+BuildKit periodically garbage-collects its separate cache volume. The policy
+retains at least 512 MB, starts broader reclamation above 4 GB, and tries to
+leave 5 GB free on the host filesystem. Inspect current cache records with:
+
+~~~bash
+docker compose -f infra/docker-compose.yml exec -T buildkitd \
+  buildctl --addr tcp://127.0.0.1:1234 du
+~~~
+
+The thresholds are not a hard quota while a build is running. `make clean`
+still removes the whole development volume.
+
 ## First login
 
 On the first start against an empty SQLite volume, the application creates the

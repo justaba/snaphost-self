@@ -424,7 +424,10 @@ check_stable_container() {
 rollout() {
   local service
   for service in "${INFRA_SERVICES[@]}"; do
-    action "update $service" compose up -d --no-deps "$service"
+    # Bind-mounted daemon configuration is not part of Compose's container
+    # hash. Recreate infrastructure so a release that changes buildkitd.toml
+    # actually applies it instead of waiting for the next host reboot.
+    action "update $service" compose up -d --no-deps --force-recreate "$service"
     wait_health "$service"
   done
 
@@ -471,7 +474,7 @@ rollback_to() {
   TARGET_VERSION=$version
   # Roll back the same manifest-derived service list used for rollout.
   for service in "${EXPECTED_SERVICES[@]}"; do
-    action "rollback $service" compose up -d --no-deps "$service" || return 1
+    action "rollback $service" compose up -d --no-deps --force-recreate "$service" || return 1
     wait_health "$service" || return 1
   done
   smoke || return 1

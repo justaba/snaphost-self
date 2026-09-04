@@ -1,6 +1,15 @@
 debug = false
 
-# Deliberately empty beyond the line above. Builds export into the local Docker
-# daemon rather than pushing to a registry, so there is no registry
-# configuration to get wrong here — and no insecure exception that could be
-# copied in from a development file.
+# The cache shares the host filesystem with Docker, SQLite and backups. These
+# are GC targets, not a hard quota during an active build: keep a useful warm
+# floor, start reclaiming above 4 GB, and reclaim earlier if the host would
+# otherwise fall below 5 GB free.
+[worker.oci]
+  gc = true
+  reservedSpace = "512MB"
+  maxUsedSpace = "4GB"
+  minFreeSpace = "5GB"
+
+# Builds export into the local Docker daemon rather than pushing to a registry,
+# so there is no registry configuration — and no insecure exception copied in
+# from a development file.

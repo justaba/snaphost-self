@@ -5,6 +5,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SCRIPT="$ROOT/infra/deploy.sh"
 DOCKERFILE="$ROOT/snaphost-backend/docker/Dockerfile"
 PROD_COMPOSE="$ROOT/infra/docker-compose.prod.yml"
+PROD_BUILDKIT_CONFIG="$ROOT/infra/buildkitd.prod.toml"
+DEV_BUILDKIT_CONFIG="$ROOT/infra/buildkitd.toml"
 RUNTIME_CONFIG="$ROOT/snaphost-backend/internal/runtime/config/config.go"
 VERSION=v1.2.3
 OLD_VERSION=v1.2.2
@@ -287,6 +289,32 @@ if sed -n '/^  control:$/,/^  data:$/p' "$PROD_COMPOSE" | grep -Fqx '    name: s
   pass 'production control network matches the host runtime network'
 else
   fail 'production control network matches the host runtime network'
+fi
+
+# BuildKit has its own cache volume; Docker image cleanup cannot see it. Keep
+# both supported Compose topologies on the same explicit, small-host policy so
+# neither silently falls back to BuildKit's much larger host-derived defaults.
+gc_configured=true
+for config in "$PROD_BUILDKIT_CONFIG" "$DEV_BUILDKIT_CONFIG"; do
+  grep -Fqx '[worker.oci]' "$config" || gc_configured=false
+  grep -Fqx '  gc = true' "$config" || gc_configured=false
+  grep -Fqx '  reservedSpace = "512MB"' "$config" || gc_configured=false
+  grep -Fqx '  maxUsedSpace = "4GB"' "$config" || gc_configured=false
+  grep -Fqx '  minFreeSpace = "5GB"' "$config" || gc_configured=false
+done
+if [[ "$gc_configured" == true ]]; then
+  pass 'BuildKit cache GC is bounded in development and production'
+else
+  fail 'BuildKit cache GC is bounded in development and production'
+fi
+
+# A bind-mounted config can change without changing Compose's service hash.
+# Both forward rollout and rollback must therefore recreate infrastructure or
+# an upgraded host keeps the old policy until an unrelated restart.
+if [[ $(grep -Fc -- '--force-recreate "$service"' "$SCRIPT") -eq 2 ]]; then
+  pass 'rollout and rollback apply infrastructure configuration changes'
+else
+  fail 'rollout and rollback apply infrastructure configuration changes'
 fi
 
 # Task 7 item 4: preflight asserts three variables, not forty-five. Everything

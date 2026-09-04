@@ -16,7 +16,7 @@ The Go job, from the single snaphost-backend module, runs:
 - golangci-lint v1.64.8 built with the job's Go toolchain.
 
 The shell job checks syntax and ShellCheck diagnostics for deployment, backup
-and operator scripts; runs the 55-scenario deployment, 41-scenario
+and operator scripts; runs the 57-scenario deployment, 41-scenario
 backup and 22-scenario install/upgrade suites; and verifies the systemd backup
 unit syntax.
 
@@ -83,10 +83,12 @@ infra/deploy.sh provides preflight, deploy and rollback operations. A deploy:
 3. records in-progress state;
 4. pulls the exact application image and records its digest;
 5. creates and verifies a transactional SQLite dump;
-6. runs the one-shot migrator;
-7. updates snaphost and waits for its Docker healthcheck;
-8. runs the optional public smoke check;
-9. pins the successful version through atomic replacements of `production.env`
+6. recreates BuildKit so bind-mounted daemon configuration from the release is
+   applied, then waits for its healthcheck;
+7. runs the one-shot migrator;
+8. updates snaphost and waits for its Docker healthcheck;
+9. runs the optional public smoke check;
+10. pins the successful version through atomic replacements of `production.env`
    and the current/previous state files.
 
 SHA arguments and `latest` are refused. For the first transition only, rollback

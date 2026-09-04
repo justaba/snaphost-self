@@ -11,14 +11,19 @@ command and checkout-aware upgrade/rollback implementation are done. A
 real install, login, local restore and 4 GB build-pressure paths. Public release
 artifacts, encrypted off-host restore and the 1 GB drill remain.
 
-Four pieces of work landed outside the numbered tasks. Two closed recorded
+Five pieces of work landed outside the numbered tasks. Three closed recorded
 gaps, one is the smallest useful part of Task 6, and one removed structure that
 Task 1 left behind rather than adding anything:
 
 - **Image reclamation.** The watchdog releases the local Docker image of any
   deploy that reaches a terminal status, and deploys.image_deleted_at records
   it. This was the top entry under "known gaps" in every architecture document
-  and is no longer one. The BuildKit cache volume is still unmanaged.
+  and is no longer one.
+- **Build cache reclamation.** Both standalone BuildKit configurations enable
+  automatic OCI-worker GC. The policy protects 512 MB of warm cache, starts
+  broader reclamation above 4 GB, and reacts below 5 GB of host free space.
+  Rollout and rollback recreate BuildKit so a changed bind-mounted policy is
+  applied immediately. This is intentionally separate from deploy-image GC.
 - **Operator actions on the dashboard, and no admin console.** The whole
   /api/v1/admin surface and its seven panel screens are deleted. They existed
   so one role could administer other people's accounts; a self-hosted install
