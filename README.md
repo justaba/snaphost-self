@@ -16,17 +16,18 @@ The single-binary architecture is implemented and tested. A versioned
 first-install, checkout-aware upgrade and coordinated rollback command now
 exist, with the operator procedure in the
 [install and upgrade runbook](docs/operations/install-and-upgrade.md). The
-project is still **not production-ready**: that path has not been rehearsed on
-a fresh real VPS, and the production routing edge described below is not done.
-The remaining proof is tracked in
+project is still **not production-ready**: the install path has only a partial
+VPS rehearsal, and public DNS/ACME acceptance is not done. The remaining work is tracked in
+[Task 4](docs/tasks/planned/0004-production-edge.md) and
 [Task 7](docs/tasks/planned/0007-install-and-upgrade.md).
 
 Current limitations that matter operationally:
 
 - deployed sites are previews with a TTL; long-lived environments and volumes
   are future work;
-- Caddy is the chosen production edge, but the Docker/Caddy integration and
-  installation flow are not implemented yet; local development uses Traefik;
+- Compose now installs Caddy and the application-side routing/TLS authorization
+  adapters, but real public DNS/ACME proof and the generated-host certificate
+  strategy remain; local development uses Traefik;
 - managed databases and application authentication are not implemented.
 
 ## Architecture
@@ -37,6 +38,9 @@ runtime were removed.
 
 ```text
 browser / API client
+        |
+        v
+       Caddy
         |
         v
   snaphost binary
@@ -54,8 +58,10 @@ browser / API client
 ```
 
 The local Compose topology has three services: `snaphost`, rootless `buildkitd`
-and Traefik. The production manifest has `snaphost` and `buildkitd`; its edge is
-currently a host prerequisite rather than part of the product.
+and Traefik. The production manifest has `snaphost`, rootless `buildkitd` and a
+pinned Caddy service. Caddy alone publishes 80/443 and consumes two internal
+listeners for dynamic routing and certificate authorization without receiving
+the Docker socket.
 
 The standalone BuildKit cache is automatically garbage-collected in both
 topologies. Its configured targets retain at least 512 MB of warm cache, start
@@ -146,8 +152,10 @@ snaphostctl upgrade [vMAJOR.MINOR.PATCH]
 snaphostctl rollback [--dry-run]
 ```
 
-The installer does not solve the unfinished Caddy/generated-domain edge. A
-production operator must provide HTTPS and routing as an explicit prerequisite.
+The installer starts the pinned Compose Caddy service and persists its state
+below `/opt/snaphost/state/caddy`. The operator must point the panel hostname,
+generated-host wildcard and custom-domain traffic at the VPS; see the
+[custom-domain runbook](docs/operations/custom-domains.md).
 
 ## Relationship to upstream
 

@@ -16,9 +16,10 @@ The Go job, from the single snaphost-backend module, runs:
 - golangci-lint v1.64.8 built with the job's Go toolchain.
 
 The shell job checks syntax and ShellCheck diagnostics for deployment, backup
-and operator scripts; runs the 57-scenario deployment, 41-scenario
-backup and 22-scenario install/upgrade suites; and verifies the systemd backup
-unit syntax.
+and operator scripts; runs the 60-scenario deployment, 41-scenario
+backup and 26-scenario install/upgrade suites; and verifies the systemd backup
+unit syntax. It also renders the real production Compose file and validates the
+production Caddyfile with the pinned Caddy 2.10.2 image.
 
 After those jobs pass, one Docker image is built. On main it is published as:
 
@@ -62,13 +63,16 @@ infra/docker-compose.prod.yml runs:
 
 - snaphost from an exact GHCR semantic-version tag;
 - snaphost-migrate as a profile-only one-shot using the same SQLite volume;
-- rootless buildkitd.
+- rootless buildkitd;
+- digest-pinned Caddy 2.10.2.
 
-The manifest publishes only the application port. TLS, firewall policy and the
-routing edge are host prerequisites. It contains no PostgreSQL, Redis, registry
-or Traefik service. The application has an in-container `/health` healthcheck;
-the deploy script waits for Docker to report `healthy` and does not accept a
-merely running process as ready.
+The manifest publishes the application recovery port on loopback. Caddy alone
+publishes 80/443 and sends routing and certificate-authorization requests to
+internal application listeners over the control network; it has no Docker
+socket. The manifest contains no PostgreSQL, Redis, registry or Traefik
+service. The application has an in-container `/health`
+healthcheck; the deploy script waits for Docker to report `healthy` and does
+not accept a merely running process as ready.
 
 The production env example requires three operator decisions and documents
 optional overrides. Application defaults remain in Go rather than being copied

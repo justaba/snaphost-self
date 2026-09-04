@@ -23,7 +23,7 @@ import (
 func TestProbeDialsTheSharedNetwork(t *testing.T) {
 	networks := map[string]*network.EndpointSettings{
 		"snaphost-deploy-096abf84": {IPAddress: "172.21.0.2"},
-		config.TraefikNetwork:      {IPAddress: "172.20.0.7"},
+		config.RoutingNetwork:      {IPAddress: "172.20.0.7"},
 	}
 
 	for i := 0; i < 200; i++ {
@@ -55,7 +55,7 @@ func TestProbeFallbackIsDeterministic(t *testing.T) {
 
 func TestProbeSkipsEndpointsWithNoAddress(t *testing.T) {
 	networks := map[string]*network.EndpointSettings{
-		config.TraefikNetwork: {IPAddress: ""},
+		config.RoutingNetwork: {IPAddress: ""},
 		"snaphost-deploy-x":   nil,
 		"late-attach":         {IPAddress: "172.31.0.3"},
 	}

@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-09-02
+Updated: 2026-09-04
 
 snaphost-self builds a Git repository or uploaded archive into a Docker image
 and runs it on the same Docker host. It is a single-operator application, not a
@@ -14,13 +14,16 @@ multi-tenant billing platform.
 browser / API client
         |
         v
+  Compose Caddy edge
+        |
+        v
 +---------------------- snaphost process ----------------------+
 | Gin HTTP API and WebSocket logs                              |
 | local sessions, API keys and Casbin RBAC                     |
 | projects, deploys, custom domains and durable saga state     |
 | build queue, project detection, Dockerfile generation        |
 | Docker runtime, liveness probe and TTL watchdog              |
-| embedded React operator panel                                |
+| embedded React operator panel and production edge adapters  |
 +-----------------------+-------------------+-------------------+
                         |                   |
                         v                   v
@@ -39,7 +42,8 @@ External infrastructure is deliberately small:
 - Docker owns images, networks and running user containers;
 - BuildKit performs builds;
 - local development uses Traefik to route generated hostnames;
-- the production edge is not yet a portable, integrated part of the product.
+- Compose Caddy terminates production TLS and calls separate proxy and
+  certificate-authorization listeners over the internal control network.
 
 PostgreSQL, Redis, a local image registry, Supabase, Terraform, billing and the
 cloud runtime are not part of the current system.
@@ -75,8 +79,11 @@ contract:
 3. session/API-key authentication, Casbin, identity enrichment and upload limit;
 4. public API handlers under /api/v1.
 
-There is no service-to-service HTTP API. `/internal/*` remains unrouted so a
-package boundary cannot accidentally become a privileged network boundary.
+There is no general service-to-service HTTP API. `/internal/*` remains unrouted
+so a package boundary cannot accidentally become a privileged network
+boundary. The production edge listeners are separate servers with only their
+single-purpose handlers; they are reachable by Compose Caddy over the control
+network and are not published on the host.
 
 The panel middleware must run before authentication so the login page is
 reachable. It never claims API, WebSocket, health or metrics paths, so
@@ -88,12 +95,14 @@ Local Compose runs three services: snaphost, buildkitd and Traefik. The
 application mounts the host Docker socket and joins the shared snaphost-net
 network used by deployed containers.
 
-The current production manifest runs snaphost plus buildkitd and expects an
-edge on the host. It publishes one application image pinned to an exact SemVer
-tag. `infra/snaphostctl` installs it from `/opt/snaphost`, checks out release
-tags for upgrades and keeps runtime, state and checkout aligned on rollback.
-Task 7 still requires real-host rehearsal; Task 4 owns the missing production
-edge.
+The current production manifest runs snaphost, buildkitd and pinned Caddy. Caddy
+is the only service publishing 80/443; the application publishes only a
+loopback recovery port and exposes its edge listeners inside the control
+network.
+`infra/snaphostctl` installs it from `/opt/snaphost`, checks out release tags
+for upgrades and keeps runtime, state and checkout aligned on rollback. Task 7
+still has real-host acceptance work; Task 4 owns the generated-certificate
+policy and public DNS/ACME proof.
 
 See [packages and external components](services.md),
 [deploy lifecycle](deploy-lifecycle.md), and [security](security.md).

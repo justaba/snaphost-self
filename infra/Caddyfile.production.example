@@ -1,19 +1,39 @@
-# No production Caddy configuration is currently shipped.
+# Production Caddy edge, run by docker-compose.prod.yml.
 #
-# The old cloud-router example does not apply to the local Docker runtime.
-#
-# Task 4 must implement and document all of the following before this becomes a
-# real example:
-#
-# 1. serve the embedded panel and API from the snaphost process;
-# 2. serve generated DOMAIN_SUFFIX hosts by resolving their running Docker
-#    containers;
-# 3. authorize on-demand certificates only for verified custom_domains rows;
-# 4. route a verified custom hostname to its alias target;
-# 5. define a narrow edge-to-application authorization contract without
-#    exposing a general service-to-service API.
-#
-# See docs/operations/custom-domains.md and
-# docs/decisions/0007-custom-domain-tls-edge.md.
-#
-# This comments-only file is intentionally not installable.
+# Required environment:
+#   SNAPHOST_CONTROL_DOMAIN  panel/API hostname, on a different registrable
+#                            domain from generated deploys
+#   SNAPHOST_ACME_EMAIL      operator's ACME account email
+{
+	email {$SNAPHOST_ACME_EMAIL}
+
+	# Standard Caddy ask sends GET ?domain=<SNI>. The dedicated internal
+	# listener answers 2xx only when SQLite resolves that exact generated host
+	# or verified custom-domain alias to a running deploy.
+	on_demand_tls {
+		ask http://snaphost:8082/tls/ask
+	}
+}
+
+# The control plane has a known hostname, so Caddy provisions it normally and
+# never consults the on-demand gate.
+{$SNAPHOST_CONTROL_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy snaphost:8080
+}
+
+# Generated hosts and verified custom domains share one data-plane path. The
+# monolith resolves Host on every request, so publishing or rolling back an
+# alias needs neither a Caddy reload nor Docker labels for that custom domain.
+https:// {
+	tls {
+		on_demand
+	}
+
+	reverse_proxy snaphost:8081 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto https
+	}
+
+	log
+}

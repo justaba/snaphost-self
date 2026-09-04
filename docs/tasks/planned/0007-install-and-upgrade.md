@@ -110,16 +110,19 @@ derivable from the code.
 3. [x] **An `install` path.** `infra/snaphostctl install <version>` validates a
    clean checkout at the exact release tag, creates protected env/state/backup
    directories, derives the Docker socket group, installs the BuildKit
-   AppArmor profile, deploys, installs the backup timer and a stable CLI copy,
-   and prints the generated operator password. A failed pre-migration first
+   AppArmor profile, starts the Compose-managed Caddy edge, installs database
+   and TLS backup units plus a stable CLI copy, and prints the generated
+   operator password. A failed pre-migration first
    deploy can resume without rewriting the protected env file. The first VPS
    rehearsal exposed self-rejection of the full env template and a four-CPU
    default on a two-CPU machine; the installer now covers both cases.
 
-4. [x] **Shrink the environment surface.** `preflight` requires three variables
-   where it required forty-five: `SNAPHOST_VERSION`, `DOMAIN_SUFFIX` and
-   `OPENROUTER_API_KEY`. Nothing else has a value that could only come from an
-   operator.
+4. [x] **Shrink the environment surface.** `preflight` initially required
+   three variables where it required forty-five. Compose Caddy makes two more
+   genuine operator decisions mandatory: `SNAPHOST_CONTROL_DOMAIN` and
+   `SNAPHOST_ACME_EMAIL`. The required set is therefore five:
+   `SNAPHOST_VERSION`, `DOMAIN_SUFFIX`, `OPENROUTER_API_KEY`, the control domain
+   and ACME email.
 
    **No Go changed, and the reason is worth recording.** The item assumed this
    would touch the config packages; it did not, because they already treat an
@@ -152,7 +155,7 @@ derivable from the code.
    passed to the container. Without them a production install refused every
    custom-domain attach with 503, whatever the operator configured.
 
-   `.env.production.example` is now 129 lines of which three are decisions; the
+   `.env.production.example` now has five required decisions; the
    rest are commented-out defaults with the reasoning next to them.
 
    The counts had already come down from 179 and fifty-nine before this item
@@ -180,7 +183,7 @@ derivable from the code.
    `deploy.sh` waits specifically for `healthy` rather than treating a merely
    running container as ready. The suite has explicit cross-file regression
    checks for that contract and the host-visible runtime network, and now
-   covers 55 scenarios.
+   covers 60 scenarios.
 
    The outer `snaphostctl` command now owns the host and Git lifecycle.
    `upgrade` fetches tags and `origin/main`, rejects dirty/skewed/downgrade/
@@ -188,7 +191,8 @@ derivable from the code.
    checks out the target and invokes that release's deploy engine. A failed
    deploy restores the original checkout and AppArmor profile. `rollback`
    moves runtime, state, checkout, AppArmor and systemd together; its dry-run
-   is read-only. The separate suite covers 22 scenarios.
+   is read-only. The separate suite covers 26 scenarios, including occupied
+   public ports, domain isolation and migration of a pre-edge env file.
 
 6. [x] **How the manifest reaches the operator: a `git clone` at the version
    tag.** Settled with the version model above. Every path in `deploy.sh` and
@@ -208,8 +212,8 @@ derivable from the code.
    [monitoring.md](../../operations/monitoring.md) and
    [deployment-model.md](../../architecture/deployment-model.md) are edited. A
    [install-and-upgrade.md](../../operations/install-and-upgrade.md) is the new
-   product front door and explicitly records the incomplete edge and real-host
-   proof boundary.
+   product front door and explicitly records the Compose-managed edge and
+   real-host proof boundary.
 
 ## What survives, what changes, what goes
 
@@ -228,9 +232,10 @@ and production manifest are now settled inputs. This task can change the
 release model and shrink the environment surface once instead of tracking a
 moving multi-service collapse.
 
-Task 4 may still change the edge artifacts, but that is not a reason to keep
-installation blocked: Task 7 must define an explicit edge prerequisite and can
-hand the final integrated Caddy configuration to Task 4 when it lands.
+Task 4 now provides the application-side edge contract and Caddyfile, while
+Task 7 installs their pinned Compose Caddy lifecycle. Task 4 still owns the
+generated-host certificate strategy and public DNS/ACME proof; those do not
+block the already implemented release install, upgrade and rollback contract.
 
 ## Acceptance criteria
 

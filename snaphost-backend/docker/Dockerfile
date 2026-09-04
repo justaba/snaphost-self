@@ -100,7 +100,7 @@ COPY internal/httpapi/rbac_policy.csv /etc/snaphost/rbac_policy.csv
 ENV RBAC_MODEL_PATH=/etc/snaphost/rbac_model.conf \
     RBAC_POLICY_PATH=/etc/snaphost/rbac_policy.csv
 
-EXPOSE 8080
+EXPOSE 8080 8081 8082
 USER snaphost:snaphost
 
 ENTRYPOINT ["/snaphost"]

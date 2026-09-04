@@ -11,21 +11,24 @@ owns one Git checkout at `/opt/snaphost`; its checked-out tag, the application
 image, `env/production.env` and `state/current.env` must all name the same exact
 release. `snaphostctl` enforces that invariant before it changes the host.
 
-The installer brings up the control plane and BuildKit. It does not install or
-configure the production routing edge. Until the Caddy work is complete, the
-operator must supply HTTPS for the panel and routing for generated/custom
-domains. A temporary plain-HTTP panel is possible only through an explicit,
-insecure opt-in described below.
+The installer brings up the control plane, BuildKit and a digest-pinned Caddy
+service. Caddy is the only component that publishes 80/443; it reaches the
+application routing and TLS authorization listeners only through the Compose
+control network. A temporary plain-HTTP panel is possible only through an
+explicit, insecure opt-in described below.
 
 ## Host prerequisites
 
 - a systemd Linux host with AppArmor and `apparmor_parser`; the supplied
   rootless-BuildKit profile targets Ubuntu 24.04;
 - Docker Engine 24 or newer, Docker Compose v2, and a running Docker daemon;
-- Git, GNU coreutils, `awk`, `sed`, `grep`, `flock` and `curl`;
+- Git, GNU coreutils, `awk`, `sed`, `grep`, `flock`, `curl` and `ss` from
+  iproute2;
 - root access for the install, AppArmor profile and systemd timer;
-- outbound HTTPS to GitHub and the public GHCR package;
-- DNS and an HTTPS reverse proxy supplied by the operator.
+- outbound HTTPS to GitHub, the public GHCR package and ACME endpoints;
+- TCP ports 80/443 and UDP port 443 free for Compose Caddy;
+- operator-controlled DNS for a panel hostname and a generated-site suffix on
+  separate registrable domains.
 
 There is not yet a supported minimum RAM claim. A 4 GB host completed the
 recorded cold Node build with 997.2 MiB of host memory in use at peak, but 1 GB
@@ -56,26 +59,37 @@ For a non-interactive install behind an HTTPS edge:
 ~~~bash
 sudo env \
   SNAPHOST_INSTALL_DOMAIN_SUFFIX=apps.example.net \
-  SNAPHOST_INSTALL_OPERATOR_EMAIL=operator@example.net \
+  SNAPHOST_INSTALL_CONTROL_DOMAIN=panel.example.org \
+  SNAPHOST_INSTALL_OPERATOR_EMAIL=operator@example.org \
+  SNAPHOST_INSTALL_ACME_EMAIL=acme@example.org \
   SNAPHOST_INSTALL_OPENROUTER_KEY_FILE=/root/snaphost-openrouter.key \
-  SNAPHOST_INSTALL_PUBLIC_URL=https://panel.example.net \
+  SNAPHOST_INSTALL_PUBLIC_URL=https://panel.example.org \
   /opt/snaphost/infra/snaphostctl install "$VERSION"
 ~~~
 
-Omit `SNAPHOST_INSTALL_OPERATOR_EMAIL` to use `operator@localhost`. Omit
+When the operator email is set, `SNAPHOST_INSTALL_ACME_EMAIL` may be omitted to
+reuse it. Omit `SNAPHOST_INSTALL_OPERATOR_EMAIL` to use `operator@localhost`.
+The panel hostname and generated suffix must not share their final two DNS
+labels; this conservative installer rule prevents accidental cookie-domain
+overlap without embedding a stale Public Suffix List. Omit
 `SNAPHOST_INSTALL_PUBLIC_URL` when HTTPS is not ready; the deploy then performs
-only its internal readiness check. An interactive terminal may omit the domain
-and key-file variables and answer the prompts instead.
+only its internal readiness check while Caddy waits for DNS. An interactive
+terminal may omit the domain, ACME-email and key-file variables and answer the
+prompts instead.
 
 The command:
 
 1. refuses a dirty checkout or a checkout not at the requested tag;
-2. writes `/opt/snaphost/env/production.env` with mode `0600`;
+2. refuses a fresh install while TCP 80/443 or UDP 443 is already occupied,
+   then writes `/opt/snaphost/env/production.env` with mode `0600`;
 3. derives the numeric group of `/var/run/docker.sock` and a BuildKit CPU limit
    that does not exceed the host CPU count;
 4. installs and reloads the BuildKit AppArmor profile;
-5. pulls the exact version, migrates SQLite and waits for Docker health;
-6. installs and starts `snaphost-backup.timer`;
+5. creates protected persistent Caddy state, pulls the exact version, migrates
+   SQLite and waits for snaphost and Caddy health;
+6. installs the database and TLS backup units and starts
+   `snaphost-backup.timer`; the private-key-bearing TLS timer remains disabled
+   until encrypted off-host backup is configured;
 7. installs the stable command as `/usr/local/sbin/snaphostctl`;
 8. prints the generated operator password once.
 
@@ -100,13 +114,20 @@ deleting it.
 
 To set optional values before first start, copy
 `infra/.env.production.example` to `/opt/snaphost/env/production.env`, edit it,
-and keep it mode `0600`. Set the requested exact version and all three required
+and keep it mode `0600`. Set the requested exact version and all five required
 values. `snaphostctl install` recognizes that protected file as an incomplete
 install, derives `DOCKER_SOCKET_GID`, and continues without overwriting it.
 
-The default published address is `0.0.0.0:8080`. Restrict it with
-`SNAPHOST_BIND_ADDRESS=127.0.0.1` when the reverse proxy is on the same host,
-and enforce the same restriction in the host firewall.
+The application recovery port defaults to `127.0.0.1:8080`. Caddy owns public
+80/443. Do not publish the recovery port externally in production; keep the
+same restriction in the host firewall.
+
+The application edge proxy on 8081 and TLS authorization gate on 8082 are
+container-side contracts only. Compose Caddy reaches `snaphost:8081` and
+`snaphost:8082`; neither port is published on the host. Its persistent state is
+under `/opt/snaphost/state/caddy`, and deploy/upgrade/rollback recreate Caddy
+after the selected backend is healthy. The full behavior and remaining
+limitations are in [custom domains](custom-domains.md).
 
 For a short-lived plain-HTTP evaluation only, both the URL and the explicit
 opt-in are required:
@@ -114,6 +135,8 @@ opt-in are required:
 ~~~bash
 sudo env \
   SNAPHOST_INSTALL_DOMAIN_SUFFIX=apps.example.net \
+  SNAPHOST_INSTALL_CONTROL_DOMAIN=panel.example.org \
+  SNAPHOST_INSTALL_ACME_EMAIL=acme@example.org \
   SNAPHOST_INSTALL_OPENROUTER_KEY_FILE=/root/snaphost-openrouter.key \
   SNAPHOST_INSTALL_PUBLIC_URL=http://192.0.2.10:8080 \
   SNAPHOST_INSTALL_ALLOW_HTTP=true \
@@ -141,9 +164,11 @@ and invokes that tag's `infra/deploy.sh`. A failed deploy restores the original
 checkout and profile. A successful deploy refreshes the systemd units and the
 stable `/usr/local/sbin/snaphostctl` copy from the new release.
 
-Upgrade and rollback restart both BuildKit and the control plane. Run them when
-no application build is active; an in-flight build cannot survive either
-daemon restart.
+Upgrade and rollback restart BuildKit, the control plane and Caddy. Run them
+when no application build is active; an in-flight build cannot survive the
+daemon restart. Existing pre-edge installs must provide
+`SNAPHOST_INSTALL_CONTROL_DOMAIN` and `SNAPHOST_INSTALL_ACME_EMAIL` on their
+first upgrade so the command can add the new required settings.
 
 Do not edit or pull the checkout manually between releases. Operator
 customization belongs in the ignored `env/` directory or in a maintained fork
@@ -188,6 +213,7 @@ sudo docker compose \
   --env-file /opt/snaphost/env/production.env \
   -f /opt/snaphost/infra/docker-compose.prod.yml ps
 curl --fail http://127.0.0.1:8080/health
+curl --fail https://panel.example.org/health
 sudo systemctl status snaphost-backup.timer
 sudo cat /opt/snaphost/state/current.env
 sudo git -C /opt/snaphost describe --tags --exact-match HEAD
@@ -211,17 +237,19 @@ Important paths:
 | `/opt/snaphost/env/production.env` | protected application/release config |
 | `/opt/snaphost/env/backup.env` | optional protected backup credentials |
 | `/opt/snaphost/state` | deploy lock and current/previous/progress state |
+| `/opt/snaphost/state/caddy` | protected persistent ACME account, certificate and Caddy runtime state |
 | `/opt/snaphost/backups` | local SQLite dumps and checksums |
 | `/usr/local/sbin/snaphostctl` | stable operator command |
 | `/etc/apparmor.d/snaphost-buildkit-rootless` | installed BuildKit profile |
 | `/etc/systemd/system/snaphost-backup.*` | installed scheduled-backup units |
+| `/etc/systemd/system/snaphost-tls-backup.*` | installed TLS-state backup units; timer disabled until encryption is configured |
 
 ## Current proof boundary
 
 `infra/tests/snaphostctl_test.sh` exercises install, resume, protected secrets,
-HTTP opt-in, exact-tag upgrades, newest-version selection, downgrade and
-host CPU sizing, off-main refusal, failure compensation, dry-run and
-checkout-aware rollback.
+domain isolation, Caddy-state migration, HTTP opt-in, exact-tag upgrades,
+newest-version selection, downgrade and host CPU sizing, off-main refusal,
+failure compensation, dry-run and checkout-aware rollback.
 Those tests fake Git, Docker, AppArmor and systemd. The
 [2026-09-04 VPS rehearsal](rehearsals/2026-09-04-vps.md) adds real-host install,
 login, local restore, upgrade/rollback and 4 GB build-pressure evidence, and

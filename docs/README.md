@@ -1,7 +1,7 @@
 # Documentation
 
 Status: Current
-Updated: 2026-08-30
+Updated: 2026-09-04
 
 This directory describes snaphost-self after the single-binary collapse. The
 current code and Compose manifests are the final authority; a current document
@@ -28,8 +28,9 @@ that disagrees with them is a documentation defect.
 
 The versioned installation contract is implemented in `infra/snaphostctl` and
 documented in the install runbook. It still needs the real-host acceptance
-drills tracked by [Task 7](tasks/planned/0007-install-and-upgrade.md), and it
-does not make the incomplete production routing edge disappear.
+drills tracked by [Task 7](tasks/planned/0007-install-and-upgrade.md). The edge
+runtime and Compose Caddy lifecycle exist, but generated-host certificate
+policy and public DNS/ACME proof remain in [Task 4](tasks/planned/0004-production-edge.md).
 
 ## Decisions and work status
 

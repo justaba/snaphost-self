@@ -6,6 +6,7 @@ CHECKOUT_ROOT=${SNAPHOST_CHECKOUT_ROOT:-$INSTALL_ROOT}
 ENV_FILE=${SNAPHOST_ENV_FILE:-$INSTALL_ROOT/env/production.env}
 STATE_DIR=${SNAPHOST_STATE_DIR:-$INSTALL_ROOT/state}
 BACKUP_DIR=${SNAPHOST_BACKUP_DIR:-$INSTALL_ROOT/backups}
+CADDY_STATE_DIR=${SNAPHOST_CADDY_STATE_DIR:-$STATE_DIR/caddy}
 COMPOSE_FILE=${SNAPHOST_COMPOSE_FILE:-$INSTALL_ROOT/infra/docker-compose.prod.yml}
 COMPOSE_PROJECT=${SNAPHOST_COMPOSE_PROJECT:-snaphost}
 DOCKER_SOCKET=${SNAPHOST_DOCKER_SOCKET:-/var/run/docker.sock}
@@ -25,6 +26,8 @@ Usage: snaphostctl install <vMAJOR.MINOR.PATCH>
 
 Install input:
   SNAPHOST_INSTALL_DOMAIN_SUFFIX             generated-site domain suffix
+  SNAPHOST_INSTALL_CONTROL_DOMAIN            panel/API hostname
+  SNAPHOST_INSTALL_ACME_EMAIL                ACME account email (defaults to operator email)
   SNAPHOST_INSTALL_OPENROUTER_KEY_FILE       0400/0600 file containing the API key
   SNAPHOST_INSTALL_OPERATOR_EMAIL            optional operator email
   SNAPHOST_INSTALL_PUBLIC_URL                optional health/smoke URL
@@ -51,11 +54,19 @@ require_root() {
 
 require_tools() {
   local tool
-  for tool in docker git install realpath stat awk sed grep sort tail mktemp chmod chown mv mkdir dirname nproc apparmor_parser systemctl; do
+  for tool in docker git install realpath stat awk sed grep sort tail mktemp chmod chown mv mkdir dirname nproc ss apparmor_parser systemctl; do
     command -v "$tool" >/dev/null || die "required command is unavailable: $tool"
   done
   docker compose version >/dev/null || die "Docker Compose v2 is unavailable"
   docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
+}
+
+require_public_ports_free() {
+  local tcp udp
+  tcp=$(ss -H -ltn '( sport = :80 or sport = :443 )') || die "cannot inspect TCP listeners"
+  udp=$(ss -H -lun '( sport = :443 )') || die "cannot inspect UDP listeners"
+  [[ -z "$tcp" && -z "$udp" ]] || \
+    die "ports TCP 80/443 and UDP 443 must be free for Compose Caddy"
 }
 
 require_checkout() {
@@ -95,9 +106,12 @@ require_checkout_at_release() {
 host_artifacts_present() {
   [[ -x "$CHECKOUT_ROOT/infra/deploy.sh" ]] \
     && [[ -f "$CHECKOUT_ROOT/infra/docker-compose.prod.yml" ]] \
+    && [[ -f "$CHECKOUT_ROOT/infra/Caddyfile.production.example" ]] \
     && [[ -f "$CHECKOUT_ROOT/infra/apparmor/snaphost-buildkit-rootless" ]] \
     && [[ -f "$CHECKOUT_ROOT/infra/systemd/snaphost-backup.service" ]] \
-    && [[ -f "$CHECKOUT_ROOT/infra/systemd/snaphost-backup.timer" ]]
+    && [[ -f "$CHECKOUT_ROOT/infra/systemd/snaphost-backup.timer" ]] \
+    && [[ -f "$CHECKOUT_ROOT/infra/systemd/snaphost-tls-backup.service" ]] \
+    && [[ -f "$CHECKOUT_ROOT/infra/systemd/snaphost-tls-backup.timer" ]]
 }
 
 release_artifacts_present() {
@@ -187,6 +201,76 @@ validate_domain_suffix() {
     die "domain suffix must be a lowercase DNS name"
 }
 
+validate_edge_domains() {
+  local deploy_suffix=$1 control_domain=$2 deploy_tail control_tail
+  validate_domain_suffix "$control_domain"
+  [[ "$control_domain" != "$deploy_suffix" ]] || \
+    die "control domain must differ from the generated-site domain suffix"
+
+  # This deliberately applies a stricter, easily audited rule than trying to
+  # reproduce the changing Public Suffix List in Bash. Different final two
+  # labels guarantee separation for ordinary domains and conservatively reject
+  # ambiguous public-suffix cases such as co.uk.
+  deploy_tail=${deploy_suffix%.*}
+  deploy_tail=${deploy_tail##*.}.${deploy_suffix##*.}
+  control_tail=${control_domain%.*}
+  control_tail=${control_tail##*.}.${control_domain##*.}
+  [[ "$deploy_tail" != "$control_tail" ]] || \
+    die "control domain and generated-site suffix must not share their final two DNS labels"
+}
+
+ensure_edge_env() {
+  local suffix control email operator reserved cname
+  suffix=$(env_value DOMAIN_SUFFIX) || die "DOMAIN_SUFFIX is missing from production env"
+  control=$(env_value SNAPHOST_CONTROL_DOMAIN 2>/dev/null || true)
+  email=$(env_value SNAPHOST_ACME_EMAIL 2>/dev/null || true)
+  operator=$(env_value OPERATOR_EMAIL 2>/dev/null || true)
+
+  if [[ -z "$control" ]]; then
+    control=${SNAPHOST_INSTALL_CONTROL_DOMAIN:-}
+    if [[ -z "$control" ]]; then
+      [[ -t 0 ]] || die "SNAPHOST_INSTALL_CONTROL_DOMAIN is required to add the Compose Caddy edge"
+      read -r -p 'Panel/API hostname: ' control
+    fi
+    set_env_value SNAPHOST_CONTROL_DOMAIN "$control"
+  fi
+  validate_edge_domains "$suffix" "$control"
+
+  if [[ -z "$email" ]]; then
+    email=${SNAPHOST_INSTALL_ACME_EMAIL:-$operator}
+    if [[ -z "$email" ]]; then
+      [[ -t 0 ]] || die "SNAPHOST_INSTALL_ACME_EMAIL is required to add the Compose Caddy edge"
+      read -r -p 'ACME account email: ' email
+    fi
+    set_env_value SNAPHOST_ACME_EMAIL "$email"
+  fi
+  [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "ACME email is invalid"
+
+  reserved=$(env_value RESERVED_DOMAINS 2>/dev/null || true)
+  if [[ ",${reserved}," != *",${control},"* ]]; then
+    if [[ -n "$reserved" ]]; then
+      set_env_value RESERVED_DOMAINS "${reserved},${control}"
+    else
+      set_env_value RESERVED_DOMAINS "$control"
+    fi
+  fi
+  cname=$(env_value DOMAIN_CNAME_TARGET 2>/dev/null || true)
+  [[ -n "$cname" ]] || set_env_value DOMAIN_CNAME_TARGET "$control"
+}
+
+validate_installed_edge_env() {
+  local suffix control email configured
+  suffix=$(env_value DOMAIN_SUFFIX) || die "DOMAIN_SUFFIX is missing from production env"
+  control=$(env_value SNAPHOST_CONTROL_DOMAIN) || die "SNAPHOST_CONTROL_DOMAIN is missing from production env"
+  email=$(env_value SNAPHOST_ACME_EMAIL) || die "SNAPHOST_ACME_EMAIL is missing from production env"
+  [[ -n "$control" && -n "$email" ]] || die "installed Caddy edge configuration is incomplete"
+  validate_edge_domains "$suffix" "$control"
+  [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "ACME email is invalid"
+  configured=$(env_value SNAPHOST_CADDY_STATE_DIR 2>/dev/null || true)
+  CADDY_STATE_DIR=${configured:-$CADDY_STATE_DIR}
+  validate_caddy_state_path "$CADDY_STATE_DIR"
+}
+
 validate_public_url() {
   local value=$1
   [[ -z "$value" ]] && return
@@ -201,7 +285,9 @@ validate_public_url() {
 
 read_install_inputs() {
   INSTALL_DOMAIN_SUFFIX=${SNAPHOST_INSTALL_DOMAIN_SUFFIX:-}
+  INSTALL_CONTROL_DOMAIN=${SNAPHOST_INSTALL_CONTROL_DOMAIN:-}
   INSTALL_OPERATOR_EMAIL=${SNAPHOST_INSTALL_OPERATOR_EMAIL:-}
+  INSTALL_ACME_EMAIL=${SNAPHOST_INSTALL_ACME_EMAIL:-$INSTALL_OPERATOR_EMAIL}
   INSTALL_PUBLIC_URL=${SNAPHOST_INSTALL_PUBLIC_URL:-}
 
   if [[ -z "$INSTALL_DOMAIN_SUFFIX" ]]; then
@@ -209,7 +295,27 @@ read_install_inputs() {
     read -r -p 'Generated-site domain suffix: ' INSTALL_DOMAIN_SUFFIX
   fi
   validate_domain_suffix "$INSTALL_DOMAIN_SUFFIX"
+
+  if [[ -z "$INSTALL_CONTROL_DOMAIN" ]]; then
+    [[ -t 0 ]] || die "SNAPHOST_INSTALL_CONTROL_DOMAIN is required for non-interactive install"
+    read -r -p 'Panel/API hostname: ' INSTALL_CONTROL_DOMAIN
+  fi
+  validate_edge_domains "$INSTALL_DOMAIN_SUFFIX" "$INSTALL_CONTROL_DOMAIN"
+
+  if [[ -z "$INSTALL_ACME_EMAIL" ]]; then
+    [[ -t 0 ]] || die "SNAPHOST_INSTALL_ACME_EMAIL is required when operator email is unset"
+    read -r -p 'ACME account email: ' INSTALL_ACME_EMAIL
+  fi
+  [[ "$INSTALL_ACME_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "ACME email is invalid"
+
   validate_public_url "$INSTALL_PUBLIC_URL"
+  if [[ "$INSTALL_PUBLIC_URL" == https://* ]]; then
+    local public_host=${INSTALL_PUBLIC_URL#https://}
+    public_host=${public_host%%/*}
+    public_host=${public_host%%:*}
+    [[ "$public_host" == "$INSTALL_CONTROL_DOMAIN" ]] || \
+      die "HTTPS public URL must use the configured control domain"
+  fi
   if [[ -n "$INSTALL_OPERATOR_EMAIL" && ! "$INSTALL_OPERATOR_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]]; then
     die "operator email is invalid"
   fi
@@ -233,6 +339,11 @@ create_install_env() {
   set_env_value SNAPHOST_VERSION "$version"
   set_env_value DOMAIN_SUFFIX "$INSTALL_DOMAIN_SUFFIX"
   set_env_value OPENROUTER_API_KEY "$INSTALL_OPENROUTER_KEY"
+  set_env_value SNAPHOST_CONTROL_DOMAIN "$INSTALL_CONTROL_DOMAIN"
+  set_env_value SNAPHOST_ACME_EMAIL "$INSTALL_ACME_EMAIL"
+  set_env_value SNAPHOST_CADDY_STATE_DIR "$CADDY_STATE_DIR"
+  set_env_value RESERVED_DOMAINS "$INSTALL_CONTROL_DOMAIN"
+  set_env_value DOMAIN_CNAME_TARGET "$INSTALL_CONTROL_DOMAIN"
   set_env_value DOCKER_SOCKET_GID "$gid"
   ensure_buildkit_cpu_env
   if [[ -n "$INSTALL_OPERATOR_EMAIL" ]]; then
@@ -243,9 +354,32 @@ create_install_env() {
     if [[ "$INSTALL_PUBLIC_URL" == http://* ]]; then
       set_env_value SNAPHOST_ALLOW_HTTP_SMOKE true
       set_env_value SESSION_COOKIE_SECURE false
+      set_env_value SNAPHOST_BIND_ADDRESS 0.0.0.0
     fi
   fi
   unset INSTALL_OPENROUTER_KEY
+}
+
+ensure_caddy_state_env() {
+  local configured path
+  configured=$(env_value SNAPHOST_CADDY_STATE_DIR 2>/dev/null || true)
+  if [[ -z "$configured" ]]; then
+    configured=$CADDY_STATE_DIR
+    set_env_value SNAPHOST_CADDY_STATE_DIR "$configured"
+  fi
+  validate_caddy_state_path "$configured"
+  CADDY_STATE_DIR=$configured
+  for path in "$CADDY_STATE_DIR" "$CADDY_STATE_DIR/data" "$CADDY_STATE_DIR/config"; do
+    [[ ! -L "$path" ]] || die "Caddy state path must not be a symlink: $path"
+  done
+  mkdir -p "$CADDY_STATE_DIR/data" "$CADDY_STATE_DIR/config"
+  chmod 700 "$CADDY_STATE_DIR" "$CADDY_STATE_DIR/data" "$CADDY_STATE_DIR/config"
+}
+
+validate_caddy_state_path() {
+  local value=$1
+  [[ "$value" == /* && "$value" != / && "$value" != *:* && ! "$value" =~ [[:space:]] ]] || \
+    die "SNAPHOST_CADDY_STATE_DIR must be a non-root absolute path without whitespace or colons"
 }
 
 ensure_socket_gid_env() {
@@ -281,10 +415,12 @@ install_apparmor_profile() {
 }
 
 render_systemd_unit() {
-  local source=$1 target=$2 tmp line
+  local source=$1 target=$2 tmp line rendered
   tmp=$(mktemp "$SYSTEMD_DIR/.snaphost-unit.XXXXXX")
   while IFS= read -r line || [[ -n "$line" ]]; do
-    printf '%s\n' "${line//\/opt\/snaphost/$INSTALL_ROOT}" >>"$tmp"
+    rendered=${line//\/opt\/snaphost/$INSTALL_ROOT}
+    rendered=${rendered//@SNAPHOST_CADDY_STATE_DIR@/$CADDY_STATE_DIR}
+    printf '%s\n' "$rendered" >>"$tmp"
   done <"$source"
   chmod 644 "$tmp"
   mv -f -- "$tmp" "$target"
@@ -293,11 +429,19 @@ render_systemd_unit() {
 install_systemd_units() {
   local service=$CHECKOUT_ROOT/infra/systemd/snaphost-backup.service
   local timer=$CHECKOUT_ROOT/infra/systemd/snaphost-backup.timer
-  [[ -f "$service" && -f "$timer" ]] || die "backup systemd units are missing"
+  local tls_service=$CHECKOUT_ROOT/infra/systemd/snaphost-tls-backup.service
+  local tls_timer=$CHECKOUT_ROOT/infra/systemd/snaphost-tls-backup.timer
+  [[ -f "$service" && -f "$timer" && -f "$tls_service" && -f "$tls_timer" ]] || \
+    die "backup systemd units are missing"
   mkdir -p "$SYSTEMD_DIR"
   render_systemd_unit "$service" "$SYSTEMD_DIR/snaphost-backup.service"
   render_systemd_unit "$timer" "$SYSTEMD_DIR/snaphost-backup.timer"
+  render_systemd_unit "$tls_service" "$SYSTEMD_DIR/snaphost-tls-backup.service"
+  render_systemd_unit "$tls_timer" "$SYSTEMD_DIR/snaphost-tls-backup.timer"
   systemctl daemon-reload
+  # Database backups are usable locally without additional secrets. TLS state
+  # contains private keys, so its timer is installed but must only be enabled
+  # after backup.env contains an age recipient (and preferably off-host upload).
   systemctl enable --now snaphost-backup.timer
 }
 
@@ -351,7 +495,7 @@ print_first_login() {
   if [[ -n ${INSTALL_PUBLIC_URL:-} ]]; then
     log "Open: $INSTALL_PUBLIC_URL"
   else
-    log "No public URL was configured; install an HTTPS edge before browser login."
+    log "Point DNS at this VPS, then open: https://$(env_value SNAPHOST_CONTROL_DOMAIN)"
   fi
 }
 
@@ -368,6 +512,7 @@ install_release() {
 
   gid=$(socket_gid)
   [[ "$gid" =~ ^[0-9]+$ ]] || die "Docker socket group is not numeric: $gid"
+  [[ -f "$ENV_FILE" ]] || require_public_ports_free
   prepare_runtime_directories
   if [[ -f "$ENV_FILE" ]]; then
     check_protected_file "production env file" "$ENV_FILE"
@@ -379,6 +524,8 @@ install_release() {
     read_install_inputs
     create_install_env "$version" "$gid"
   fi
+  ensure_edge_env
+  ensure_caddy_state_env
 
   install_apparmor_profile
   run_deploy "$version"
@@ -451,6 +598,8 @@ upgrade_release() {
   require_checkout_at_release "$current"
   ensure_socket_gid_env
   ensure_buildkit_cpu_env
+  ensure_edge_env
+  ensure_caddy_state_env
 
   fetch_releases
   if [[ -n "$requested" ]]; then
@@ -504,6 +653,12 @@ rollback_release() {
   configured=$(env_value SNAPHOST_VERSION) || die "SNAPHOST_VERSION is missing from env file"
   [[ "$configured" == "$current" ]] || die "env version $configured does not match installed state $current"
   require_checkout_at_release "$current"
+  if [[ "$dry_run" == --dry-run ]]; then
+    validate_installed_edge_env
+  else
+    ensure_edge_env
+    ensure_caddy_state_env
+  fi
   previous_commit=$(release_commit "$previous") || die "saved rollback release is unavailable in checkout: $previous"
   original=$(git -C "$CHECKOUT_ROOT" rev-parse HEAD)
 

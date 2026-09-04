@@ -58,6 +58,7 @@ import (
 	"snaphost/internal/control/project"
 	controlroutes "snaphost/internal/control/routes"
 	"snaphost/internal/control/saga"
+	"snaphost/internal/edge"
 	"snaphost/internal/gitcreds"
 	httpconfig "snaphost/internal/httpapi/config"
 	"snaphost/internal/httpapi/middleware"
@@ -178,25 +179,48 @@ func main() {
 	// 7. Background loops, after everything they touch exists.
 	startBackground(ctx, ctlCfg, rtCfg, ctl, bld, rt, uploadsStore, credsStore, log)
 
-	srv := &http.Server{
-		Addr:              ":" + httpCfg.Port,
-		Handler:           engine,
-		ReadHeaderTimeout: 10 * time.Second,
+	edgeRoutes := edge.NewRepository(pool, ctlCfg.DomainSuffix)
+	servers := []struct {
+		name   string
+		server *http.Server
+	}{
+		{name: "http", server: &http.Server{
+			Addr:              ":" + httpCfg.Port,
+			Handler:           engine,
+			ReadHeaderTimeout: 10 * time.Second,
+		}},
+		{name: "edge-proxy", server: &http.Server{
+			Addr:              ":" + httpCfg.EdgeProxyPort,
+			Handler:           edge.NewProxyHandler(edgeRoutes, log),
+			ReadHeaderTimeout: 10 * time.Second,
+		}},
+		{name: "edge-ask", server: &http.Server{
+			Addr:              ":" + httpCfg.EdgeAskPort,
+			Handler:           edge.NewTLSAskHandler(edgeRoutes, log),
+			ReadHeaderTimeout: 5 * time.Second,
+		}},
 	}
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal("http server failed", zap.Error(err))
-		}
-	}()
-	log.Info("snaphost started", zap.String("port", httpCfg.Port))
+	for _, item := range servers {
+		go func() {
+			if err := item.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatal(item.name+" server failed", zap.Error(err))
+			}
+		}()
+	}
+	log.Info("snaphost started",
+		zap.String("port", httpCfg.Port),
+		zap.String("edge_proxy_port", httpCfg.EdgeProxyPort),
+		zap.String("edge_ask_port", httpCfg.EdgeAskPort))
 
 	<-ctx.Done()
 	log.Info("shutting down")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("graceful shutdown failed", zap.Error(err))
+	for _, item := range servers {
+		if err := item.server.Shutdown(shutdownCtx); err != nil {
+			log.Error(item.name+" graceful shutdown failed", zap.Error(err))
+		}
 	}
 	log.Info("stopped")
 }

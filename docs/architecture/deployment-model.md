@@ -43,11 +43,16 @@ An in-process verifier changes pending to verified only after the TXT value
 matches, and periodically rechecks ownership. Unknown, pending, failed or
 revoked domains never route.
 
-The application exposes no internal routing or TLS-authorization endpoint.
-The single-binary deployment still lacks the dynamic Caddy-to-Docker routing
-layer; a future edge needs a dedicated fail-closed contract for verified
-domains. The obsolete cloud-router example remains a comments-only warning
-rather than a fictional working config.
+The monolith exposes two dedicated edge listeners outside the operator API: a
+Host-to-container reverse proxy and `/tls/ask` for Caddy's on-demand certificate
+authorization. They are available only on the Compose control network, are not
+published on the host, and do not form a general `/internal` service API. Caddy
+receives no Docker socket.
+
+The resolver accepts only a generated hostname or verified custom-domain alias
+with a running deploy, recorded container and valid saga port. It constructs
+the upstream from the deploy ID instead of accepting an arbitrary stored or
+request-supplied URL. Alias moves are visible on the next request.
 
 ## Browser isolation
 
@@ -56,15 +61,15 @@ in production. Otherwise a deployed application may set a parent-domain cookie
 that the panel receives. Origin-scoped storage such as localStorage is already
 isolated per hostname, but cookies are scoped by registrable domain.
 
-A production edge should therefore provide:
+The production edge must therefore provide:
 
 - a control-plane domain for the panel and API;
 - a separate deploy suffix for generated sites;
 - preferably a Public Suffix List entry for that deploy suffix, or another
   mechanism that prevents one generated site setting cookies for its siblings.
 
-This remains a deployment requirement, not something the current Compose files
-automate.
+This remains a deployment requirement. The installer requires both names and
+conservatively refuses values that share their final two DNS labels.
 
 ## Local and production placement
 
@@ -78,12 +83,15 @@ all routing participants -> snaphost-net
 SQLite -> named snaphost_data volume
 ~~~
 
-The production manifest contains snaphost, the one-shot migration profile and
-BuildKit. It pins one application image to a `vMAJOR.MINOR.PATCH` tag and leaves
-TLS and public routing to the host. `infra/snaphostctl` installs that manifest
+The production manifest contains snaphost, Caddy, the one-shot migration
+profile and BuildKit. It pins the application image to a
+`vMAJOR.MINOR.PATCH` tag. Caddy alone publishes host ports 80/443 and reaches
+the two application edge listeners over the internal control network.
+`infra/snaphostctl` installs the Compose manifest
 from a tag checkout at `/opt/snaphost` and keeps checkout, env and state on the
 same release during upgrade and rollback.
 
 Task 2 changes preview TTLs into opt-in expiry and adds persistent per-project
-configuration. Task 4 completes the Caddy edge. Task 7 still owns the real-host
-proof of the implemented install, upgrade and rollback contract.
+configuration. Task 4 defines the generated-host certificate policy and proves
+the public DNS/ACME path. Task 7 still owns the remaining real-host proof of the release,
+upgrade and rollback contract.

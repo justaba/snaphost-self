@@ -80,7 +80,7 @@ func (b *DockerBackend) Probe(ctx context.Context, req backend.ProbeRequest) err
 // with "nothing answered on the port", blaming the user's application for a
 // coin flip. The shared network is named, and the fallback is last.
 func containerAddress(networks map[string]*network.EndpointSettings) string {
-	if endpoint := networks[config.TraefikNetwork]; endpoint != nil && endpoint.IPAddress != "" {
+	if endpoint := networks[config.RoutingNetwork]; endpoint != nil && endpoint.IPAddress != "" {
 		return endpoint.IPAddress
 	}
 

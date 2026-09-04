@@ -103,7 +103,14 @@ cat >"$BIN/nproc" <<'FAKE'
 printf '%s\n' "${FAKE_NPROC:-2}"
 FAKE
 
-chmod +x "$BIN/git" "$BIN/docker" "$BIN/apparmor_parser" "$BIN/systemctl" "$BIN/nproc"
+cat >"$BIN/ss" <<'FAKE'
+#!/usr/bin/env bash
+set -u
+echo "ss $*" >>"${FAKE_LOG:?}"
+[[ ${PORTS_BUSY:-0} != 1 ]] || printf '%s\n' 'LISTEN 0 4096 0.0.0.0:443 0.0.0.0:*'
+FAKE
+
+chmod +x "$BIN/git" "$BIN/docker" "$BIN/apparmor_parser" "$BIN/systemctl" "$BIN/nproc" "$BIN/ss"
 
 PASS=0
 FAIL=0
@@ -116,9 +123,12 @@ setup_case() {
   mkdir -p "$CHECKOUT/infra/apparmor" "$CHECKOUT/infra/systemd" "$CASE_DIR/etc/apparmor.d" "$CASE_DIR/etc/systemd"
   cp "$SOURCE" "$CHECKOUT/infra/snaphostctl"
   cp "$ROOT/infra/.env.production.example" "$CHECKOUT/infra/.env.production.example"
+  cp "$ROOT/infra/Caddyfile.production.example" "$CHECKOUT/infra/Caddyfile.production.example"
   cp "$ROOT/infra/apparmor/snaphost-buildkit-rootless" "$CHECKOUT/infra/apparmor/snaphost-buildkit-rootless"
   cp "$ROOT/infra/systemd/snaphost-backup.service" "$CHECKOUT/infra/systemd/snaphost-backup.service"
   cp "$ROOT/infra/systemd/snaphost-backup.timer" "$CHECKOUT/infra/systemd/snaphost-backup.timer"
+  cp "$ROOT/infra/systemd/snaphost-tls-backup.service" "$CHECKOUT/infra/systemd/snaphost-tls-backup.service"
+  cp "$ROOT/infra/systemd/snaphost-tls-backup.timer" "$CHECKOUT/infra/systemd/snaphost-tls-backup.timer"
   : >"$CHECKOUT/infra/docker-compose.prod.yml"
   chmod +x "$CHECKOUT/infra/snaphostctl"
 
@@ -174,11 +184,13 @@ FAKE
   export SNAPHOST_CLI_TARGET="$CASE_DIR/usr/local/sbin/snaphostctl"
   export SNAPHOST_TEST_EUID=0 SNAPHOST_TEST_DOCKER_SOCKET_GID=998
   export SNAPHOST_INSTALL_DOMAIN_SUFFIX=apps.example.test
+  export SNAPHOST_INSTALL_CONTROL_DOMAIN=panel.control.test
+  export SNAPHOST_INSTALL_ACME_EMAIL=acme@control.test
   export SNAPHOST_INSTALL_OPENROUTER_KEY_FILE="$KEY_FILE"
   export SNAPHOST_INSTALL_OPERATOR_EMAIL=operator@example.test
-  export SNAPHOST_INSTALL_PUBLIC_URL=https://panel.example.test
+  export SNAPHOST_INSTALL_PUBLIC_URL=https://panel.control.test
   export FAKE_NPROC=2
-  unset SNAPHOST_INSTALL_ALLOW_HTTP DIRTY_CHECKOUT FAIL_FETCH TAG_OFF_MAIN FAIL_CHECKOUT FAIL_DEPLOY FAIL_ROLLBACK_ACTUAL FAIL_APPARMOR_FIRST FAIL_SYSTEMD
+  unset SNAPHOST_INSTALL_ALLOW_HTTP DIRTY_CHECKOUT FAIL_FETCH TAG_OFF_MAIN FAIL_CHECKOUT FAIL_DEPLOY FAIL_ROLLBACK_ACTUAL FAIL_APPARMOR_FIRST FAIL_SYSTEMD PORTS_BUSY
   CTL="$CHECKOUT/infra/snaphostctl"
 }
 
@@ -191,6 +203,11 @@ seed_installed() {
 SNAPHOST_VERSION=$CURRENT_VERSION
 DOMAIN_SUFFIX=apps.example.test
 OPENROUTER_API_KEY=sk-or-v1-test-key
+SNAPHOST_CONTROL_DOMAIN=panel.control.test
+SNAPHOST_ACME_EMAIL=acme@control.test
+SNAPHOST_CADDY_STATE_DIR=$CHECKOUT/state/caddy
+RESERVED_DOMAINS=panel.control.test
+DOMAIN_CNAME_TARGET=panel.control.test
 DOCKER_SOCKET_GID=998
 EOF
   chmod 600 "$SNAPHOST_ENV_FILE"
@@ -223,6 +240,14 @@ run_capture install "$VERSION"
 if [[ $RC -ne 0 ]] && grep -q 'must run as root' "$OUTPUT"; then pass 'install requires root'; else fail 'install requires root'; fi
 
 setup_case
+export PORTS_BUSY=1
+run_capture install "$VERSION"
+if [[ $RC -ne 0 ]] && grep -q 'must be free for Compose Caddy' "$OUTPUT" \
+  && [[ ! -e "$CHECKOUT/env" ]]; then
+  pass 'install refuses occupied public Caddy ports before writing host state'
+else fail 'install refuses occupied public Caddy ports before writing host state'; fi
+
+setup_case
 run_capture install v1.2
 if [[ $RC -ne 0 ]] && ! grep -q '^docker ' "$FAKE_LOG"; then pass 'install rejects a malformed version before host changes'; else fail 'install rejects a malformed version before host changes'; fi
 
@@ -242,12 +267,30 @@ run_capture install "$VERSION"
 if [[ $RC -ne 0 ]] && grep -q 'permissions must be 0600 or 0400' "$OUTPUT"; then pass 'install refuses a readable API-key file'; else fail 'install refuses a readable API-key file'; fi
 
 setup_case
+export SNAPHOST_INSTALL_CONTROL_DOMAIN=panel.example.test
+run_capture install "$VERSION"
+if [[ $RC -ne 0 ]] && grep -q 'must not share their final two DNS labels' "$OUTPUT" \
+  && ! grep -q '^deploy ' "$FAKE_LOG"; then
+  pass 'install refuses a control domain in the deploy cookie boundary'
+else fail 'install refuses a control domain in the deploy cookie boundary'; fi
+
+setup_case
+unset SNAPHOST_INSTALL_ACME_EMAIL
+run_capture install "$VERSION"
+if [[ $RC -eq 0 ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_ACME_EMAIL"{print $2}' "$SNAPHOST_ENV_FILE") == operator@example.test ]]; then
+  pass 'install defaults ACME contact to the configured operator email'
+else fail 'install defaults ACME contact to the configured operator email'; fi
+
+setup_case
 mkdir -p "$CHECKOUT/env"
 cp "$ROOT/infra/.env.production.example" "$SNAPHOST_ENV_FILE"
 sed -i \
   -e "s/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=$VERSION/" \
   -e 's/^DOMAIN_SUFFIX=.*/DOMAIN_SUFFIX=apps.example.test/' \
   -e 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=key/' \
+  -e 's/^SNAPHOST_CONTROL_DOMAIN=.*/SNAPHOST_CONTROL_DOMAIN=panel.control.test/' \
+  -e 's/^SNAPHOST_ACME_EMAIL=.*/SNAPHOST_ACME_EMAIL=acme@control.test/' \
   "$SNAPHOST_ENV_FILE"
 printf '%s\n' 'BUILDKIT_CPU_LIMIT=4.0' >>"$SNAPHOST_ENV_FILE"
 chmod 600 "$SNAPHOST_ENV_FILE"
@@ -262,15 +305,21 @@ run_capture install "$VERSION"
 if [[ $RC -eq 0 ]] \
   && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$SNAPHOST_ENV_FILE") == "$VERSION" ]] \
   && [[ $(awk -F= '$1=="DOMAIN_SUFFIX"{print $2}' "$SNAPHOST_ENV_FILE") == apps.example.test ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_CONTROL_DOMAIN"{print $2}' "$SNAPHOST_ENV_FILE") == panel.control.test ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_ACME_EMAIL"{print $2}' "$SNAPHOST_ENV_FILE") == acme@control.test ]] \
+  && [[ $(awk -F= '$1=="DOMAIN_CNAME_TARGET"{print $2}' "$SNAPHOST_ENV_FILE") == panel.control.test ]] \
   && [[ $(awk -F= '$1=="DOCKER_SOCKET_GID"{print $2}' "$SNAPHOST_ENV_FILE") == 998 ]] \
   && [[ $(awk -F= '$1=="BUILDKIT_CPU_LIMIT"{print $2}' "$SNAPHOST_ENV_FILE") == 2.0 ]] \
   && [[ $(stat -c '%a' "$SNAPHOST_ENV_FILE") == 600 ]] \
   && [[ $(stat -c '%a' "$CHECKOUT/state") == 700 ]] \
+  && [[ $(stat -c '%a' "$CHECKOUT/state/caddy/data") == 700 ]] \
   && [[ $(stat -c '%a' "$CHECKOUT/backups") == 700 ]] \
   && [[ -x "$SNAPHOST_CLI_TARGET" ]] \
   && grep -q 'first-login-password' "$OUTPUT" \
   && grep -q "WorkingDirectory=$CHECKOUT" "$CASE_DIR/etc/systemd/snaphost-backup.service" \
-  && grep -q 'systemctl enable --now snaphost-backup.timer' "$FAKE_LOG"; then
+  && grep -q "SNAPHOST_TLS_STATE_DIR=$CHECKOUT/state/caddy/data" "$CASE_DIR/etc/systemd/snaphost-tls-backup.service" \
+  && grep -q 'systemctl enable --now snaphost-backup.timer' "$FAKE_LOG" \
+  && ! grep -q 'systemctl enable --now snaphost-tls-backup.timer' "$FAKE_LOG"; then
   pass 'install creates protected env, deploys, installs host files and prints first login'
 else fail 'install creates protected env, deploys, installs host files and prints first login'; fi
 
@@ -284,7 +333,8 @@ export SNAPHOST_INSTALL_PUBLIC_URL=http://192.0.2.10:8080 SNAPHOST_INSTALL_ALLOW
 run_capture install "$VERSION"
 if [[ $RC -eq 0 ]] \
   && [[ $(awk -F= '$1=="SESSION_COOKIE_SECURE"{print $2}' "$SNAPHOST_ENV_FILE") == false ]] \
-  && [[ $(awk -F= '$1=="SNAPHOST_ALLOW_HTTP_SMOKE"{print $2}' "$SNAPHOST_ENV_FILE") == true ]]; then
+  && [[ $(awk -F= '$1=="SNAPHOST_ALLOW_HTTP_SMOKE"{print $2}' "$SNAPHOST_ENV_FILE") == true ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_BIND_ADDRESS"{print $2}' "$SNAPHOST_ENV_FILE") == 0.0.0.0 ]]; then
   pass 'explicit HTTP install makes cookie and smoke behavior consistent'
 else fail 'explicit HTTP install makes cookie and smoke behavior consistent'; fi
 
@@ -311,6 +361,17 @@ if [[ $RC -eq 0 ]] \
   && grep -q 'Upgrade completed: v1.2.2 -> v1.2.3' "$OUTPUT"; then
   pass 'upgrade fetches, checks out and deploys an explicit release'
 else fail 'upgrade fetches, checks out and deploys an explicit release'; fi
+
+setup_case
+seed_installed
+sed -i '/^SNAPHOST_CONTROL_DOMAIN=/d; /^SNAPHOST_ACME_EMAIL=/d; /^SNAPHOST_CADDY_STATE_DIR=/d; /^RESERVED_DOMAINS=/d; /^DOMAIN_CNAME_TARGET=/d' "$SNAPHOST_ENV_FILE"
+run_capture upgrade "$VERSION"
+if [[ $RC -eq 0 ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_CONTROL_DOMAIN"{print $2}' "$SNAPHOST_ENV_FILE") == panel.control.test ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_ACME_EMAIL"{print $2}' "$SNAPHOST_ENV_FILE") == acme@control.test ]] \
+  && [[ -d "$CHECKOUT/state/caddy/data" ]]; then
+  pass 'first edge-aware upgrade migrates the protected Caddy configuration'
+else fail 'first edge-aware upgrade migrates the protected Caddy configuration'; fi
 
 setup_case
 seed_installed
@@ -362,7 +423,8 @@ seed_previous
 before=$(sha256sum "$SNAPHOST_ENV_FILE" "$SNAPHOST_STATE_DIR/current.env" "$SNAPHOST_STATE_DIR/previous.env")
 run_capture rollback --dry-run
 after=$(sha256sum "$SNAPHOST_ENV_FILE" "$SNAPHOST_STATE_DIR/current.env" "$SNAPHOST_STATE_DIR/previous.env")
-if [[ $RC -eq 0 && "$before" == "$after" && $(<"$FAKE_GIT_HEAD") == "$CURRENT_COMMIT" ]] \
+if [[ $RC -eq 0 && "$before" == "$after" && ! -e "$CHECKOUT/state/caddy" \
+  && $(<"$FAKE_GIT_HEAD") == "$CURRENT_COMMIT" ]] \
   && grep -q 'checkout would move from v1.2.2 to v1.2.1' "$OUTPUT"; then
   pass 'rollback dry run validates runtime without switching checkout or state'
 else fail 'rollback dry run validates runtime without switching checkout or state'; fi

@@ -1,13 +1,13 @@
 # Custom domains
 
-Status: Partially implemented; control-plane verification and aliases are
-current, production Docker/TLS routing is not complete
+Status: Compose edge implemented; public DNS/ACME proof remains
 Type: Operations
-Updated: 2026-08-30
+Updated: 2026-09-04
 
 The application can register a domain, prove ownership through DNS, keep its
-verification state and point it at a running deploy. The portable edge that
-serves that mapping is still future work.
+verification state, point it at a running deploy and route it through the
+Compose-managed Caddy edge. The public path has not yet been accepted against
+real operator-owned DNS and ACME.
 
 ## Enable attachment
 
@@ -47,8 +47,8 @@ traffic at the configured stable edge.
 
 The in-process verifier checks pending rows every
 DOMAIN_VERIFY_INTERVAL_SEC. Verified rows are periodically rechecked according
-to DOMAIN_REVERIFY_HOURS and the grace policy. Only verified domains may be
-published by the future edge.
+to DOMAIN_REVERIFY_HOURS and the grace policy. Only verified domains with a
+running target are authorized and routed by the edge.
 
 List the row through GET /api/v1/domains to see status and last_error. Common
 verification errors are txt_not_found, txt_mismatch and dns_lookup_failed.
@@ -74,29 +74,48 @@ Archive clients must reuse a stable project_key when creating deploys. Without
 it, every archive is a new project and an existing domain cannot follow the new
 build.
 
-## Current edge gap
+## Production edge
 
-The current Docker backend emits Traefik labels only for the generated
-DOMAIN_SUFFIX hostname; it does not add custom-domain labels. The application
-exposes no internal route lookup or TLS authorization API: those endpoints were
-transport leftovers from the pre-collapse architecture, not a working Caddy
-integration. Therefore infra/Caddyfile.production.example is a comments-only
-marker for the missing contract, not an installable configuration.
+`infra/docker-compose.prod.yml` runs the digest-pinned Caddy 2.10.2 image and
+publishes 80/tcp, 443/tcp and 443/udp. No other production service owns those
+ports. `infra/Caddyfile.production.example` uses two narrow internal
+dependencies:
 
-Task 4 must provide both parts together:
+- `http://snaphost:8082/tls/ask` authorizes on-demand issuance only when the exact
+  hostname resolves to a running deploy;
+- `http://snaphost:8081` resolves the request Host and proxies it to the deploy
+  container on `snaphost-net`.
 
-1. a narrow, fail-closed TLS authorization contract compatible with Caddy ask;
-2. dynamic routing from a verified host to the stored Docker container without
-   exposing arbitrary internal routes.
+Those application listeners are not published on the host. They are not
+registered below `/api` or `/internal`, and Caddy receives no Docker socket. An
+alias target move takes effect on the next request because the proxy reads
+SQLite for every request.
 
-Until then, custom-domain data and alias APIs can be tested, but custom domains
-are not an end-to-end production feature of snaphost-self.
+`snaphostctl install` requires `SNAPHOST_INSTALL_CONTROL_DOMAIN` and an ACME
+email, stores them in the protected production env, reserves the control
+hostname from attachment, sets it as the default CNAME traffic target and
+creates `/opt/snaphost/state/caddy/{data,config}` with mode 0700. Keep the
+application recovery bind at its default `127.0.0.1:8080`.
+
+The remaining boundary is public acceptance: no generated-host wildcard/DNS
+challenge contract is packaged, and real public DNS, ACME issue, promotion,
+rollback and detach still need a VPS rehearsal. The current catch-all uses
+on-demand certificates and its fail-closed `ask` endpoint; issuing one
+certificate per preview can encounter CA rate limits.
+
+Before starting the stack, point the control hostname at the VPS and configure
+wildcard DNS for `DOMAIN_SUFFIX`. Custom subdomains normally CNAME to the
+control hostname; apex domains need `DOMAIN_A_RECORD_TARGET` set to the VPS
+address. Ensure the firewall admits TCP 80/443 and UDP 443, and that no host
+web server is already bound there.
 
 ## Detach
 
-DELETE /api/v1/domains/<id> revokes the row. Future routing and TLS
-authorization must then fail closed. Any certificate already cached by an external
-edge remains an edge-operator cleanup concern.
+DELETE /api/v1/domains/<id> revokes the row. New requests stop routing and new
+certificate authorization fails closed. A certificate already cached by Caddy
+remains in edge storage until its own lifecycle removes it; possession of that
+certificate does not restore a revoked route.
 
 See [ADR 0007](../decisions/0007-custom-domain-tls-edge.md) and
-[deployment model](../architecture/deployment-model.md).
+[deployment model](../architecture/deployment-model.md). Remaining acceptance
+work is tracked in [Task 4](../tasks/planned/0004-production-edge.md).

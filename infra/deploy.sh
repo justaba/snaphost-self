@@ -17,13 +17,15 @@ STABILITY_DELAY=${SNAPHOST_STABILITY_DELAY:-5}
 # Overridable so the two can be moved together, not so they can drift.
 DATABASE_PATH=${SNAPHOST_DATABASE_PATH:-/var/snaphost/data/snaphost.db}
 
-# Rollout order, and the only list of services in this file. Infrastructure
-# first, the application last, because `--no-deps` means Compose will not order
-# them for us. EXPECTED_SERVICES is derived rather than written twice: a second
+# Rollout order, and the only lists of services in this file. Infrastructure
+# goes first, then the application, then its public edge, because `--no-deps`
+# means Compose will not order them for us. EXPECTED_SERVICES is derived rather
+# than written twice: a second
 # list is what let the rollback path keep naming seven services that had not
 # existed for two commits.
 INFRA_SERVICES=(buildkitd)
-EXPECTED_SERVICES=("${INFRA_SERVICES[@]}" snaphost)
+EDGE_SERVICES=(caddy)
+EXPECTED_SERVICES=("${INFRA_SERVICES[@]}" snaphost "${EDGE_SERVICES[@]}")
 SNAPHOST_IMAGES=(snaphost)
 PHASE=preflight
 TARGET_VERSION=
@@ -156,7 +158,7 @@ preflight_checks() {
   ' "$ENV_FILE"; then
     die "production env contains a template placeholder"
   fi
-  # Three variables, where there used to be forty-five.
+  # Five variables, where there used to be forty-five.
   #
   # The long list was a SaaS operator's configuration file asserted line by
   # line. Every entry on it that is not here has a default in the Go config
@@ -170,6 +172,8 @@ preflight_checks() {
   #   SNAPHOST_VERSION    the version to run; the whole point of an upgrade
   #   DOMAIN_SUFFIX       generated deploy hostnames are meaningless without it
   #   OPENROUTER_API_KEY  the application refuses to start without one
+  #   SNAPHOST_CONTROL_DOMAIN  the fixed panel/API hostname Caddy serves
+  #   SNAPHOST_ACME_EMAIL      the ACME account contact Caddy uses
   #
   # The variables Compose itself interpolates — the image prefix, the published
   # address and port, both CPU and memory pairs — are not on this list either,
@@ -177,7 +181,7 @@ preflight_checks() {
   # render an invalid manifest rather than fall back, which is why they need the
   # default at that layer instead of an assertion at this one.
   local key configured_version configured_value
-  for key in SNAPHOST_VERSION DOMAIN_SUFFIX OPENROUTER_API_KEY; do
+  for key in SNAPHOST_VERSION DOMAIN_SUFFIX OPENROUTER_API_KEY SNAPHOST_CONTROL_DOMAIN SNAPHOST_ACME_EMAIL; do
     require_env "$key"
   done
   configured_version=$(env_value SNAPHOST_VERSION)
@@ -447,6 +451,15 @@ rollout() {
   action "update snaphost" compose up -d --no-deps snaphost
   wait_health snaphost
   check_stable_container snaphost
+
+  # Caddy owns the public sockets and consumes a bind-mounted configuration.
+  # Recreate it after the new application is healthy so config changes are
+  # applied during both upgrades and same-version recovery runs.
+  for service in "${EDGE_SERVICES[@]}"; do
+    action "update $service" compose up -d --no-deps --force-recreate "$service"
+    wait_health "$service"
+    check_stable_container "$service"
+  done
 }
 
 smoke() {

@@ -483,15 +483,18 @@ a domain that stops pointing here loses verification. **Only a `verified` domain
 routes.** Attach is refused while both `DOMAIN_CNAME_TARGET` and
 `DOMAIN_A_RECORD_TARGET` are empty: there is no address to point DNS at.
 The application intentionally exposes no generic `/internal` HTTP surface.
-Custom-domain TLS still needs a dedicated, narrowly scoped edge integration;
-do not reintroduce the former service webhook API to implement it.
+Production edge traffic uses separate listeners instead: `/tls/ask` on 8082
+and a Host-resolving proxy on 8081. Both remain internal on the Compose control
+network; only Caddy publishes 80/443. Do not move either into the former service
+webhook API or give Caddy the Docker socket.
 
 ## Infra
 
 - `infra/docker-compose.yml` — local development: the app, BuildKit, Traefik.
 - `infra/docker-compose.prod.yml` — production: a GHCR image pinned to a
-  `vMAJOR.MINOR.PATCH` release, a migrate service, BuildKit. No `build:`, no
-  Traefik, no registry. The app healthcheck runs inside its runtime image.
+  `vMAJOR.MINOR.PATCH` release, a migrate service, BuildKit and digest-pinned
+  Caddy as the sole owner of 80/443. No `build:`, no Traefik, no registry. The
+  app healthcheck runs inside its runtime image.
 - [infra/deploy.sh](infra/deploy.sh) — `preflight` / `deploy <version>` /
   `rollback`.
   Dumps the database with `sqlite3 .dump` before migrations, verifies the dump
@@ -504,9 +507,9 @@ do not reintroduce the former service webhook API to implement it.
   prunes on a retention policy that never touches a dump the deployment state
   references.
 
-Changing any of those means running `infra/tests/deploy_test.sh` (57 tests),
+Changing any of those means running `infra/tests/deploy_test.sh` (60 tests),
 `infra/tests/backup_test.sh` (41) and, for the host release contract,
-`infra/tests/snaphostctl_test.sh` (22). They need GNU coreutils and
+`infra/tests/snaphostctl_test.sh` (26). They need GNU coreutils and
 `flock`, so on Windows run them in a Linux container. Their fakes are part of the
 test: the `docker` fake refuses `up` for a service the manifest does not define,
 because a `rollback_to` naming seven deleted services once passed the suite.
@@ -519,11 +522,15 @@ Written down rather than fixed, so nobody rediscovers them:
   usable and the sweep reclaims it, so the only way forward is deploying the
   project again. The button that used to say «Перезапустить» called an endpoint
   this backend has never had.
-- **Traefik, not Caddy.** Caddy is the recorded direction, but dynamic routing
-  from a verified alias to a Docker container has not been implemented.
-- **No end-to-end custom-domain TLS.** DNS verification exists, but the
-  application deliberately exposes no authorization endpoint for Caddy `ask`;
-  a narrow edge contract still needs to be designed.
+- **Traefik remains local-only.** Production Caddy now routes through the
+  monolith without a Docker socket, while local development keeps Traefik for
+  generated-host convenience.
+- **The edge runtime and installation exist; public proof does not.** The
+  fail-closed Caddy `ask` handler and dynamic Host-to-container proxy are
+  implemented. Compose Caddy owns 80/443, and `snaphostctl` includes its state
+  and lifecycle. The generated-host certificate policy is not final, encrypted
+  TLS-state restore is unproved, and public DNS/ACME behavior has not been
+  rehearsed end to end.
 - **Install code exists; production proof is partial.**
   [infra/snaphostctl](infra/snaphostctl) implements first install,
   checkout-aware upgrade and coordinated rollback. Its fake-command suite is

@@ -5,6 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SCRIPT="$ROOT/infra/deploy.sh"
 DOCKERFILE="$ROOT/snaphost-backend/docker/Dockerfile"
 PROD_COMPOSE="$ROOT/infra/docker-compose.prod.yml"
+PROD_CADDYFILE="$ROOT/infra/Caddyfile.production.example"
 PROD_BUILDKIT_CONFIG="$ROOT/infra/buildkitd.prod.toml"
 DEV_BUILDKIT_CONFIG="$ROOT/infra/buildkitd.toml"
 RUNTIME_CONFIG="$ROOT/snaphost-backend/internal/runtime/config/config.go"
@@ -21,7 +22,7 @@ mkdir -p "$BIN"
 # `config --services` from this and refuses `up` for anything else, so a script
 # that names a service the manifest dropped fails here the way it would on the
 # box — which is the bug this list was added after.
-export MANIFEST_SERVICES="snaphost buildkitd"
+export MANIFEST_SERVICES="snaphost buildkitd caddy"
 
 cat >"$BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
@@ -63,9 +64,9 @@ case "$op" in
       version=${WRONG_IMAGE_VERSION:-${SNAPHOST_VERSION:?}}
       printf 'ghcr.io/acme/repo/%s:%s\n' snaphost "$version"
     elif [[ "$*" != *'--quiet'* ]]; then
-      # snaphost publishes a port; the infrastructure service must not.
+      # snaphost and Caddy publish ports; the infrastructure service must not.
       # The rendered-compose check greps exactly this shape.
-      printf 'services:\n  snaphost:\n    healthcheck:\n      test: [CMD, curl, --fail, http://127.0.0.1:8080/health]\n    ports:\n      - target: 8080\n  buildkitd:\n    image: buildkit\n'
+      printf 'services:\n  snaphost:\n    healthcheck:\n      test: [CMD, curl, --fail, http://127.0.0.1:8080/health]\n    ports:\n      - target: 8080\n  buildkitd:\n    image: buildkit\n  caddy:\n    ports:\n      - target: 80\n      - target: 443\n'
     fi
     ;;
   pull) [[ ${FAIL_PULL:-0} != 1 ]] ;;
@@ -155,6 +156,9 @@ GHCR_IMAGE_PREFIX=ghcr.io/acme/repo
 SNAPHOST_BIND_ADDRESS=0.0.0.0
 SNAPHOST_PORT=8080
 DOMAIN_SUFFIX=apps.prod.invalid
+SNAPHOST_CONTROL_DOMAIN=panel.control.invalid
+SNAPHOST_ACME_EMAIL=operator@control.invalid
+SNAPHOST_CADDY_STATE_DIR=$CASE_DIR/caddy
 CORS_ALLOW_ORIGINS=https://app.prod.invalid
 RUN_MIGRATIONS=false
 SAGA_BUILD_TIMEOUT_MIN=15
@@ -258,6 +262,8 @@ sed -i \
   -e "s/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=$OLD_VERSION/" \
   -e 's/^DOMAIN_SUFFIX=.*/DOMAIN_SUFFIX=apps.prod.invalid/' \
   -e 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=key/' \
+  -e 's/^SNAPHOST_CONTROL_DOMAIN=.*/SNAPHOST_CONTROL_DOMAIN=panel.control.invalid/' \
+  -e 's/^SNAPHOST_ACME_EMAIL=.*/SNAPHOST_ACME_EMAIL=operator@control.invalid/' \
   "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 run_capture preflight "$VERSION"
@@ -285,10 +291,28 @@ fi
 # project, which passed rendered-manifest checks but failed the first real VPS
 # deploy with "network snaphost-net not found".
 if sed -n '/^  control:$/,/^  data:$/p' "$PROD_COMPOSE" | grep -Fqx '    name: snaphost-net' \
-  && grep -Fq 'const TraefikNetwork = "snaphost-net"' "$RUNTIME_CONFIG"; then
+  && grep -Fq 'const RoutingNetwork = "snaphost-net"' "$RUNTIME_CONFIG"; then
   pass 'production control network matches the host runtime network'
 else
   fail 'production control network matches the host runtime network'
+fi
+
+# Compose Caddy owns the only public sockets and must not need the
+# root-equivalent Docker socket. The edge listeners remain internal to the
+# control network; only the recovery API port is bound to host loopback.
+if grep -Fq '${SNAPHOST_BIND_ADDRESS:-127.0.0.1}:${SNAPHOST_PORT:-8080}:8080' "$PROD_COMPOSE" \
+  && grep -Fq 'image: "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"' "$PROD_COMPOSE" \
+  && grep -Fq -- '- "80:80/tcp"' "$PROD_COMPOSE" \
+  && grep -Fq -- '- "443:443/tcp"' "$PROD_COMPOSE" \
+  && grep -Fq -- '- "443:443/udp"' "$PROD_COMPOSE" \
+  && grep -Fq 'EDGE_PROXY_PORT: "8081"' "$PROD_COMPOSE" \
+  && grep -Fq 'EDGE_ASK_PORT: "8082"' "$PROD_COMPOSE" \
+  && grep -Fq 'ask http://snaphost:8082/tls/ask' "$PROD_CADDYFILE" \
+  && grep -Fq 'reverse_proxy snaphost:8081' "$PROD_CADDYFILE" \
+  && ! sed -n '/^  caddy:/,/^  [a-zA-Z0-9_-]*:/p' "$PROD_COMPOSE" | grep -Fq '/var/run/docker.sock'; then
+  pass 'Compose Caddy exclusively owns public ports and uses internal edge listeners'
+else
+  fail 'Compose Caddy exclusively owns public ports and uses internal edge listeners'
 fi
 
 # BuildKit has its own cache volume; Docker image cleanup cannot see it. Keep
@@ -311,13 +335,13 @@ fi
 # A bind-mounted config can change without changing Compose's service hash.
 # Both forward rollout and rollback must therefore recreate infrastructure or
 # an upgraded host keeps the old policy until an unrelated restart.
-if [[ $(grep -Fc -- '--force-recreate "$service"' "$SCRIPT") -eq 2 ]]; then
-  pass 'rollout and rollback apply infrastructure configuration changes'
+if [[ $(grep -Fc -- '--force-recreate "$service"' "$SCRIPT") -eq 3 ]]; then
+  pass 'rollout and rollback apply infrastructure and edge configuration changes'
 else
-  fail 'rollout and rollback apply infrastructure configuration changes'
+  fail 'rollout and rollback apply infrastructure and edge configuration changes'
 fi
 
-# Task 7 item 4: preflight asserts three variables, not forty-five. Everything
+# Task 7 item 4: preflight asserts five variables, not forty-five. Everything
 # else has a default in the application, and an unset variable reaches it as an
 # empty string, which its config readers already treat as unset.
 setup_case
@@ -325,19 +349,23 @@ cat >"$ENV_FILE" <<EOF
 SNAPHOST_VERSION=$OLD_VERSION
 DOMAIN_SUFFIX=apps.prod.invalid
 OPENROUTER_API_KEY=key
+SNAPHOST_CONTROL_DOMAIN=panel.control.invalid
+SNAPHOST_ACME_EMAIL=operator@control.invalid
 EOF
 chmod 600 "$ENV_FILE"
 run_capture preflight "$VERSION"
-[[ $RC -eq 0 ]] && pass 'preflight passes on the three required variables alone' || fail 'preflight passes on the three required variables alone'
+[[ $RC -eq 0 ]] && pass 'preflight passes on the five required variables alone' || fail 'preflight passes on the five required variables alone'
 
-# ...and still refuses when one of the three is absent, which is what stops the
+# ...and still refuses when one of the five is absent, which is what stops the
 # shorter list from becoming no list.
-for missing in SNAPHOST_VERSION DOMAIN_SUFFIX OPENROUTER_API_KEY; do
+for missing in SNAPHOST_VERSION DOMAIN_SUFFIX OPENROUTER_API_KEY SNAPHOST_CONTROL_DOMAIN SNAPHOST_ACME_EMAIL; do
   setup_case
   cat >"$ENV_FILE" <<EOF
 SNAPHOST_VERSION=$OLD_VERSION
 DOMAIN_SUFFIX=apps.prod.invalid
 OPENROUTER_API_KEY=key
+SNAPHOST_CONTROL_DOMAIN=panel.control.invalid
+SNAPHOST_ACME_EMAIL=operator@control.invalid
 EOF
   grep -v "^$missing=" "$ENV_FILE" >"$ENV_FILE.tmp" && mv "$ENV_FILE.tmp" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
@@ -648,7 +676,7 @@ seed_deployed_state
 export FAIL_ENV_UPDATE=1
 run_capture rollback
 ups=$(grep -c ' compose .* up ' "$FAKE_LOG")
-if [[ $RC -ne 0 && $ups -eq 4 ]] \
+if [[ $RC -ne 0 && $ups -eq 6 ]] \
   && grep -q 'original runtime restored' "$OUTPUT" \
   && [[ $(awk -F= '$1=="version"{print $2}' "$CASE_DIR/state/current.env") == "$VERSION" ]] \
   && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$ENV_FILE") == "$VERSION" ]]; then

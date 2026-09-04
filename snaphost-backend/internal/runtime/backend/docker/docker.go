@@ -62,8 +62,9 @@ func NewDockerBackend(cfg *config.Config, publisher logs.Publisher, log *zap.Log
 	}, nil
 }
 
-// Run starts the image on an isolated network, connects it to the Traefik
-// network, waits for it to be healthy, and returns the public endpoint URL.
+// Run starts the image on an isolated network, connects it to the shared
+// routing network, waits for it to be healthy, and returns the public endpoint
+// URL.
 func (b *DockerBackend) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
 	// Apply overall timeout.
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -122,12 +123,13 @@ func (b *DockerBackend) Run(ctx context.Context, req backend.RunRequest) (*backe
 		return nil, fmt.Errorf("%w: %s", backend.ErrContainerStartFailed, err.Error())
 	}
 
-	// 7. Connect to Traefik network for routing.
-	if err := ConnectToTraefikNetwork(ctx, b.cli, resp.ID); err != nil {
+	// 7. Connect to the shared network used by local Traefik and the production
+	// edge proxy.
+	if err := ConnectToRoutingNetwork(ctx, b.cli, resp.ID); err != nil {
 		// Clean up on failure.
 		_ = b.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		_ = DestroyNetwork(ctx, b.cli, networkName)
-		return nil, fmt.Errorf("connect to traefik network: %w", err)
+		return nil, fmt.Errorf("connect to routing network: %w", err)
 	}
 
 	// 8. Start the container.

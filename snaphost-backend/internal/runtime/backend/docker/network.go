@@ -43,11 +43,11 @@ func DestroyNetwork(ctx context.Context, cli NetworkRemover, networkName string)
 	return nil
 }
 
-// ConnectToTraefikNetwork attaches a container to the shared routing network
-// so the local edge can reach it.
-func ConnectToTraefikNetwork(ctx context.Context, cli *client.Client, containerID string) error {
-	if err := cli.NetworkConnect(ctx, config.TraefikNetwork, containerID, nil); err != nil {
-		return fmt.Errorf("connect container %s to %s: %w", containerID, config.TraefikNetwork, err)
+// ConnectToRoutingNetwork attaches a container to the shared routing network
+// so the control plane and either supported edge path can reach it.
+func ConnectToRoutingNetwork(ctx context.Context, cli *client.Client, containerID string) error {
+	if err := cli.NetworkConnect(ctx, config.RoutingNetwork, containerID, nil); err != nil {
+		return fmt.Errorf("connect container %s to %s: %w", containerID, config.RoutingNetwork, err)
 	}
 	return nil
 }

@@ -45,8 +45,10 @@ type Config struct {
 	RuntimeProbeTimeoutSec int
 }
 
-// TraefikNetwork is the Docker network name shared with Traefik for routing.
-const TraefikNetwork = "snaphost-net"
+// RoutingNetwork is shared by the control plane, local Traefik and deployed
+// containers. Production Caddy reaches it indirectly through the monolith's
+// edge proxy and therefore needs no Docker network membership or socket.
+const RoutingNetwork = "snaphost-net"
 
 // Load reads configuration from environment variables with fallback to defaults.
 // Required fields without defaults cause an error if unset.

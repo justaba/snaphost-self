@@ -1,8 +1,8 @@
 # ADR 0007 — Terminate custom-domain TLS at an operator-owned Caddy edge
 
-Status: Accepted; post-collapse implementation incomplete
+Status: Accepted; implementation in progress
 Date: 2026-08-04
-Updated: 2026-08-30
+Updated: 2026-09-04
 
 ## Context
 
@@ -24,10 +24,10 @@ useful, but its old implementation path does not.
 Terminate TLS for verified custom domains at an operator-owned Caddy edge using
 on-demand ACME issuance guarded by a fail-closed authorization check.
 
-The edge must satisfy two contracts:
+The edge satisfies two contracts through separate listeners:
 
-1. certificate authorization returns success only for a normalized hostname
-   whose custom_domains row is verified;
+1. certificate authorization returns success only for a normalized generated
+   hostname or verified custom-domain alias with a currently running target;
 2. after TLS termination, dynamic routing resolves that hostname to the running
    Docker container stored for its alias target.
 
@@ -36,18 +36,21 @@ control-plane error must refuse issuance rather than fail open.
 
 ## Current implementation state
 
-The domain repository, TXT verifier and alias target exist.
+The domain repository, TXT verifier and alias target exist. The monolith adds a
+Host-to-container proxy and a dedicated Caddy-compatible TLS `ask` handler.
+Production Compose runs a digest-pinned Caddy service, which alone owns host
+ports 80/443 and reaches both listeners through the internal control network.
+Caddy does not read the Docker socket.
 
-The complete edge does not:
+The resolver reads only durable application state and constructs the upstream
+from the application-owned container name and validated saga port. It refuses
+unknown, pending, revoked, stopped and targetless routes. It performs every
+lookup per request, so an alias move needs no Caddy reload.
 
-- the Docker backend emits Traefik labels only for generated hostnames;
-- there is no dynamic Caddy-to-Docker route adapter;
-- there is no Caddy-compatible TLS authorization contract;
-- infra/Caddyfile.production.example is intentionally comments-only until the
-  missing authorization and routing contract is implemented.
-
-Task 4 must close these gaps before custom domains are advertised as an
-end-to-end feature.
+`snaphostctl` now creates protected Caddy state and deploy, upgrade and rollback
+all include the Caddy service. Task 4 remains in progress because no
+operator-specific wildcard/DNS-challenge strategy exists for the generated
+suffix and the path has not been proved with real DNS and public ACME issuance.
 
 ## Consequences
 
@@ -55,9 +58,9 @@ end-to-end feature.
   domain owner.
 - ACME issuance state and private keys live on the edge and require an encrypted
   off-host backup.
-- Caddy becomes a public, stateful prerequisite until Task 4 integrates it.
-  Task 7's installer deliberately treats HTTPS and routing as an external host
-  prerequisite rather than installing a knowingly incomplete edge.
+- Caddy is a public, stateful Compose service. Its ACME account and certificate
+  state lives under `/opt/snaphost/state/caddy` and must be encrypted before an
+  off-host backup.
 - On-demand TLS without a working authorization gate is forbidden.
 - Control-plane and deploy suffix should remain separate registrable domains so
   deployed code cannot set cookies received by the operator panel.

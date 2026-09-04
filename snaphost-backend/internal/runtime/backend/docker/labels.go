@@ -13,7 +13,7 @@ func BuildTraefikLabels(deployID, userID, subdomain, domainSuffix string, port i
 	return map[string]string{
 		// Traefik v3 routing labels.
 		"traefik.enable":         "true",
-		"traefik.docker.network": config.TraefikNetwork,
+		"traefik.docker.network": config.RoutingNetwork,
 		fmt.Sprintf("traefik.http.routers.%s.rule", deployID):                      fmt.Sprintf("Host(`%s.%s`)", subdomain, domainSuffix),
 		fmt.Sprintf("traefik.http.routers.%s.entrypoints", deployID):               "web",
 		fmt.Sprintf("traefik.http.services.%s.loadbalancer.server.port", deployID): fmt.Sprintf("%d", port),

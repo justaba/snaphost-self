@@ -1,6 +1,6 @@
 [Unit]
 Description=Run the SnapHost TLS certificate store backup daily
-Documentation=https://github.com/justaba/snaphost/blob/main/docs/operations/custom-domains.md
+Documentation=https://github.com/justaba/snaphost-self/blob/main/docs/operations/custom-domains.md
 
 [Timer]
 # 02:40 UTC — after the database backup at 02:20, not alongside it. They write

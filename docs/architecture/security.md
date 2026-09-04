@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-09-01
+Updated: 2026-09-04
 
 snaphost-self has one trusted operator, but it still processes repositories,
 Dockerfiles and dependencies that may be compromised. The application also has
@@ -81,10 +81,10 @@ than marked, and the images are gone from the daemon. A SQLite backup restores
 the records; it does not rebuild an image.
 
 Components communicate through typed Go interfaces in one process. There is no
-service-to-service HTTP surface and no shared webhook secret. `/internal/*`
-paths are deliberately unrouted. A future TLS edge integration must introduce
-its own narrow contract rather than reopening lifecycle, key-verification or
-repository endpoints over HTTP.
+general service-to-service HTTP surface and no shared webhook secret.
+`/internal/*` paths are deliberately unrouted. The TLS edge uses separate
+listeners with only a Host proxy and `/tls/ask`; it does not reopen lifecycle,
+key-verification or repository endpoints over HTTP.
 
 ## Source and build controls
 
@@ -137,8 +137,11 @@ plane can mount host files or start privileged containers. Running the process
 as a non-root UID protects parts of its own filesystem but does not change this
 fact.
 
-Local Traefik also reads the Docker socket. The chosen Caddy direction removes
-that second socket consumer, but its dynamic Docker routing is not implemented.
+Local Traefik also reads the Docker socket. Production Caddy does not: it calls
+the monolith's dedicated listeners over the internal control network, whose
+resolver constructs a container DNS name from application-owned deploy state.
+The root-equivalent socket remains mounted only by the snaphost process in
+production.
 
 Protect OPENROUTER_API_KEY, backup credentials and the operator
 session as host-level secrets. Do not commit infra/.env or production env files.
@@ -147,9 +150,13 @@ session as host-level secrets. Do not commit infra/.env or production env files.
 
 Serve the control plane on a registrable domain separate from user deploys.
 This prevents deployed code from setting cookies received by the operator
-panel. Only verified custom domains may be published by the future TLS edge.
+panel. The edge routes only generated hosts and verified custom domains with a
+running target. Unknown or unroutable SNI is denied before certificate issue;
+database failures also fail closed.
 
-The current production edge is incomplete for the single-binary Docker model.
+Only Caddy publishes production ports 80/443. The application edge listeners
+are not host-published. Containers on the shared routing network can still
+reach the snaphost container, so that network is not an authorization boundary.
 Do not rely on the retired cloud-router documentation.
 
 ## Known gaps
@@ -157,6 +164,7 @@ Do not rely on the retired cloud-router documentation.
 - a failed deploy cannot be retried from the panel; the only way forward is
   deploying the project again.
 - Transient build failures have no retry budget.
-- Caddy custom-domain routing and portable TLS installation are incomplete.
+- The generated-host certificate policy and public DNS/ACME proof are
+  incomplete; per-preview on-demand issuance can encounter CA rate limits.
 - Real build memory on a 1 GB host and a restore from encrypted off-host backup
   have not been proven.

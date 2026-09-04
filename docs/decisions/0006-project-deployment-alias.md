@@ -2,7 +2,7 @@
 
 Status: Accepted
 Date: 2026-07-29
-Updated: 2026-08-30
+Updated: 2026-09-04
 
 ## Context
 
@@ -42,9 +42,10 @@ configuration; this ADR does not by itself make deploys permanent.
 
 ### Route lookup
 
-Generated hosts resolve from Docker labels. Custom-host routing is intentionally
-left to the dedicated edge contract described by ADR 0007; the application no
-longer exposes the old central-router lookup endpoint.
+Generated hosts resolve from Docker labels in local development. Production
+generated and custom hosts use the dedicated edge contract described by ADR
+0007. The old central-router lookup endpoint remains deleted; the replacement
+is a narrow Host proxy on a separate listener rather than an internal API.
 
 ### Consistency
 

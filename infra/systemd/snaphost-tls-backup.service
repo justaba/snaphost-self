@@ -1,15 +1,14 @@
 [Unit]
 Description=SnapHost TLS certificate store backup
-Documentation=https://github.com/justaba/snaphost/blob/main/docs/operations/custom-domains.md
+Documentation=https://github.com/justaba/snaphost-self/blob/main/docs/operations/custom-domains.md
 
 [Service]
 Type=oneshot
 
-# Root, unlike snaphost-backup.service. Caddy's store is caddy:caddy 0700 and
-# must stay that way — the deployer account is the identity CD logs in with, so
-# letting it read TLS private keys would widen that blast radius. The archive
-# is encrypted to the age recipient while still owned by root, so plaintext key
-# material never reaches a less-privileged account.
+# Root, unlike snaphost-backup.service. Caddy's bind-mounted state is 0700 and
+# contains account and certificate private keys. The archive is encrypted to
+# the age recipient while still owned by root, so plaintext key material never
+# reaches a less-privileged account.
 User=root
 Group=root
 WorkingDirectory=/opt/snaphost
@@ -18,6 +17,7 @@ WorkingDirectory=/opt/snaphost
 # entirely key material), and the remote/credentials if the off-host copy is
 # configured.
 EnvironmentFile=-/opt/snaphost/env/backup.env
+Environment=SNAPHOST_TLS_STATE_DIR=@SNAPHOST_CADDY_STATE_DIR@/data
 
 ExecStart=/opt/snaphost/infra/backup.sh tls
 
@@ -30,7 +30,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 # Read the certificate store, write the archive beside the other backups.
-ReadOnlyPaths=/var/lib/caddy
+ReadOnlyPaths=@SNAPHOST_CADDY_STATE_DIR@
 ReadWritePaths=/opt/snaphost/backups
 ProtectKernelTunables=true
 ProtectKernelModules=true

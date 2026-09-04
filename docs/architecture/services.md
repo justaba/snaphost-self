@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-09-01
+Updated: 2026-09-04
 
 All application components run in one process and communicate through typed Go
 interfaces.
@@ -15,6 +15,7 @@ interfaces.
 | control | Operator auth, sessions, API keys, projects, deploys, domains, the operator audit log, SQLite schema and saga orchestration. |
 | builder | Request validation, clone or archive unpack, project detection, Dockerfile acquisition and BuildKit export. |
 | runtime | Docker container lifecycle, runtime hardening, liveness probing, log forwarding and expiry watchdog. |
+| edge | Fail-closed hostname resolution, Caddy on-demand TLS authorization and reverse proxying to running deploy containers. |
 | ai | Built-in Dockerfile templates, OpenRouter fallback, response validation, cache and usage records. |
 | panel | React/Vite assets embedded into the Go binary with go:embed and served as an SPA. |
 | wiring | Direct adapters that satisfy narrow domain interfaces. |
@@ -34,7 +35,7 @@ binary for applying the same SQLite baseline before a production rollout.
 | Docker daemon | Image store, user-container lifecycle and networks. Access through the socket is root-equivalent on the host. |
 | BuildKit | Rootless daemon used to build images. The result is streamed into the host Docker image store; no registry is involved. |
 | Traefik | Local-development routing from generated hostnames to user containers through Docker labels. |
-| Caddy | Chosen production edge, but its Docker integration is not complete; the installer treats HTTPS/routing as an operator prerequisite. |
+| Caddy | Compose-managed production TLS edge and sole owner of host ports 80/443. It calls two internal monolith listeners, needs no Docker socket and persists ACME state below the installation state directory. |
 
 ## Operator panel
 

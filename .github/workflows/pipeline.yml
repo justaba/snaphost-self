@@ -72,6 +72,20 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck --severity=warning infra/deploy.sh infra/backup.sh infra/snaphostctl
+      - name: Production configurations
+        env:
+          SNAPHOST_VERSION: v0.0.0
+          DOMAIN_SUFFIX: apps.example.invalid
+          OPENROUTER_API_KEY: ci-placeholder
+          SNAPHOST_CONTROL_DOMAIN: panel.example.invalid
+          SNAPHOST_ACME_EMAIL: operator@example.invalid
+        run: |
+          docker compose -f infra/docker-compose.prod.yml config --quiet
+          docker run --rm \
+            -e SNAPHOST_CONTROL_DOMAIN -e SNAPHOST_ACME_EMAIL \
+            -v "$PWD/infra/Caddyfile.production.example:/etc/caddy/Caddyfile:ro" \
+            caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       # All suites fake every external command, so they touch no Docker
       # daemon, database, credential, or network.
       - name: Deployment suite
@@ -82,10 +96,23 @@ jobs:
         run: bash infra/tests/snaphostctl_test.sh
       - name: systemd units are parseable
         run: |
-          systemd-analyze verify infra/systemd/snaphost-backup.service 2>&1 | tee /tmp/verify.log
+          mkdir -p /tmp/snaphost-units
+          cp infra/systemd/snaphost-backup.service /tmp/snaphost-units/
+          cp infra/systemd/snaphost-backup.timer /tmp/snaphost-units/
+          cp infra/systemd/snaphost-tls-backup.timer /tmp/snaphost-units/
+          sed 's|@SNAPHOST_CADDY_STATE_DIR@|/opt/snaphost/state/caddy|g' \
+            infra/systemd/snaphost-tls-backup.service \
+            >/tmp/snaphost-units/snaphost-tls-backup.service
+          cd /tmp/snaphost-units
+          systemd-analyze verify \
+            snaphost-backup.service \
+            snaphost-backup.timer \
+            snaphost-tls-backup.service \
+            snaphost-tls-backup.timer \
+            2>&1 | tee /tmp/verify.log || true
           # The unit references paths that exist only on an installed host, so
           # only syntax errors are fatal here.
-          ! grep -qiE 'invalid|unknown (lvalue|section)' /tmp/verify.log
+          ! grep -qiE 'invalid|unknown (lvalue|section)|path is not absolute' /tmp/verify.log
 
   # One image, because there is one process. The matrix this replaces built
   # five, and a deployment had to verify all five manifests existed at the same

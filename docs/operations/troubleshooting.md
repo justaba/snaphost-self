@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Operations
-Updated: 2026-09-01
+Updated: 2026-09-04
 
 Start with the failing boundary rather than an inherited service name. The
 current stack has one application process, BuildKit, Docker and an edge.
@@ -79,21 +79,40 @@ filesystem, missing runtime files or immediate process exit.
 
 ## Generated URL does not resolve
 
-Confirm Traefik is running, the user container is attached to snaphost-net and
-its labels contain the full generated hostname. DOMAIN_SUFFIX also needs DNS
-that resolves wildcard hosts to the edge. Local resolver behavior for
-*.localhost is platform-dependent.
+In local development, confirm Traefik is running, the user container is
+attached to `snaphost-net` and its labels contain the full generated hostname.
+Local resolver behavior for `*.localhost` is platform-dependent.
 
-A 404 means no matching running route; 502 usually means the edge matched but
-could not reach the container.
+In production, `DOMAIN_SUFFIX` needs wildcard DNS pointing at the VPS where
+Compose Caddy owns 80/443. Test the application-side contracts from inside the
+snaphost container without public DNS:
+
+~~~bash
+sudo docker compose --project-name snaphost \
+  --env-file /opt/snaphost/env/production.env \
+  -f /opt/snaphost/infra/docker-compose.prod.yml \
+  exec -T snaphost curl --fail --get \
+  --data-urlencode domain=site.apps.example.net http://127.0.0.1:8082/tls/ask
+sudo docker compose --project-name snaphost \
+  --env-file /opt/snaphost/env/production.env \
+  -f /opt/snaphost/infra/docker-compose.prod.yml \
+  exec -T snaphost curl -i -H 'Host: site.apps.example.net' http://127.0.0.1:8081/
+~~~
+
+The first command returns an empty 200 only for a currently routable host. A
+403 means no eligible route and 503 means SQLite lookup failed. The proxy
+returns 404 for no route, 503 for state lookup failure and 502 when it selected
+a route but could not reach the container. If these work while HTTPS does not,
+inspect Caddy's environment, config validation, logs, DNS and ACME reachability.
 
 ## Custom domain remains pending
 
 Read last_error from GET /api/v1/domains and query the exact returned TXT record.
 The common states are txt_not_found, txt_mismatch and dns_lookup_failed.
 
-Verification alone does not make the site reachable. The single-binary
-Docker/Caddy routing path is incomplete; see
+Verification alone does not make the site reachable: the target deploy must be
+running, the host must point at Caddy, and Caddy must use the supplied edge
+configuration. Test both internal contracts above and see
 [custom domains](custom-domains.md).
 
 ## Running-state persistence fails

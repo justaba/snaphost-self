@@ -5,11 +5,19 @@ Updated: 2026-09-04
 
 ## Active
 
-Task 7 is in progress. Its version/registry model, CI separation, first-install
-command and checkout-aware upgrade/rollback implementation are done. A
+Tasks 4 and 7 are in progress. Task 7's version/registry model, CI separation,
+first-install command and checkout-aware upgrade/rollback implementation are
+done. A
 [partial VPS rehearsal](../operations/rehearsals/2026-09-04-vps.md) covers the
 real install, login, local restore and 4 GB build-pressure paths. Public release
 artifacts, encrypted off-host restore and the 1 GB drill remain.
+
+Task 4 now has a Compose-managed edge: Caddy exclusively owns 80/443 and calls
+an internal data-plane proxy plus a separate fail-closed `ask` listener without
+a Docker socket. Installer/upgrade/rollback lifecycle and persistent state are
+wired. The generated-host certificate strategy, encrypted TLS-state restore
+and a real DNS/ACME rehearsal remain. See
+[the task](planned/0004-production-edge.md).
 
 Five pieces of work landed outside the numbered tasks. Three closed recorded
 gaps, one is the smallest useful part of Task 6, and one removed structure that
@@ -84,7 +92,7 @@ unmeasured.
 | --- | --- | --- |
 | 2 — Deploys that live forever | Per-project environment variables, persistent volumes and TTL as an opt-in for previews rather than the default. | — |
 | 3 — Managed services | Template-defined databases and application authentication resources with volumes, health checks and injected connection data. | — |
-| 4 — The edge | Integrate Caddy with verified-domain authorization and dynamic Docker routing; remove Traefik from the intended production path. | — |
+| 4 — The edge *(in progress)* | Compose Caddy, fail-closed authorization, dynamic Docker routing and lifecycle integration are implemented. Generated-host certificate policy, encrypted TLS-state restore and real DNS/ACME proof remain. | [planned/0004-production-edge.md](planned/0004-production-edge.md) |
 | 5 — Git webhooks | Deploy on push. | — |
 | 6 — Operator actions *(partially completed)* | Stop, start, project deletion and the audit read surface are done. Audited shell access into a container remains. | — |
 | 7 — Install and upgrade without us *(in progress)* | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. Code, runbook and partial VPS proof exist; public-release, off-host restore and 1 GB proof remain. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |

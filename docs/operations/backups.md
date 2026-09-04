@@ -100,8 +100,8 @@ may be incompatible with the current schema; those are separate decisions.
 
 ## Timer
 
-`snaphostctl install` renders the systemd units from `infra/systemd`, enables
-the timer, and keeps the stable script path
+`snaphostctl install` renders the database and TLS systemd units from
+`infra/systemd`, enables the database timer, and keeps the stable script path
 `/opt/snaphost/infra/backup.sh`. Put optional credentials in protected
 `/opt/snaphost/env/backup.env`. Verify the installed timer and service logs:
 
@@ -111,8 +111,20 @@ systemctl status snaphost-backup.service
 journalctl -u snaphost-backup.service --since "7 days ago"
 ~~~
 
-The TLS backup subcommand belongs to the host-managed Caddy design. Because the
-single-binary custom-domain edge is not complete, it is not proof that current
-custom domains are recoverable.
+Compose Caddy persists its account and certificate state at
+`/opt/snaphost/state/caddy/data`. Because that directory contains private keys,
+the installer renders `snaphost-tls-backup.service` and timer but deliberately
+does not enable the TLS timer. First set `SNAPHOST_BACKUP_AGE_RECIPIENT` and the
+off-host destination in `/opt/snaphost/env/backup.env`, then enable it:
+
+~~~bash
+sudo systemctl enable --now snaphost-tls-backup.timer
+sudo systemctl start snaphost-tls-backup.service
+sudo journalctl -u snaphost-tls-backup.service -n 100
+~~~
+
+The Caddy state has not yet been restored from an encrypted off-host backup.
+The current proof therefore does not establish that custom-domain certificates
+are recoverable.
 
 Related: [monitoring](monitoring.md) and [rollback](rollback.md).

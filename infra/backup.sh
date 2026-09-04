@@ -24,11 +24,11 @@ set -Eeuo pipefail
 #   backup.sh verify <dump>               checksum + structural check of one file
 #   backup.sh list                        show what is on disk
 #
-# `tls` runs as root from its own timer. The certificate store is caddy:caddy
-# 0700 and must stay that way; widening it so an ordinary host account can read
-# TLS private keys would be a downgrade. Encryption therefore happens while
-# the artifact is still root-owned, so plaintext key material never reaches a
-# less-privileged account.
+# `tls` runs as root from its own timer. The Compose Caddy store is root-owned
+# and 0700; widening it so an ordinary host account can read TLS private keys
+# would be a downgrade. Encryption therefore happens while the artifact is
+# still root-owned, so plaintext key material never reaches a less-privileged
+# account.
 
 COMPOSE_FILE=${SNAPHOST_COMPOSE_FILE:-/opt/snaphost/infra/docker-compose.prod.yml}
 COMPOSE_PROJECT=${SNAPHOST_COMPOSE_PROJECT:-snaphost}
@@ -67,7 +67,7 @@ MIN_FREE_KB=${SNAPHOST_BACKUP_MIN_FREE_KB:-2097152}
 # every customer domain re-issues at once on its next request, against Let's
 # Encrypt limits we do not control — and the visible symptom is a browser
 # security warning on someone else's published site, not a 404.
-TLS_STATE_DIR=${SNAPHOST_TLS_STATE_DIR:-/var/lib/caddy/.local/share/caddy}
+TLS_STATE_DIR=${SNAPHOST_TLS_STATE_DIR:-/opt/snaphost/state/caddy/data}
 TLS_KEEP_DAYS=${SNAPHOST_TLS_BACKUP_KEEP_DAYS:-30}
 TLS_KEEP_MIN=${SNAPHOST_TLS_BACKUP_KEEP_MIN:-7}
 

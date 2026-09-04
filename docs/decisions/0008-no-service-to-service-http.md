@@ -2,6 +2,7 @@
 
 Status: Accepted
 Date: 2026-09-02
+Updated: 2026-09-04
 
 ## Context
 
@@ -58,17 +59,19 @@ the only mechanism.
 
 ## Consequences
 
-- **The TLS authorization handler went with the group, and that is a real
+- **The TLS authorization handler went with the group, and that was a real
   loss.** `GET /internal/tls/authorize` answered correctly; what it never had
   was a way for standard Caddy `ask` to authenticate to it, which is why
   [ADR 0007](0007-custom-domain-tls-edge.md) already recorded the edge as
-  incomplete. Task 4 now builds that contract from nothing rather than adapting
-  a handler whose authentication was wrong for its only intended caller. The
-  requirement is unchanged: fail closed, and expose nothing but the question
-  being asked.
-- **Host route lookup is gone.** Generated hostnames resolve from the Docker
-  labels the runtime writes; a custom-domain edge needs the routing half of
-  ADR 0007. [ADR 0006](0006-project-deployment-alias.md) is amended to say so.
+  incomplete. Task 4 built its replacement from nothing rather than adapting a
+  handler whose authentication was wrong for its only intended caller. The new
+  `/tls/ask` handler is the only route on a dedicated listener, fails closed and
+  returns no domain data.
+- **The generic host route lookup is gone.** Local generated hostnames resolve
+  from Docker labels. The production replacement is a dedicated reverse-proxy
+  listener that consumes the durable alias model directly and exposes no route
+  lookup response. [ADR 0006](0006-project-deployment-alias.md) records the
+  split.
 - `WEBHOOK_SECRET` disappears from both env examples, both Compose files and
   `deploy.sh preflight`. A variable left in an installed `.env` is inert.
 - `deploy.sh` loses the two smoke checks that exercised `/internal/routes` with
