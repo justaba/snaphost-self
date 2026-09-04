@@ -2,11 +2,12 @@
 
 Status: Current
 Type: Operations
-Updated: 2026-08-30
+Updated: 2026-09-04
 
 ## CI contract
 
-.github/workflows/pipeline.yml runs on pull requests and pushes to main.
+.github/workflows/pipeline.yml runs on pull requests, pushes to main and strict
+`vMAJOR.MINOR.PATCH` tags.
 
 The Go job, from the single snaphost-backend module, runs:
 
@@ -15,14 +16,24 @@ The Go job, from the single snaphost-backend module, runs:
 - golangci-lint v1.64.8 built with the job's Go toolchain.
 
 The shell job checks syntax and ShellCheck diagnostics for deployment, backup
-and uptime scripts, runs the fake-command deployment and backup suites, and
-verifies the systemd backup unit syntax.
+and uptime scripts, runs the 52-scenario deployment suite and 40-scenario
+backup suite, and verifies the systemd backup unit syntax.
 
 After those jobs pass, one Docker image is built. On main it is published as:
 
 ~~~text
 ghcr.io/<owner>/<repository>/snaphost:<40-character-git-sha>
 ~~~
+
+A strict semantic-version tag publishes both that SHA tag and the operator
+release tag:
+
+~~~text
+ghcr.io/<owner>/<repository>/snaphost:v1.2.3
+~~~
+
+No `latest` tag is published. Pull requests build the image but publish
+nothing.
 
 The Docker build compiles the React panel and embeds it in the binary. CI does
 not currently run the panel's Vitest, ESLint or Prettier commands separately;
@@ -31,50 +42,56 @@ contract.
 
 The old .github/workflows/ci.yml is an inert manual tombstone.
 
-## Staging and production workflows
+## Publishing is not deployment
 
-The optional staging job verifies and deploys the exact image SHA over SSH only
-when STAGING_DEPLOY_ENABLED is true. It is currently disabled because there is
-no staging host.
+CI no longer connects to staging or production over SSH. The former staging
+job, manual production workflow and remote-deploy scripts were deleted as the
+first implementation step of Task 7. Publishing a version only makes its image
+available; an operator's host pulls and deploys it locally.
 
-.github/workflows/production-deploy.yml is a manual exact-SHA deployment. It
-requires the requested commit to be an ancestor of main, verifies the image,
-uses a pre-verified SSH host key and delegates to
-.github/scripts/deploy-remote.sh.
-
-Both workflows are deployments for the repository owner's existing machines.
-They do not provision a host, install Docker or Caddy, create DNS, generate
-production secrets, configure backups or define a stable public release
-channel. They must not be presented as a third-party installer. Task 7 owns
-that replacement.
+A supported first-install and checkout-upgrade procedure is still incomplete,
+so image publishing must not yet be presented as a finished third-party
+installer. Task 7 owns that remaining work.
 
 ## Production manifest
 
 infra/docker-compose.prod.yml runs:
 
-- snaphost from the exact GHCR SHA;
+- snaphost from an exact GHCR semantic-version tag;
 - snaphost-migrate as a profile-only one-shot using the same SQLite volume;
 - rootless buildkitd.
 
 The manifest publishes only the application port. TLS, firewall policy and the
 routing edge are host prerequisites. It contains no PostgreSQL, Redis, registry
-or Traefik service.
+or Traefik service. The application has an in-container `/health` healthcheck;
+the deploy script waits for Docker to report `healthy` and does not accept a
+merely running process as ready.
 
-The production env example is exhaustive for this environment, not a promise
-that all of those variables belong in the future installer.
+The production env example requires three operator decisions and documents
+optional overrides. Application defaults remain in Go rather than being copied
+into a second configuration surface.
 
 ## Release behavior
 
 infra/deploy.sh provides preflight, deploy and rollback operations. A deploy:
 
-1. validates the SHA, environment and rendered Compose;
+1. validates a strict `vMAJOR.MINOR.PATCH`, the environment and rendered Compose;
 2. takes an exclusive lock;
 3. records in-progress state;
-4. creates and verifies a transactional SQLite dump;
-5. pulls the exact application image;
+4. pulls the exact application image and records its digest;
+5. creates and verifies a transactional SQLite dump;
 6. runs the one-shot migrator;
-7. updates snaphost and checks readiness and public smoke;
-8. records current and previous release state atomically.
+7. updates snaphost and waits for its Docker healthcheck;
+8. runs the optional public smoke check;
+9. pins the successful version through atomic replacements of `production.env`
+   and the current/previous state files.
+
+SHA arguments and `latest` are refused. For the first transition only, rollback
+can read and preserve a legacy `sha=` state written by the old deploy script;
+new successful deploys record `version=`.
+Before deploy or rollback changes containers, it also refuses an env version
+that disagrees with `current.env`; an interrupted multi-file update is visible
+and requires reconciliation rather than being silently compounded.
 
 Migration rollback is never assumed. Once migrations begin, application
 rollback requires MIGRATIONS_BACKWARD_COMPATIBLE=true after an operator reviews
@@ -84,12 +101,7 @@ See [rollback](rollback.md) and [backup and restore](backups.md).
 
 ## Repository settings
 
-The current workflows require:
-
-- GitHub Actions package write permission;
-- environment-scoped SSH host, verified known_hosts and private-key secrets;
-- the matching deployment user, root path, Compose project and smoke URL;
-- a GHCR token already installed on the target host.
-
-Production Environment reviewers and branch protection are external repository
-settings. Workflow checks do not create them.
+The publishing job requires GitHub Actions package write permission. The GHCR
+package must also be made public in repository/package settings; the workflow
+cannot assert visibility. No deployment SSH key, GitHub environment or GHCR
+credential on an operator host belongs to the intended installation contract.

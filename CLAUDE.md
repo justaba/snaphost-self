@@ -485,19 +485,22 @@ do not reintroduce the former service webhook API to implement it.
 ## Infra
 
 - `infra/docker-compose.yml` — local development: the app, BuildKit, Traefik.
-- `infra/docker-compose.prod.yml` — production: GHCR images pinned to a
-  40-character Git SHA, a migrate service, BuildKit. No `build:`, no Traefik, no
-  registry.
-- [infra/deploy.sh](infra/deploy.sh) — `preflight` / `deploy <sha>` / `rollback`.
+- `infra/docker-compose.prod.yml` — production: a GHCR image pinned to a
+  `vMAJOR.MINOR.PATCH` release, a migrate service, BuildKit. No `build:`, no
+  Traefik, no registry. The app healthcheck runs inside its runtime image.
+- [infra/deploy.sh](infra/deploy.sh) — `preflight` / `deploy <version>` /
+  `rollback`.
   Dumps the database with `sqlite3 .dump` before migrations, verifies the dump
-  ends in `COMMIT;`, and refuses to roll back across a migration without
-  `MIGRATIONS_BACKWARD_COMPATIBLE=true`. Never restores.
+  ends in `COMMIT;`, waits for Docker health rather than mere process state,
+  persists the successful version in the env/state files, and refuses to roll
+  back across a migration without `MIGRATIONS_BACKWARD_COMPATIBLE=true`. Never
+  restores.
 - [infra/backup.sh](infra/backup.sh) — scheduled dump on a systemd timer, shares
   `deploy.sh`'s lock, verifies the archive, encrypts with `age`, copies to S3,
   prunes on a retention policy that never touches a dump the deployment state
   references.
 
-Changing any of those means running `infra/tests/deploy_test.sh` (36 tests) and
+Changing any of those means running `infra/tests/deploy_test.sh` (52 tests) and
 `infra/tests/backup_test.sh` (40). They need GNU coreutils and
 `flock`, so on Windows run them in a Linux container. Their fakes are part of the
 test: the `docker` fake refuses `up` for a service the manifest does not define,
@@ -519,17 +522,9 @@ Written down rather than fixed, so nobody rediscovers them:
   application deliberately exposes no authorization endpoint for Caddy `ask`;
   a narrow edge contract still needs to be designed.
 - **Not installable.** [Task 7](docs/tasks/planned/0007-install-and-upgrade.md)
-  is the install and upgrade story, and it is not started.
-- **`deploy.sh` readiness cannot pass on a real host.** `probe_internal` runs
-  `compose run --entrypoint curl snaphost`, and there is no `curl` in the
-  runtime image — there never was, because the old Dockerfile installed it only
-  to fetch the Trivy installer and purged it in the same layer. Every `deploy`
-  would fail readiness *after* applying migrations. The `run` branch of the
-  `docker` fake exits 0 without looking at the entrypoint, which is why 36 green
-  tests say nothing about it — the same "fake agrees with itself" shape as the
-  `rollback_to` and `REQUIRED_TABLES` defects. Fixing it is a choice between
-  putting `curl` back and probing the published port from the host, and it
-  belongs with Task 7's rework of this script.
+  is in progress: CI-owned SSH deployment is gone and the SemVer deploy/
+  rollback slice is implemented, but first install and checkout-aware upgrade
+  are not.
 
 ## Documents
 

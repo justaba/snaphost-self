@@ -68,10 +68,13 @@ FROM debian:12-slim
 # open — under WAL the committed state is spread across the database and its
 # -wal, and a plain copy of the three files is a torn snapshot that restores as
 # a corrupt or stale database with nothing reporting an error. `sqlite3 .dump`
-# reads it in one transaction. About 1.5 MB for the only correct way to do it.
+# reads it in one transaction. Curl is the production healthcheck client; the
+# deploy script waits for that healthcheck instead of starting a second copy of
+# this image and assuming a command exists in it.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         git \
         sqlite3 && \
     apt-get clean && \

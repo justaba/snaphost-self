@@ -1,8 +1,12 @@
 name: CI and image publishing
 
+# Tags are a trigger because a version tag is what an operator installs
+# (Task 7). Pushes to main still publish a per-SHA image so a regression can be
+# bisected; that tag is a debugging affordance and never an upgrade target.
 on:
   push:
     branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
 
 concurrency:
@@ -76,13 +80,18 @@ jobs:
       - name: systemd units are parseable
         run: |
           systemd-analyze verify infra/systemd/snaphost-backup.service 2>&1 | tee /tmp/verify.log
-          # The unit references paths that exist only on the VDS, so only
-          # syntax errors are fatal here.
+          # The unit references paths that exist only on an installed host, so
+          # only syntax errors are fatal here.
           ! grep -qiE 'invalid|unknown (lvalue|section)' /tmp/verify.log
 
   # One image, because there is one process. The matrix this replaces built
   # five, and a deployment had to verify all five manifests existed at the same
   # SHA before it could start.
+  #
+  # This job publishes. It does not deploy: nothing here reaches an operator's
+  # machine, and there is no SSH key, deploy secret or GitHub environment left
+  # in this repository (Task 7 item 2). An operator installs and upgrades from
+  # their own host against the public package this job pushes to.
   image:
     name: Image
     needs: [go, shell]
@@ -91,77 +100,53 @@ jobs:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Two tag shapes that mean different things, and no third one. The SHA
+      # tag is published from every main push for bisecting. The version tag is
+      # what `deploy.sh` validates and what an operator upgrades to.
+      #
+      # `latest` is deliberately never published. A rendered manifest names one
+      # exact version, so two installs of the same file cannot silently differ
+      # and a rollback always has a point to return to. What `latest` was
+      # wanted for is a command, not a tag: Task 7's remaining operator CLI
+      # will resolve the newest published version and pin it.
+      #
+      # The package's visibility is a repository setting rather than something
+      # this job can assert: it must be public, or every install needs a
+      # credential from us. See Task 7's version and registry model.
+      - name: Resolve image tags
+        id: tags
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/snaphost
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          tags="$IMAGE:$SHA"
+          if [[ "$REF" == refs/tags/* ]]; then
+            version=${REF#refs/tags/}
+            [[ "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+              echo "tag $version is not vMAJOR.MINOR.PATCH" >&2
+              exit 1
+            }
+            tags="$IMAGE:$version"$'\n'"$tags"
+          fi
+          {
+            echo 'tags<<TAGS_EOF'
+            echo "$tags"
+            echo 'TAGS_EOF'
+          } >>"$GITHUB_OUTPUT"
       - name: Build and optionally publish
         uses: docker/build-push-action@v7
         with:
           context: snaphost-backend
           file: snaphost-backend/docker/Dockerfile
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          tags: ghcr.io/${{ github.repository }}/snaphost:${{ github.sha }}
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha,scope=snaphost
           cache-to: type=gha,mode=max,scope=snaphost
-
-  # Staging has no host at the moment: the temporary VDS was released and
-  # production now runs on its own machine. The job is kept rather than deleted
-  # because staging is the place where a bad migration is supposed to be found,
-  # and that need returns as soon as there are users to protect.
-  #
-  # To bring it back: point the `staging` environment's DEPLOY_SSH_HOST,
-  # DEPLOY_SSH_KNOWN_HOSTS and DEPLOY_SSH_PRIVATE_KEY at the new host, check
-  # the remaining staging variables, then set repository variable
-  # STAGING_DEPLOY_ENABLED=true. Nothing else has to change.
-  deploy-staging:
-    name: Deploy staging
-    needs: [image]
-    if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main'
-      && vars.STAGING_DEPLOY_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    environment: staging
-    permissions:
-      contents: read
-      packages: read
-    concurrency:
-      group: deploy-staging
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Configure verified SSH identity
-        shell: bash
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
-        run: |
-          set -Eeuo pipefail
-          umask 077
-          test -n "$SSH_PRIVATE_KEY"
-          test -n "$SSH_KNOWN_HOSTS"
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/deploy-key"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/deploy-known-hosts"
-      - name: Verify images and deploy exact SHA
-        shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
-          DEPLOY_USER: ${{ vars.DEPLOY_SSH_USER }}
-          DEPLOY_PORT: ${{ vars.DEPLOY_SSH_PORT }}
-          DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT }}
-          DEPLOY_SMOKE_URL: ${{ vars.DEPLOY_SMOKE_URL }}
-          DEPLOY_GHCR_USERNAME: ${{ vars.DEPLOY_GHCR_USERNAME }}
-          DEPLOY_COMPOSE_PROJECT: ${{ vars.DEPLOY_COMPOSE_PROJECT }}
-          SSH_KEY_FILE: ${{ runner.temp }}/deploy-key
-          SSH_KNOWN_HOSTS_FILE: ${{ runner.temp }}/deploy-known-hosts
-          GHCR_IMAGE_PREFIX: ghcr.io/${{ github.repository }}
-        run: .github/scripts/deploy-remote.sh "${{ github.sha }}"

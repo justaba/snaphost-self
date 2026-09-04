@@ -3,8 +3,11 @@ set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SCRIPT="$ROOT/infra/deploy.sh"
-SHA=0123456789abcdef0123456789abcdef01234567
-OLD_SHA=89abcdef0123456789abcdef0123456789abcdef
+DOCKERFILE="$ROOT/snaphost-backend/docker/Dockerfile"
+PROD_COMPOSE="$ROOT/infra/docker-compose.prod.yml"
+VERSION=v1.2.3
+OLD_VERSION=v1.2.2
+LEGACY_SHA=0123456789abcdef0123456789abcdef01234567
 # Service accounts this environment's config expects its keys to belong to.
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -21,10 +24,12 @@ cat >"$BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
 set -u
 echo "docker $*" >>"${FAKE_LOG:?}"
-if [[ ${1:-} == login ]]; then [[ ${FAIL_LOGIN:-0} != 1 ]]; exit; fi
+# `docker login` is gone with the public package (Task 7). A fake that still
+# answered it would keep a deleted step looking supported.
+if [[ ${1:-} == login ]]; then echo "docker login is not used" >&2; exit 1; fi
 if [[ ${1:-} == info ]]; then exit 0; fi
 if [[ ${1:-} == image && ${2:-} == inspect ]]; then
-  # check_images_present inspects without --format; login_and_pull inspects
+  # check_images_present inspects without --format; pull_images inspects
   # with one. Only the former simulates a missing rollback image.
   if [[ "$*" != *--format* && ${MISSING_ROLLBACK_IMAGE:-0} == 1 ]]; then exit 1; fi
   echo 'repo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; exit 0
@@ -52,12 +57,12 @@ case "$op" in
     if [[ "$*" == *'--services'* ]]; then
       printf '%s\n' $MANIFEST_SERVICES
     elif [[ "$*" == *'--images'* ]]; then
-      sha=${SNAPHOST_VERSION:?}
-      printf 'ghcr.io/acme/repo/%s:%s\n' snaphost "$sha"
+      version=${WRONG_IMAGE_VERSION:-${SNAPHOST_VERSION:?}}
+      printf 'ghcr.io/acme/repo/%s:%s\n' snaphost "$version"
     elif [[ "$*" != *'--quiet'* ]]; then
       # snaphost publishes a port; the infrastructure service must not.
       # The rendered-compose check greps exactly this shape.
-      printf 'services:\n  snaphost:\n    ports:\n      - target: 8080\n  buildkitd:\n    image: buildkit\n'
+      printf 'services:\n  snaphost:\n    healthcheck:\n      test: [CMD, curl, --fail, http://127.0.0.1:8080/health]\n    ports:\n      - target: 8080\n  buildkitd:\n    image: buildkit\n'
     fi
     ;;
   pull) [[ ${FAIL_PULL:-0} != 1 ]] ;;
@@ -122,6 +127,14 @@ exec /bin/ln "$@"
 FAKE
 chmod +x "$BIN/ln"
 
+cat >"$BIN/chown" <<'FAKE'
+#!/usr/bin/env bash
+set -u
+[[ ${FAIL_ENV_UPDATE:-0} != 1 ]] || exit 1
+exec /usr/bin/chown "$@"
+FAKE
+chmod +x "$BIN/chown"
+
 PASS=0
 FAIL=0
 
@@ -130,14 +143,11 @@ setup_case() {
   mkdir -p "$CASE_DIR/state" "$CASE_DIR/backups"
   COMPOSE="$CASE_DIR/compose.yml"
   ENV_FILE="$CASE_DIR/production.env"
-  TOKEN_FILE="$CASE_DIR/token"
   FAKE_LOG="$CASE_DIR/commands.log"
   : >"$FAKE_LOG"
   : >"$COMPOSE"
-  printf 'token\n' >"$TOKEN_FILE"
-  chmod 600 "$TOKEN_FILE"
   cat >"$ENV_FILE" <<EOF
-SNAPHOST_VERSION=$OLD_SHA
+SNAPHOST_VERSION=$OLD_VERSION
 GHCR_IMAGE_PREFIX=ghcr.io/acme/repo
 SNAPHOST_BIND_ADDRESS=0.0.0.0
 SNAPHOST_PORT=8080
@@ -191,21 +201,26 @@ EOF
   export SNAPHOST_COMPOSE_FILE="$COMPOSE" SNAPHOST_ENV_FILE="$ENV_FILE"
   export SNAPHOST_COMPOSE_PROJECT=snaphost-test
   export SNAPHOST_STATE_DIR="$CASE_DIR/state" SNAPHOST_BACKUP_DIR="$CASE_DIR/backups"
-  export SNAPHOST_GHCR_TOKEN_FILE="$TOKEN_FILE" SNAPHOST_PUBLIC_SMOKE_URL=https://control.invalid
+  export SNAPHOST_PUBLIC_SMOKE_URL=https://control.invalid
   export SNAPHOST_MIN_FREE_KB=0 SNAPHOST_READINESS_TIMEOUT=1 SNAPHOST_STABILITY_DELAY=0
-  unset FAIL_CONFIG FAIL_LOGIN FAIL_PULL FAIL_BACKUP TRUNCATED_BACKUP FAIL_MIGRATION FAIL_READINESS FAIL_SMOKE FAIL_AUTH_SMOKE FAIL_CHECKSUM_PUBLISH GHCR_USERNAME MIGRATIONS_BACKWARD_COMPATIBLE MISSING_ROLLBACK_IMAGE TMPDIR
+  unset FAIL_CONFIG FAIL_PULL FAIL_BACKUP TRUNCATED_BACKUP FAIL_MIGRATION FAIL_READINESS FAIL_SMOKE FAIL_AUTH_SMOKE FAIL_CHECKSUM_PUBLISH FAIL_ENV_UPDATE MIGRATIONS_BACKWARD_COMPATIBLE MISSING_ROLLBACK_IMAGE WRONG_IMAGE_VERSION TMPDIR
 }
 
 # Deployment state as it looks after a successful release, which is the only
 # state a rollback is ever launched from.
+set_case_env_version() {
+  sed -i "s/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=$1/" "$ENV_FILE"
+}
+
 seed_deployed_state() {
   local migration=${1:-not-started}
+  set_case_env_version "$VERSION"
   cat >"$CASE_DIR/state/current.env" <<EOF
-sha=$SHA
+version=$VERSION
 migration_status=$migration
 status=success
 EOF
-  echo "sha=$OLD_SHA" >"$CASE_DIR/state/previous.env"
+  echo "version=$OLD_VERSION" >"$CASE_DIR/state/previous.env"
 }
 
 run_capture() {
@@ -222,57 +237,116 @@ snapshot_case() {
 
 pass() { PASS=$((PASS + 1)); printf 'ok - %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf 'not ok - %s\n' "$1"; cat "$OUTPUT" 2>/dev/null || true; }
-expect_failure() { local name=$1; shift; setup_case; "$@"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass "$name" || fail "$name"; }
+expect_failure() { local name=$1; shift; setup_case; "$@"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass "$name" || fail "$name"; }
 
-setup_case; run_capture preflight bad; [[ $RC -ne 0 ]] && pass 'invalid SHA' || fail 'invalid SHA'
-setup_case; rm "$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'missing env' || fail 'missing env'
-setup_case; echo 'PUBLIC_HOST=example.com' >>"$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'placeholder env' || fail 'placeholder env'
-setup_case; chmod 640 "$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0640 production env rejected' || fail '0640 production env rejected'
-setup_case; chmod 644 "$ENV_FILE"; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass '0644 production env rejected' || fail '0644 production env rejected'
-setup_case; export FAIL_CONFIG=1; run_capture preflight "$SHA"; [[ $RC -ne 0 ]] && pass 'Compose validation failure' || fail 'Compose validation failure'
+setup_case; run_capture preflight bad; [[ $RC -ne 0 ]] && pass 'invalid version' || fail 'invalid version'
+setup_case; run_capture preflight 1.2.3; [[ $RC -ne 0 ]] && pass 'version requires v prefix' || fail 'version requires v prefix'
+setup_case; run_capture preflight v1.2; [[ $RC -ne 0 ]] && pass 'version requires three components' || fail 'version requires three components'
+setup_case; run_capture preflight v01.2.3; [[ $RC -ne 0 ]] && pass 'version rejects leading zero' || fail 'version rejects leading zero'
+setup_case; run_capture preflight latest; [[ $RC -ne 0 ]] && pass 'latest version is rejected' || fail 'latest version is rejected'
+setup_case; run_capture preflight "$LEGACY_SHA"; [[ $RC -ne 0 ]] && pass 'SHA is not an upgrade target' || fail 'SHA is not an upgrade target'
+setup_case; sed -i 's/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=latest/' "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'floating version in env is rejected' || fail 'floating version in env is rejected'
+setup_case; rm "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'missing env' || fail 'missing env'
+setup_case; echo 'PUBLIC_HOST=example.com' >>"$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'placeholder env' || fail 'placeholder env'
+setup_case; chmod 640 "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass '0640 production env rejected' || fail '0640 production env rejected'
+setup_case; chmod 644 "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass '0644 production env rejected' || fail '0644 production env rejected'
+setup_case; export FAIL_CONFIG=1; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'Compose validation failure' || fail 'Compose validation failure'
+setup_case; export WRONG_IMAGE_VERSION=v1.2.30; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'image tag must exactly match target version' || fail 'image tag must exactly match target version'
+
+# The old readiness probe started this image with `--entrypoint curl`, although
+# the image did not contain curl. The fake accepted any entrypoint, so every
+# test passed while every real rollout failed after migrations. The runtime now
+# owns a Docker healthcheck and contains the client that healthcheck executes;
+# deploy.sh waits for that health state instead of inventing a second container.
+if sed -n '/^FROM debian:12-slim/,$p' "$DOCKERFILE" | grep -qE '^[[:space:]]+curl[[:space:]]+\\$' \
+  && sed -n '/^  snaphost:/,/^  [a-zA-Z0-9_-]*:/p' "$PROD_COMPOSE" | grep -Fq 'http://127.0.0.1:8080/health' \
+  && ! grep -q -- '--entrypoint curl' "$SCRIPT"; then
+  pass 'runtime image and production healthcheck share a real readiness client'
+else
+  fail 'runtime image and production healthcheck share a real readiness client'
+fi
+
+# Task 7 item 4: preflight asserts three variables, not forty-five. Everything
+# else has a default in the application, and an unset variable reaches it as an
+# empty string, which its config readers already treat as unset.
+setup_case
+cat >"$ENV_FILE" <<EOF
+SNAPHOST_VERSION=$OLD_VERSION
+DOMAIN_SUFFIX=apps.prod.invalid
+OPENROUTER_API_KEY=key
+EOF
+chmod 600 "$ENV_FILE"
+run_capture preflight "$VERSION"
+[[ $RC -eq 0 ]] && pass 'preflight passes on the three required variables alone' || fail 'preflight passes on the three required variables alone'
+
+# ...and still refuses when one of the three is absent, which is what stops the
+# shorter list from becoming no list.
+for missing in SNAPHOST_VERSION DOMAIN_SUFFIX OPENROUTER_API_KEY; do
+  setup_case
+  cat >"$ENV_FILE" <<EOF
+SNAPHOST_VERSION=$OLD_VERSION
+DOMAIN_SUFFIX=apps.prod.invalid
+OPENROUTER_API_KEY=key
+EOF
+  grep -v "^$missing=" "$ENV_FILE" >"$ENV_FILE.tmp" && mv "$ENV_FILE.tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  run_capture preflight "$VERSION"
+  [[ $RC -ne 0 ]] && pass "preflight refuses a missing $missing" || fail "preflight refuses a missing $missing"
+done
+
+# A host part-way through its first install has no public HTTPS yet. The public
+# smoke is skipped rather than fatal, and says so — a deploy that verified less
+# must not look identical to one that verified everything.
+setup_case; unset SNAPHOST_PUBLIC_SMOKE_URL; run_capture deploy "$VERSION"
+if [[ $RC -eq 0 ]] && grep -q 'Public smoke skipped' "$OUTPUT"; then
+  pass 'deploy without a public smoke URL succeeds and announces the skip'
+else
+  fail 'deploy without a public smoke URL succeeds and announces the skip'
+fi
 
 setup_case
-run_capture preflight "$SHA"
-run_capture preflight "$OLD_SHA"
+run_capture preflight "$VERSION"
+run_capture preflight "$OLD_VERSION"
 projects=$(grep -o -- '--project-name [^ ]*' "$FAKE_LOG" | sort -u)
-if [[ "$projects" == '--project-name snaphost-test' ]]; then pass 'Compose project is stable across release SHAs'; else fail 'Compose project is stable across release SHAs'; fi
+if [[ "$projects" == '--project-name snaphost-test' ]]; then pass 'Compose project is stable across versions'; else fail 'Compose project is stable across versions'; fi
 
-setup_case; export GHCR_USERNAME=operator FAIL_LOGIN=1; run_capture deploy "$SHA"; [[ $RC -ne 0 ]] && pass 'GHCR login failure' || fail 'GHCR login failure'
-setup_case; export FAIL_PULL=1; run_capture deploy "$SHA"; if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG"; then pass 'pull failure leaves runtime'; else fail 'pull failure leaves runtime'; fi
-setup_case; export FAIL_BACKUP=1; run_capture deploy "$SHA"; if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG"; then pass 'backup failure stops rollout'; else fail 'backup failure stops rollout'; fi
+setup_case; export FAIL_PULL=1; run_capture deploy "$VERSION"; if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG"; then pass 'pull failure leaves runtime'; else fail 'pull failure leaves runtime'; fi
+setup_case; export FAIL_BACKUP=1; run_capture deploy "$VERSION"; if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG"; then pass 'backup failure stops rollout'; else fail 'backup failure stops rollout'; fi
 # A dump cut short is the dangerous case, because it is not an error: sqlite3
 # can exit 0 after printing part of one, and the result restores cleanly into a
 # database missing whatever came after the cut. The terminating COMMIT is the
 # only thing that says the read transaction finished.
-setup_case; export TRUNCATED_BACKUP=1; run_capture deploy "$SHA"
+setup_case; export TRUNCATED_BACKUP=1; run_capture deploy "$VERSION"
 if [[ $RC -ne 0 ]] && ! grep -q ' compose .* up ' "$FAKE_LOG" && [[ -z $(find "$CASE_DIR/backups" -maxdepth 1 -name '*.sql' -print -quit) ]]; then
   pass 'truncated backup stops rollout and publishes nothing'
 else
   fail 'truncated backup stops rollout and publishes nothing'
 fi
-setup_case; export FAIL_MIGRATION=1; run_capture deploy "$SHA"; [[ $RC -ne 0 && -f "$CASE_DIR/state/in-progress.env" ]] && pass 'migration failure recorded' || fail 'migration failure recorded'
-setup_case; export FAIL_READINESS=1; run_capture deploy "$SHA"; [[ $RC -ne 0 ]] && pass 'readiness timeout' || fail 'readiness timeout'
-setup_case; export FAIL_SMOKE=1; run_capture deploy "$SHA"; [[ $RC -ne 0 ]] && pass 'smoke failure' || fail 'smoke failure'
+setup_case; export FAIL_MIGRATION=1; run_capture deploy "$VERSION"; [[ $RC -ne 0 && -f "$CASE_DIR/state/in-progress.env" ]] && pass 'migration failure recorded' || fail 'migration failure recorded'
+setup_case; export FAIL_READINESS=1; run_capture deploy "$VERSION"; [[ $RC -ne 0 ]] && pass 'readiness timeout' || fail 'readiness timeout'
+setup_case; export FAIL_SMOKE=1; run_capture deploy "$VERSION"; [[ $RC -ne 0 ]] && pass 'smoke failure' || fail 'smoke failure'
 
 setup_case
+set_case_env_version "$VERSION"
 cat >"$CASE_DIR/state/current.env" <<EOF
-sha=$SHA
+version=$VERSION
 migration_status=not-started
 EOF
-echo "sha=$OLD_SHA" >"$CASE_DIR/state/previous.env"
+echo "version=$OLD_VERSION" >"$CASE_DIR/state/previous.env"
 run_capture rollback
 [[ $RC -eq 0 ]] && pass 'rollback before migrations' || fail 'rollback before migrations'
 
 setup_case
+set_case_env_version "$VERSION"
 cat >"$CASE_DIR/state/current.env" <<EOF
-sha=$SHA
+version=$VERSION
 migration_status=applied
 EOF
-echo "sha=$OLD_SHA" >"$CASE_DIR/state/previous.env"
+echo "version=$OLD_VERSION" >"$CASE_DIR/state/previous.env"
 run_capture rollback
 [[ $RC -ne 0 ]] && pass 'rollback blocked after migrations' || fail 'rollback blocked after migrations'
 
-setup_case; run_capture --dry-run deploy "$SHA"
+setup_case; run_capture --dry-run deploy "$VERSION"
 leaked=0
 for secret in production-password openrouter-test-key token; do
   if grep -R -Fq "$secret" "$CASE_DIR/state" "$OUTPUT"; then leaked=1; fi
@@ -281,11 +355,12 @@ if [[ $leaked -eq 0 ]]; then pass 'secrets absent from output/state'; else fail 
 
 setup_case
 rm -rf "$CASE_DIR/backups"
+set_case_env_version "$VERSION"
 cat >"$CASE_DIR/state/current.env" <<EOF
-sha=$SHA
+version=$VERSION
 migration_status=not-started
 EOF
-echo "sha=$OLD_SHA" >"$CASE_DIR/state/previous.env"
+echo "version=$OLD_VERSION" >"$CASE_DIR/state/previous.env"
 before=$(snapshot_case)
 run_capture --dry-run rollback
 after=$(snapshot_case)
@@ -293,9 +368,9 @@ if [[ $RC -eq 0 && "$before" == "$after" && ! -e "$CASE_DIR/backups" && ! -e "$C
 
 setup_case
 export FAIL_MIGRATION=1
-run_capture deploy "$SHA"
+run_capture deploy "$VERSION"
 rm -f "$CASE_DIR/state/in-progress.env"
-run_capture deploy "$OLD_SHA"
+run_capture deploy "$OLD_VERSION"
 dumps=$(find "$CASE_DIR/backups" -maxdepth 1  -name '*.sql' | wc -l)
 checksums=$(find "$CASE_DIR/backups" -maxdepth 1  -name '*.sql.sha256' | wc -l)
 if [[ $dumps -eq 2 && $checksums -eq 2 ]]; then
@@ -309,12 +384,53 @@ else
 fi
 
 setup_case
-run_capture deploy "$SHA"
-if [[ $RC -eq 0 && ! -e "$CASE_DIR/state/previous.env" ]]; then pass 'first deployment does not create empty previous state'; else fail 'first deployment does not create empty previous state'; fi
+run_capture deploy "$VERSION"
+if [[ $RC -eq 0 ]] \
+  && [[ ! -e "$CASE_DIR/state/previous.env" ]] \
+  && [[ $(awk -F= '$1=="version"{print $2}' "$CASE_DIR/state/current.env") == "$VERSION" ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$ENV_FILE") == "$VERSION" ]]; then
+  pass 'first deployment records and persists its version'
+else fail 'first deployment records and persists its version'; fi
+
+# Existing hosts have SHA-shaped state from the pre-Task-7 deploy script. A
+# semantic-version deploy must consume that state and retain it as the one-time
+# rollback target without making SHA a valid user-facing deploy argument.
+setup_case
+set_case_env_version "$LEGACY_SHA"
+cat >"$CASE_DIR/state/current.env" <<EOF
+sha=$LEGACY_SHA
+migration_status=not-started
+status=success
+EOF
+run_capture deploy "$VERSION"
+if [[ $RC -eq 0 ]] \
+  && [[ $(awk -F= '$1=="version"{print $2}' "$CASE_DIR/state/current.env") == "$VERSION" ]] \
+  && [[ $(awk -F= '$1=="sha"{print $2}' "$CASE_DIR/state/previous.env") == "$LEGACY_SHA" ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$ENV_FILE") == "$VERSION" ]]; then
+  pass 'semantic-version deploy preserves a legacy SHA rollback target'
+else fail 'semantic-version deploy preserves a legacy SHA rollback target'; fi
+
+export MIGRATIONS_BACKWARD_COMPATIBLE=true
+run_capture rollback
+if [[ $RC -eq 0 ]] \
+  && [[ $(awk -F= '$1=="sha"{print $2}' "$CASE_DIR/state/current.env") == "$LEGACY_SHA" ]] \
+  && [[ $(awk -F= '$1=="version"{print $2}' "$CASE_DIR/state/previous.env") == "$VERSION" ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$ENV_FILE") == "$LEGACY_SHA" ]]; then
+  pass 'legacy rollback remains available for the first SemVer upgrade'
+else fail 'legacy rollback remains available for the first SemVer upgrade'; fi
+
+setup_case
+seed_deployed_state
+set_case_env_version "$OLD_VERSION"
+run_capture rollback
+if [[ $RC -ne 0 ]] && grep -q 'does not match current deployment state' "$OUTPUT" \
+  && ! grep -q ' compose .* up ' "$FAKE_LOG"; then
+  pass 'env and state drift blocks rollback before runtime changes'
+else fail 'env and state drift blocks rollback before runtime changes'; fi
 
 setup_case
 export FAIL_CHECKSUM_PUBLISH=1
-run_capture deploy "$SHA"
+run_capture deploy "$VERSION"
 dumps=$(find "$CASE_DIR/backups" -maxdepth 1  -name '*.sql' | wc -l)
 checksums=$(find "$CASE_DIR/backups" -maxdepth 1  -name '*.sql.sha256' | wc -l)
 if [[ $RC -ne 0 && $dumps -eq 0 && $checksums -eq 0 ]]; then pass 'checksum publish failure removes current dump'; else fail 'checksum publish failure removes current dump'; fi
@@ -327,7 +443,7 @@ setup_case
 ) &
 lock_pid=$!
 sleep 1
-run_capture deploy "$SHA"
+run_capture deploy "$VERSION"
 kill "$lock_pid" 2>/dev/null || true
 wait "$lock_pid" 2>/dev/null || true
 [[ $RC -ne 0 ]] && pass 'concurrent deployment lock' || fail 'concurrent deployment lock'
@@ -335,25 +451,25 @@ wait "$lock_pid" 2>/dev/null || true
 # A non-recoverable unfinished state (migrations touched) must still block.
 setup_case
 cat >"$CASE_DIR/state/current.env" <<EOF
-sha=$SHA
+version=$VERSION
 migration_status=applied
 EOF
 cat >"$CASE_DIR/state/in-progress.env" <<EOF
-sha=$SHA
+version=$VERSION
 status=manual-intervention-required
 migration_status=applied
 EOF
-run_capture deploy "$OLD_SHA"
+run_capture deploy "$OLD_VERSION"
 if [[ $RC -ne 0 ]] && grep -q 'unfinished deployment state exists' "$OUTPUT"; then pass 'manual-intervention state still blocks deploy'; else fail 'manual-intervention state still blocks deploy'; fi
 
 # A failed-before-migrations state touched no database and is cleared automatically.
 setup_case
 cat >"$CASE_DIR/state/in-progress.env" <<EOF
-sha=$SHA
+version=$VERSION
 status=failed-before-migrations
 migration_status=not-started
 EOF
-run_capture deploy "$OLD_SHA"
+run_capture deploy "$OLD_VERSION"
 if grep -q 'Clearing safe failed-before-migrations' "$OUTPUT" && ! grep -q 'unfinished deployment state exists' "$OUTPUT"; then pass 'failed-before-migrations state auto-cleared'; else fail 'failed-before-migrations state auto-cleared'; fi
 
 # --- stdin consumption ---------------------------------------------------
@@ -366,7 +482,7 @@ if grep -q 'Clearing safe failed-before-migrations' "$OUTPUT" && ! grep -q 'unfi
 setup_case
 marker="$CASE_DIR/after-deploy-marker"
 printf '%s\n' \
-  "\"$SCRIPT\" deploy \"$SHA\" >/dev/null 2>&1" \
+  "\"$SCRIPT\" deploy \"$VERSION\" >/dev/null 2>&1" \
   "touch \"$marker\"" | bash -s
 if [[ -f "$marker" ]]; then
   pass 'commands after a piped deploy still run (stdin is not consumed)'
@@ -391,7 +507,7 @@ setup_case
 seed_deployed_state applied
 export MIGRATIONS_BACKWARD_COMPATIBLE=true
 run_capture rollback
-if [[ $RC -eq 0 ]] && grep -q "Rollback completed: $OLD_SHA" "$OUTPUT"; then
+if [[ $RC -eq 0 ]] && grep -q "Rollback completed: $OLD_VERSION" "$OUTPUT"; then
   pass 'rollback after migrations proceeds once compatibility is confirmed'
 else fail 'rollback after migrations proceeds once compatibility is confirmed'; fi
 
@@ -399,10 +515,11 @@ setup_case
 seed_deployed_state
 run_capture rollback
 if [[ $RC -eq 0 ]] \
-  && [[ $(awk -F= '$1=="sha"{print $2}' "$CASE_DIR/state/current.env") == "$OLD_SHA" ]] \
+  && [[ $(awk -F= '$1=="version"{print $2}' "$CASE_DIR/state/current.env") == "$OLD_VERSION" ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$ENV_FILE") == "$OLD_VERSION" ]] \
   && [[ $(awk -F= '$1=="status"{print $2}' "$CASE_DIR/state/current.env") == rollback-success ]]; then
-  pass 'rollback records the restored SHA and a rollback status'
-else fail 'rollback records the restored SHA and a rollback status'; fi
+  pass 'rollback records the restored version and a rollback status'
+else fail 'rollback records the restored version and a rollback status'; fi
 
 # Rolling back twice must return to where it started, otherwise an operator who
 # rolls back one release too far has no way back.
@@ -410,9 +527,9 @@ setup_case
 seed_deployed_state
 run_capture rollback
 run_capture rollback
-if [[ $RC -eq 0 && $(awk -F= '$1=="sha"{print $2}' "$CASE_DIR/state/current.env") == "$SHA" ]]; then
-  pass 'a second rollback returns to the original SHA'
-else fail 'a second rollback returns to the original SHA'; fi
+if [[ $RC -eq 0 && $(awk -F= '$1=="version"{print $2}' "$CASE_DIR/state/current.env") == "$VERSION" ]]; then
+  pass 'a second rollback returns to the original version'
+else fail 'a second rollback returns to the original version'; fi
 
 setup_case
 seed_deployed_state applied
@@ -430,13 +547,13 @@ if [[ $RC -ne 0 ]] && grep -q 'current/previous deployment state is unavailable'
   pass 'rollback without previous state refuses'
 else fail 'rollback without previous state refuses'; fi
 
-# The recorded SHA is what gets deployed, so a corrupted state file must stop
+# The recorded version is what gets deployed, so a corrupted state file must stop
 # the rollback rather than resolve to some arbitrary image tag.
 setup_case
 seed_deployed_state
-echo 'sha=not-a-sha' >"$CASE_DIR/state/previous.env"
+echo 'version=not-a-version' >"$CASE_DIR/state/previous.env"
 run_capture rollback
-if [[ $RC -ne 0 ]]; then pass 'rollback refuses a malformed previous SHA'; else fail 'rollback refuses a malformed previous SHA'; fi
+if [[ $RC -ne 0 ]]; then pass 'rollback refuses a malformed previous version'; else fail 'rollback refuses a malformed previous version'; fi
 
 setup_case
 seed_deployed_state
@@ -453,9 +570,24 @@ setup_case
 seed_deployed_state
 export FAIL_SMOKE=1
 run_capture rollback
-if [[ $RC -ne 0 && $(awk -F= '$1=="sha"{print $2}' "$CASE_DIR/state/current.env") == "$SHA" ]]; then
+if [[ $RC -ne 0 && $(awk -F= '$1=="version"{print $2}' "$CASE_DIR/state/current.env") == "$VERSION" ]]; then
   pass 'a failed rollback smoke does not record success'
 else fail 'a failed rollback smoke does not record success'; fi
+
+# If the runtime moved but the pinned env version cannot be published, leaving
+# the old state behind would make the next operation believe the old runtime is
+# still live. Roll back the runtime change while the old env/state still agree.
+setup_case
+seed_deployed_state
+export FAIL_ENV_UPDATE=1
+run_capture rollback
+ups=$(grep -c ' compose .* up ' "$FAKE_LOG")
+if [[ $RC -ne 0 && $ups -eq 4 ]] \
+  && grep -q 'original runtime restored' "$OUTPUT" \
+  && [[ $(awk -F= '$1=="version"{print $2}' "$CASE_DIR/state/current.env") == "$VERSION" ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$ENV_FILE") == "$VERSION" ]]; then
+  pass 'env update failure restores the original runtime and state contract'
+else fail 'env update failure restores the original runtime and state contract'; fi
 
 setup_case
 seed_deployed_state

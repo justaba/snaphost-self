@@ -79,8 +79,8 @@ SQLite -> named snaphost_data volume
 ~~~
 
 The production manifest contains snaphost, the one-shot migration profile and
-BuildKit. It pins one application image to a 40-character Git SHA and leaves TLS
-and public routing to the host. It is an environment-specific deployment
+BuildKit. It pins one application image to a `vMAJOR.MINOR.PATCH` tag and leaves
+TLS and public routing to the host. It is an environment-specific deployment
 artifact, not yet a supported installer.
 
 Task 2 changes preview TTLs into opt-in expiry and adds persistent per-project

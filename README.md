@@ -14,9 +14,10 @@ collapsed into one Go process; the completed work and its measurements are in
 
 The single-binary architecture is implemented and tested. The repository is
 usable for development, but it is **not yet a generally installable self-hosted
-product**: the production manifest and SSH deployment workflow still describe
-the original operator's hosts. Installation, upgrades and a supported release
-contract are [Task 7](docs/tasks/planned/0007-install-and-upgrade.md).
+product**: repository-owned SSH deployment has been removed and the production
+manifest now uses pinned SemVer images, but the first-install and checkout
+upgrade procedure is still unfinished. Installation, upgrades and the
+supported release contract are [Task 7](docs/tasks/planned/0007-install-and-upgrade.md).
 
 Current limitations that matter operationally:
 

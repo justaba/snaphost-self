@@ -3,16 +3,21 @@
 Status: Scripted and covered by fake-command tests; portable installation and a
 current live rehearsal are not complete
 Type: Operations
-Updated: 2026-08-30
+Updated: 2026-09-04
 
 There are two different rollback operations.
 
 ## Release rollback
 
-Application images are immutable and tagged by a full Git SHA. infra/deploy.sh
+Application releases use exact `vMAJOR.MINOR.PATCH` image tags. infra/deploy.sh
 records current.env, previous.env and in-progress.env under the deployment state
-directory. Release rollback selects the saved previous SHA; it never rebuilds a
-branch and never accepts latest.
+directory. Release rollback selects the saved previous version; it never
+rebuilds a branch and never accepts `latest`.
+
+For one transition from the old release model, rollback may read a saved
+40-character `sha=` value. A SHA is not accepted as a new deploy target. This
+keeps the pre-upgrade image recoverable without making the debugging tag part
+of the supported version interface.
 
 ~~~bash
 infra/deploy.sh --dry-run rollback
@@ -37,9 +42,18 @@ If a deploy or rollback leaves in-progress.env, inspect it and the current
 container image before taking another action. Do not delete the file merely to
 make the guard pass.
 
-The deployment scripts target the repository owner's SSH release layout. Their
-logic is tested, but their paths and release model are not a supported
-third-party installation contract.
+The command also refuses to touch containers when `SNAPHOST_VERSION` in the env
+file disagrees with current.env. Reconcile that mismatch against the image
+which is actually running; do not edit one side blindly.
+
+If the runtime rollback succeeds but the env-file replacement fails, the
+script immediately restores the original runtime and leaves the old state
+contract intact. A failure of that compensation is reported as manual
+intervention required.
+
+The old repository-owner SSH release layout has been removed. The scripted
+logic is tested, but the first-install and checkout-upgrade procedure is not yet
+a supported third-party installation contract.
 
 ## Site rollback
 
@@ -74,12 +88,12 @@ After release rollback verify:
 - /health;
 - anonymous protected API returns 401;
 - operator login and project listing;
-- the running image SHA and restart count;
+- the running image version/digest and restart count;
 - current.env and previous.env ownership and contents;
 - absence of an unexpected in-progress.env;
 - a real deploy when the release touched builder or runtime behavior.
 
-infra/tests/deploy_test.sh exercises guards, state transitions, migration
-compatibility decisions, missing images, smoke failures and lock contention
-with fake external commands. It cannot prove Docker, disk, credentials, SQLite
-volume access or public routing on a real host.
+infra/tests/deploy_test.sh exercises SemVer guards, legacy-state transition,
+env/state updates, migration compatibility decisions, missing images, health
+and smoke failures, and lock contention with fake external commands. It cannot
+prove Docker, disk, SQLite volume access or public routing on a real host.

@@ -6,8 +6,6 @@ COMPOSE_PROJECT=${SNAPHOST_COMPOSE_PROJECT:-snaphost}
 ENV_FILE=${SNAPHOST_ENV_FILE:-/opt/snaphost/env/production.env}
 STATE_DIR=${SNAPHOST_STATE_DIR:-/opt/snaphost/state}
 BACKUP_DIR=${SNAPHOST_BACKUP_DIR:-/opt/snaphost/backups}
-GHCR_TOKEN_FILE=${SNAPHOST_GHCR_TOKEN_FILE:-/opt/snaphost/secrets/ghcr-token}
-GHCR_USERNAME=${GHCR_USERNAME:-}
 PUBLIC_SMOKE_URL=${SNAPHOST_PUBLIC_SMOKE_URL:-}
 DRY_RUN=${SNAPHOST_DRY_RUN:-false}
 ALLOW_HTTP_SMOKE=${SNAPHOST_ALLOW_HTTP_SMOKE:-false}
@@ -28,8 +26,8 @@ INFRA_SERVICES=(buildkitd)
 EXPECTED_SERVICES=("${INFRA_SERVICES[@]}" snaphost)
 SNAPHOST_IMAGES=(snaphost)
 PHASE=preflight
-TARGET_SHA=
-PREVIOUS_SHA=
+TARGET_VERSION=
+PREVIOUS_VERSION=
 BACKUP_PATH=
 IMAGE_DIGESTS=
 log() { printf '%s\n' "$*"; }
@@ -45,8 +43,8 @@ action() {
 
 usage() {
   cat <<'EOF'
-Usage: deploy.sh [--dry-run] preflight <40-char-git-sha>
-       deploy.sh [--dry-run] deploy <40-char-git-sha>
+Usage: deploy.sh [--dry-run] preflight <vMAJOR.MINOR.PATCH>
+       deploy.sh [--dry-run] deploy <vMAJOR.MINOR.PATCH>
        deploy.sh [--dry-run] rollback
 EOF
 }
@@ -73,17 +71,34 @@ check_protected_file() {
 }
 
 compose() {
-  SNAPHOST_VERSION="$TARGET_SHA" docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+  SNAPHOST_VERSION="$TARGET_VERSION" docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
 
-validate_sha() {
-  [[ ${1:-} =~ ^[[:xdigit:]]{40}$ ]] || die "version must be exactly 40 hexadecimal characters"
+is_version() {
+  [[ ${1:-} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+}
+
+is_legacy_sha() {
+  [[ ${1:-} =~ ^[[:xdigit:]]{40}$ ]]
+}
+
+validate_version() {
+  is_version "$1" || die "version must match vMAJOR.MINOR.PATCH (for example v1.2.3)"
+}
+
+# State written before Task 7 used an exact Git SHA as the release identifier.
+# It is accepted only while reading or preserving saved state, so an existing
+# installation can upgrade once and still roll back. User-facing
+# preflight/deploy commands never accept it; successful new deploys write a
+# semantic version.
+validate_saved_release() {
+  is_version "$1" || is_legacy_sha "$1" || die "saved release must be vMAJOR.MINOR.PATCH or a legacy 40-character Git SHA"
 }
 
 check_tools() {
   (( BASH_VERSINFO[0] >= 4 )) || die "Bash 4 or newer is required"
   local tool
-  for tool in docker curl flock sha256sum awk grep sed stat df mktemp ln; do
+  for tool in docker curl flock sha256sum awk grep sed stat df mktemp ln chown; do
     command -v "$tool" >/dev/null || die "required command is unavailable: $tool"
   done
   docker compose version >/dev/null || die "Docker Compose v2 is unavailable"
@@ -104,9 +119,16 @@ validate_rendered_compose() {
 
   images=$(compose config --images) || die "cannot list Compose images"
   grep -Eq '(^|[/:])latest$' <<<"$images" && die "latest image tag is forbidden"
-  local image
+  local image rendered_image found
   for image in "${SNAPHOST_IMAGES[@]}"; do
-    grep -Fq "/$image:$TARGET_SHA" <<<"$images" || die "SnapHost image $image is not pinned to target SHA"
+    found=false
+    while IFS= read -r rendered_image; do
+      if [[ "$rendered_image" == */"$image:$TARGET_VERSION" ]]; then
+        found=true
+        break
+      fi
+    done <<<"$images"
+    [[ "$found" == true ]] || die "SnapHost image $image is not pinned to target version"
   done
   grep -Eq '^[[:space:]]*build:' "$COMPOSE_FILE" && die "build directives are forbidden"
 
@@ -122,9 +144,7 @@ validate_rendered_compose() {
   rm -f "$rendered"
 }
 
-preflight() {
-  TARGET_SHA=$1
-  validate_sha "$TARGET_SHA"
+preflight_checks() {
   [[ "$COMPOSE_PROJECT" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || die "SNAPHOST_COMPOSE_PROJECT must match ^[a-z0-9][a-z0-9_-]{0,62}$"
   check_tools
   [[ -f "$COMPOSE_FILE" ]] || die "Compose file does not exist: $COMPOSE_FILE"
@@ -132,31 +152,41 @@ preflight() {
   if grep -Eqi 'replace-with-|example-|example\.com|example-registry' "$ENV_FILE"; then
     die "production env contains a template placeholder"
   fi
-  local key
-  for key in \
-    SNAPHOST_VERSION GHCR_IMAGE_PREFIX SNAPHOST_BIND_ADDRESS SNAPHOST_PORT DOMAIN_SUFFIX \
-    CORS_ALLOW_ORIGINS RUN_MIGRATIONS \
-    SAGA_BUILD_TIMEOUT_MIN SAGA_RESUME_INTERVAL_SEC \
-    DEPLOY_DEFAULT_PORT LOG_LEVEL \
-    MAX_REPO_SIZE_MB MAX_BUILD_TIME_MIN MAX_CONCURRENT_PER_USER \
-    ALLOWED_GIT_HOSTS ALLOWED_BASE_IMAGES ALLOWED_BASE_IMAGES_PERMISSIVE \
-    CONTAINER_CPU_LIMIT CONTAINER_MEMORY_MB CONTAINER_DEFAULT_TTL_MIN WATCHDOG_INTERVAL_SEC \
-    STRICT_IMAGE_VALIDATION ALLOWED_IMAGE_PREFIXES \
-    RUNTIME_PROBE_ENABLED RUNTIME_PROBE_TIMEOUT_SEC RESERVED_DOMAINS \
-    DEPLOY_TTL_MIN DEPLOY_TTL_MAX_MIN MAX_DOMAINS_PER_USER DOMAIN_ATTACH_REQUIRE_IDENTITY DOMAIN_ATTACH_PER_HOUR \
-    DOMAIN_VERIFY_INTERVAL_SEC DOMAIN_REVERIFY_HOURS DOMAIN_VERIFY_GRACE_HOURS PROJECT_DEPLOY_RETENTION \
-    LLM_BASE_URL LLM_JSON_MODE OPENROUTER_API_KEY OPENROUTER_MODEL OPENROUTER_REFERER OPENROUTER_APP_NAME LLM_TIMEOUT \
-    SNAPHOST_CPU_LIMIT SNAPHOST_MEMORY_LIMIT \
-    BUILDKIT_CPU_LIMIT BUILDKIT_MEMORY_LIMIT; do
+  # Three variables, where there used to be forty-five.
+  #
+  # The long list was a SaaS operator's configuration file asserted line by
+  # line. Every entry on it that is not here has a default in the Go config
+  # packages, and an unset variable reaches them as an empty string, which
+  # every reader (`envOrDefault`, `parseIntEnv`, `parseBoolEnv`) already treats
+  # as "unset" and answers with that default. Requiring them bought nothing and
+  # cost an installer forty-two decisions it has no basis to make.
+  #
+  # What survives is what has no default that could be right:
+  #
+  #   SNAPHOST_VERSION    the version to run; the whole point of an upgrade
+  #   DOMAIN_SUFFIX       generated deploy hostnames are meaningless without it
+  #   OPENROUTER_API_KEY  the application refuses to start without one
+  #
+  # The variables Compose itself interpolates — the image prefix, the published
+  # address and port, both CPU and memory pairs — are not on this list either,
+  # because they now carry defaults in the manifest. An empty value there would
+  # render an invalid manifest rather than fall back, which is why they need the
+  # default at that layer instead of an assertion at this one.
+  local key configured_version
+  for key in SNAPHOST_VERSION DOMAIN_SUFFIX OPENROUTER_API_KEY; do
     require_env "$key"
   done
+  configured_version=$(env_value SNAPHOST_VERSION)
+  is_version "$configured_version" || is_legacy_sha "$configured_version" || \
+    die "SNAPHOST_VERSION in env file must be vMAJOR.MINOR.PATCH (or a legacy 40-character Git SHA during transition)"
   # The Docker socket is the runtime's largest privilege and has no
   # environment-specific identity check.
-  if [[ -n "$GHCR_USERNAME" ]]; then
-    check_protected_file "GHCR token" "$GHCR_TOKEN_FILE"
-  fi
-  [[ -n "$PUBLIC_SMOKE_URL" ]] || die "SNAPHOST_PUBLIC_SMOKE_URL is required"
-  if [[ "$ALLOW_HTTP_SMOKE" != true && ! "$PUBLIC_SMOKE_URL" =~ ^https:// ]]; then
+  #
+  # A public smoke URL is optional: a host part-way through its first install
+  # has no public HTTPS yet, and refusing to deploy until it does would make
+  # the first deploy the one an operator cannot perform. When it is set it is
+  # still checked, and still has to be HTTPS unless explicitly allowed.
+  if [[ -n "$PUBLIC_SMOKE_URL" && "$ALLOW_HTTP_SMOKE" != true && ! "$PUBLIC_SMOKE_URL" =~ ^https:// ]]; then
     die "public smoke URL must use HTTPS"
   fi
   validate_rendered_compose
@@ -167,7 +197,13 @@ preflight() {
     free_kb=$(df -Pk "$disk_path" 2>/dev/null | awk 'NR==2 {print $4}') || free_kb=0
     (( free_kb >= MIN_FREE_KB )) || die "insufficient free disk space for $requested"
   done
-  log "Preflight passed for $TARGET_SHA"
+  log "Preflight passed for $TARGET_VERSION"
+}
+
+preflight() {
+  TARGET_VERSION=$1
+  validate_version "$TARGET_VERSION"
+  preflight_checks
 }
 
 atomic_state() {
@@ -185,9 +221,60 @@ state_value() {
   awk -F= -v key="$key" '$1==key {sub(/^[^=]*=/, ""); print; exit}' "$STATE_DIR/$file"
 }
 
+state_release() {
+  local file=$1 value
+  value=$(state_value "$file" version)
+  if [[ -z "$value" ]]; then
+    value=$(state_value "$file" sha)
+  fi
+  printf '%s\n' "$value"
+}
+
+assert_env_matches_current() {
+  [[ -f "$STATE_DIR/current.env" ]] || return 0
+  local configured current
+  configured=$(env_value SNAPHOST_VERSION)
+  current=$(state_release current.env)
+  validate_saved_release "$current"
+  [[ "$configured" == "$current" ]] || \
+    die "SNAPHOST_VERSION in env file ($configured) does not match current deployment state ($current)"
+}
+
+set_env_release() {
+  local version=$1 dir tmp
+  validate_saved_release "$version"
+  dir=$(dirname "$ENV_FILE")
+  tmp=$(mktemp "$dir/.production.env.XXXXXX")
+  if ! awk -v version="$version" '
+    BEGIN { replaced=0 }
+    /^SNAPHOST_VERSION=/ {
+      if (!replaced) print "SNAPHOST_VERSION=" version
+      replaced=1
+      next
+    }
+    { print }
+    END { if (!replaced) print "SNAPHOST_VERSION=" version }
+  ' "$ENV_FILE" >"$tmp"; then
+    rm -f -- "$tmp"
+    die "cannot update SNAPHOST_VERSION in env file"
+  fi
+  chmod --reference="$ENV_FILE" "$tmp" || { rm -f -- "$tmp"; die "cannot preserve env file permissions"; }
+  chown --reference="$ENV_FILE" "$tmp" || { rm -f -- "$tmp"; die "cannot preserve env file ownership"; }
+  mv -f -- "$tmp" "$ENV_FILE" || { rm -f -- "$tmp"; die "cannot publish updated env file"; }
+}
+
+release_state_line() {
+  local version=$1
+  if is_version "$version"; then
+    printf 'version=%s\n' "$version"
+  else
+    printf 'sha=%s\n' "$version"
+  fi
+}
+
 write_progress() {
   atomic_state in-progress.env \
-    "sha=$TARGET_SHA" "previous_sha=$PREVIOUS_SHA" "started_at=$(date -u +%FT%TZ)" \
+    "version=$TARGET_VERSION" "previous_version=$PREVIOUS_VERSION" "started_at=$(date -u +%FT%TZ)" \
     "status=$1" "backup_path=$BACKUP_PATH" "migration_status=$2" "smoke_status=$3" \
     "image_digests=$IMAGE_DIGESTS"
 }
@@ -198,12 +285,14 @@ acquire_lock() {
   flock -n 9 || die "another deployment holds $STATE_DIR/deploy.lock"
 }
 
-login_and_pull() {
-  if [[ -n "$GHCR_USERNAME" ]]; then
-    action "login to GHCR" docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin <"$GHCR_TOKEN_FILE"
-  else
-    log "GHCR login skipped; using existing Docker credentials"
-  fi
+# The package is public, so there is no `docker login`, no token file on the
+# host and no credential for us to issue and rotate per operator. That was the
+# registry half of Task 7's version decision.
+#
+# The digests are still recorded. A version tag is immutable by convention, not
+# by the registry, so the digest is the only durable answer to "what actually
+# ran" — and it costs one inspect per image.
+pull_images() {
   action "pull all target images" compose pull
   [[ "$DRY_RUN" == true ]] && { IMAGE_DIGESTS="dry-run"; return; }
   local image digest entries=()
@@ -216,11 +305,11 @@ login_and_pull() {
 }
 
 ensure_previous_images() {
-  [[ -n "$PREVIOUS_SHA" ]] || return 0
-  local target=$TARGET_SHA
-  TARGET_SHA=$PREVIOUS_SHA
+  [[ -n "$PREVIOUS_VERSION" ]] || return 0
+  local target=$TARGET_VERSION
+  TARGET_VERSION=$PREVIOUS_VERSION
   action "pull previous rollback images" compose pull
-  TARGET_SHA=$target
+  TARGET_VERSION=$target
 }
 
 check_images_present() {
@@ -253,7 +342,7 @@ backup_database() {
   fi
   local timestamp tmp final checksum checksum_tmp base
   timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-  tmp=$(mktemp "$BACKUP_DIR/.database-${timestamp}-${TARGET_SHA}.XXXXXX")
+  tmp=$(mktemp "$BACKUP_DIR/.database-${timestamp}-${TARGET_VERSION}.XXXXXX")
   base=${tmp##*/}
   base=${base#.}
   final="$BACKUP_DIR/$base.sql"
@@ -265,11 +354,14 @@ backup_database() {
   fi
   umask 077
   # </dev/null is load-bearing, not tidiness. `compose exec -T` forwards our
-  # stdin to the container, and this script is routinely fed to a remote shell
-  # as `ssh host bash -s <<EOF`. Without the redirect the dump consumes the
-  # rest of that heredoc, so every line after the deploy call silently never
-  # runs and the caller still sees exit 0 — which is exactly how the
-  # `/opt/snaphost/current` symlink went missing on 2026-08-03.
+  # stdin to the container, so whenever this script is itself being read from
+  # stdin — `ssh host bash -s <<EOF`, `curl … | bash`, a heredoc in someone's
+  # runbook — the dump swallows the remaining lines. Every command after it
+  # then silently never runs and the caller still sees exit 0. That is how the
+  # `/opt/snaphost/current` symlink went missing on 2026-08-03, back when CI
+  # deployed over SSH. CI no longer does, but an operator piping an install
+  # script to a shell is the same hazard, so the redirect stays on every
+  # `compose exec` and `compose run` in this file.
   compose exec -T snaphost sqlite3 "$DATABASE_PATH" .dump >"$tmp" </dev/null || { rm -f "$tmp"; die "database backup failed"; }
   [[ -s "$tmp" ]] || { rm -f "$tmp"; die "database backup is empty"; }
   # sqlite3 exits 0 on some read failures after printing a partial dump, so the
@@ -299,31 +391,12 @@ wait_health() {
     cid=$(compose ps -q "$service")
     if [[ -n "$cid" ]]; then
       status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")
-      [[ "$status" == healthy || "$status" == running ]] && return
+      [[ "$status" == healthy ]] && return
       [[ "$status" == exited || "$status" == dead ]] && break
     fi
     sleep 2
   done
   die "readiness timeout for $service"
-}
-
-probe_internal() {
-  local service=$1 url=$2 deadline=$((SECONDS + READINESS_TIMEOUT))
-  [[ "$DRY_RUN" == true ]] && { log "DRY-RUN: probe $service"; return; }
-  # Retry until the readiness deadline: a container can report healthy before
-  # its HTTP listener is up, and a single-shot probe turned that into a false
-  # deployment failure on 2026-07-12. The delay then was a JWKS prefetch from
-  # Supabase; that is gone, but migrations and the operator bootstrap still run
-  # before the listener binds.
-  while (( SECONDS < deadline )); do
-    # </dev/null for the same reason as backup_database: `compose run` attaches
-    # our stdin to the container.
-    if compose run --rm --no-deps --entrypoint curl snaphost --fail --silent --max-time 10 "$url" >/dev/null </dev/null; then
-      return
-    fi
-    sleep 3
-  done
-  die "HTTP readiness failed for $service"
 }
 
 check_stable_container() {
@@ -358,12 +431,21 @@ rollout() {
   # The application is one process, so it is updated in one atomic container
   # restart after infrastructure and migrations are ready.
   action "update snaphost" compose up -d --no-deps snaphost
+  wait_health snaphost
   check_stable_container snaphost
-  probe_internal snaphost http://snaphost:8080/health
 }
 
 smoke() {
   [[ "$DRY_RUN" == true ]] && { log "DRY-RUN: run public HTTPS smoke checks"; return; }
+  # Skipped rather than failed when no public URL is configured. The internal
+  # readiness probe and the restart-loop check have already run by this point,
+  # so what is lost is confirmation that the edge in front of this host works —
+  # which is exactly what a box that has not been given one yet cannot show.
+  # Announced, not silent: a deploy that verified less should say so.
+  if [[ -z "$PUBLIC_SMOKE_URL" ]]; then
+    log "Public smoke skipped: SNAPHOST_PUBLIC_SMOKE_URL is not set"
+    return
+  fi
   curl --fail --silent --max-time 15 "${PUBLIC_SMOKE_URL%/}/health" >/dev/null || die "public API health smoke failed"
   local code
   if ! code=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 15 "${PUBLIC_SMOKE_URL%/}/api/v1/projects"); then
@@ -373,9 +455,9 @@ smoke() {
 }
 
 rollback_to() {
-  local sha=$1 service
-  validate_sha "$sha" || return 1
-  TARGET_SHA=$sha
+  local version=$1 service
+  validate_saved_release "$version" || return 1
+  TARGET_VERSION=$version
   # Roll back the same manifest-derived service list used for rollout.
   for service in "${EXPECTED_SERVICES[@]}"; do
     action "rollback $service" compose up -d --no-deps "$service" || return 1
@@ -388,16 +470,16 @@ handle_failure() {
   local rc=$?
   trap - ERR
   if [[ "$PHASE" == migrations-started || "$PHASE" == migrations-applied ]]; then
-    if [[ "$MIGRATIONS_BACKWARD_COMPATIBLE" == true && -n "$PREVIOUS_SHA" ]]; then
+    if [[ "$MIGRATIONS_BACKWARD_COMPATIBLE" == true && -n "$PREVIOUS_VERSION" ]]; then
       log "Deployment failed after migrations; compatibility confirmed, rolling images back"
-      if rollback_to "$PREVIOUS_SHA"; then
+      if rollback_to "$PREVIOUS_VERSION" && set_env_release "$PREVIOUS_VERSION"; then
         write_progress rolled-back applied failed
       else
         write_progress manual-intervention-required applied failed
       fi
     else
       write_progress manual-intervention-required "$PHASE" failed
-      printf 'ERROR: deployment failed after migrations; automatic image rollback is blocked.\nPrevious SHA: %s\nBackup: %s\n' "$PREVIOUS_SHA" "$BACKUP_PATH" >&2
+      printf 'ERROR: deployment failed after migrations; automatic image rollback is blocked.\nPrevious version: %s\nBackup: %s\n' "$PREVIOUS_VERSION" "$BACKUP_PATH" >&2
     fi
   else
     write_progress failed-before-migrations not-started pending
@@ -406,8 +488,8 @@ handle_failure() {
 }
 
 deploy() {
-  TARGET_SHA=$1
-  preflight "$TARGET_SHA"
+  TARGET_VERSION=$1
+  preflight "$TARGET_VERSION"
   if [[ "$DRY_RUN" == true ]]; then
     log "DRY-RUN: lock, pull target and previous images, backup, migrations, ordered rollout, readiness, smoke, atomic state update"
     return
@@ -428,24 +510,28 @@ deploy() {
       die "unfinished deployment state exists: $STATE_DIR/in-progress.env (status=$stale_status)"
     fi
   fi
-  if [[ -f "$STATE_DIR/current.env" ]]; then PREVIOUS_SHA=$(state_value current.env sha); fi
+  assert_env_matches_current
+  if [[ -f "$STATE_DIR/current.env" ]]; then
+    PREVIOUS_VERSION=$(state_release current.env)
+    validate_saved_release "$PREVIOUS_VERSION"
+  fi
   write_progress pulling not-started pending
   trap handle_failure ERR
-  login_and_pull
+  pull_images
   ensure_previous_images
   write_progress backed-up not-started pending
   backup_database
   write_progress backed-up not-started pending
   rollout
   smoke
-  if [[ -n "$PREVIOUS_SHA" ]]; then
-    validate_sha "$PREVIOUS_SHA"
-    atomic_state previous.env "sha=$PREVIOUS_SHA" "replaced_at=$(date -u +%FT%TZ)"
+  set_env_release "$TARGET_VERSION"
+  if [[ -n "$PREVIOUS_VERSION" ]]; then
+    atomic_state previous.env "$(release_state_line "$PREVIOUS_VERSION")" "replaced_at=$(date -u +%FT%TZ)"
   fi
-  atomic_state current.env "sha=$TARGET_SHA" "deployed_at=$(date -u +%FT%TZ)" "status=success" "backup_path=$BACKUP_PATH" "migration_status=applied" "smoke_status=passed" "image_digests=$IMAGE_DIGESTS"
+  atomic_state current.env "version=$TARGET_VERSION" "deployed_at=$(date -u +%FT%TZ)" "status=success" "backup_path=$BACKUP_PATH" "migration_status=applied" "smoke_status=passed" "image_digests=$IMAGE_DIGESTS"
   rm -f "$STATE_DIR/in-progress.env"
   trap - ERR
-  log "Deployment completed: $TARGET_SHA"
+  log "Deployment completed: $TARGET_VERSION"
 }
 
 rollback() {
@@ -453,24 +539,32 @@ rollback() {
     acquire_lock
   fi
   [[ -f "$STATE_DIR/current.env" && -f "$STATE_DIR/previous.env" ]] || die "current/previous deployment state is unavailable"
+  assert_env_matches_current
   local current previous migration
-  current=$(state_value current.env sha)
-  previous=$(state_value previous.env sha)
+  current=$(state_release current.env)
+  previous=$(state_release previous.env)
   migration=$(state_value current.env migration_status)
-  validate_sha "$current"; validate_sha "$previous"
+  validate_saved_release "$current"; validate_saved_release "$previous"
   if [[ "$migration" == applied && "$MIGRATIONS_BACKWARD_COMPATIBLE" != true ]]; then
     die "rollback blocked: migrations ran and backward compatibility is not confirmed"
   fi
-  TARGET_SHA=$previous
-  preflight "$TARGET_SHA"
+  TARGET_VERSION=$previous
+  preflight_checks
   check_images_present
   if [[ "$DRY_RUN" == true ]]; then
-    log "DRY-RUN: rollback to saved SHA, readiness, smoke, atomic state update"
+    log "DRY-RUN: rollback to saved version, readiness, smoke, atomic state update"
     return
   fi
   rollback_to "$previous"
-  atomic_state current.env "sha=$previous" "deployed_at=$(date -u +%FT%TZ)" "status=rollback-success" "migration_status=$migration" "smoke_status=passed"
-  atomic_state previous.env "sha=$current" "replaced_at=$(date -u +%FT%TZ)"
+  if ! set_env_release "$previous"; then
+    log "Rollback version could not be persisted; restoring the original runtime"
+    if rollback_to "$current"; then
+      die "rollback cancelled because the env file could not be updated; original runtime restored"
+    fi
+    die "rollback changed the runtime but could not update the env file or restore the original runtime; manual intervention is required"
+  fi
+  atomic_state previous.env "$(release_state_line "$current")" "replaced_at=$(date -u +%FT%TZ)"
+  atomic_state current.env "$(release_state_line "$previous")" "deployed_at=$(date -u +%FT%TZ)" "status=rollback-success" "migration_status=$migration" "smoke_status=passed"
   log "Rollback completed: $previous"
 }
 

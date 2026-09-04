@@ -1,7 +1,14 @@
 name: snaphost-self
 
-# Production manifest. One application image pinned to an exact Git SHA, plus
-# BuildKit for builds.
+# Production manifest. One application image pinned to an exact published
+# version, plus BuildKit for builds.
+#
+# An unset variable means "use the application's default", so this file renders
+# from three: SNAPHOST_VERSION, DOMAIN_SUFFIX and OPENROUTER_API_KEY. The empty
+# defaults are not decoration — Compose warns on every unset variable, and
+# forty of those on each command is how an operator learns to ignore output.
+# What is NOT written here is a copy of any default the Go config packages
+# already hold: two places holding one number is how they drift.
 #
 # PostgreSQL is gone with item 6: the store is a SQLite file in the
 # application's own volume. That removes the container, the volume, five
@@ -9,11 +16,10 @@ name: snaphost-self
 # it moves the backup from `pg_dump` over a network socket to `sqlite3 .dump`
 # inside the one container that has the file.
 #
-# Still the wrong shape for a self-hosted product: this describes pushing a
-# GHCR image onto a VDS over SSH, and a self-hosted platform is installed by
-# its own operator. Rewriting the deployment story is its own task; this file
-# is kept correct in the meantime rather than left referencing infrastructure
-# that no longer exists.
+# The image comes from a public package, so there is no registry credential on
+# the host and nothing here for us to issue per operator (Task 7). What is not
+# finished is the first-install path itself; deploy and rollback now use the
+# version tag this file names.
 #
 # Public routing is also incomplete after the collapse. The old Caddy example
 # depended on the removed router-svc/cloud path, while Docker currently emits
@@ -22,7 +28,7 @@ name: snaphost-self
 
 services:
   snaphost:
-    image: "${GHCR_IMAGE_PREFIX}/snaphost:${SNAPHOST_VERSION}"
+    image: "${GHCR_IMAGE_PREFIX:-ghcr.io/justaba/snaphost-self}/snaphost:${SNAPHOST_VERSION:?set SNAPHOST_VERSION to a published version tag, for example v1.2.3}"
     restart: unless-stopped
     networks:
       - control
@@ -30,7 +36,7 @@ services:
     # The only published port. Everything else answers on an internal network,
     # and `data` is marked internal, so nothing on it can reach outward.
     ports:
-      - "${SNAPHOST_BIND_ADDRESS}:${SNAPHOST_PORT}:8080"
+      - "${SNAPHOST_BIND_ADDRESS:-0.0.0.0}:${SNAPHOST_PORT:-8080}:8080"
     volumes:
       # The runtime backend starts user containers through the host daemon.
       # This is the largest privilege in the file: anything that can reach this
@@ -43,6 +49,12 @@ services:
     depends_on:
       buildkitd:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 6s
+      retries: 18
+      start_period: 10s
     logging:
       driver: json-file
       options:
@@ -59,66 +71,80 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "${SNAPHOST_CPU_LIMIT}"
-          memory: "${SNAPHOST_MEMORY_LIMIT}"
+          cpus: "${SNAPHOST_CPU_LIMIT:-1.0}"
+          memory: "${SNAPHOST_MEMORY_LIMIT:-512M}"
     environment:
       PORT: "8080"
-      LOG_LEVEL: "${LOG_LEVEL}"
+      LOG_LEVEL: "${LOG_LEVEL:-}"
       # How much of the container limit is held back from the Go heap for page
       # cache and other non-heap memory. Empty takes the default.
       GOMEMLIMIT_RESERVE_MB: "${GOMEMLIMIT_RESERVE_MB:-}"
       DATABASE_PATH: "/var/snaphost/data/snaphost.db"
-      # The env file has always carried RUN_MIGRATIONS=false and this file has
-      # never passed it, so the application migrated at startup anyway and the
-      # profile-only migrate service was decoration. On SQLite that is two
-      # containers opening one file.
-      RUN_MIGRATIONS: "${RUN_MIGRATIONS}"
+      # Hard-coded, not read from the env file. The env file carried
+      # RUN_MIGRATIONS=false and this file did not pass it, so the application
+      # migrated at startup anyway and the profile-only migrate service was
+      # decoration — on SQLite that is two containers opening one file. Passing
+      # the variable fixed the symptom and left the hazard: the Go default is
+      # `true`, so an install whose env file simply omits the line gets startup
+      # migrations back. There is no production configuration where this should
+      # be true, because `deploy.sh` always runs the migrator as its own step
+      # after taking the pre-migration dump.
+      RUN_MIGRATIONS: "false"
       OPERATOR_EMAIL: "${OPERATOR_EMAIL:-operator@localhost}"
       SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-168}"
       SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-true}"
-      CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS}"
+      CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS:-}"
 
-      SAGA_BUILD_TIMEOUT_MIN: "${SAGA_BUILD_TIMEOUT_MIN}"
-      SAGA_RESUME_INTERVAL_SEC: "${SAGA_RESUME_INTERVAL_SEC}"
-      DEPLOY_DEFAULT_PORT: "${DEPLOY_DEFAULT_PORT}"
+      SAGA_BUILD_TIMEOUT_MIN: "${SAGA_BUILD_TIMEOUT_MIN:-}"
+      SAGA_RESUME_INTERVAL_SEC: "${SAGA_RESUME_INTERVAL_SEC:-}"
+      DEPLOY_DEFAULT_PORT: "${DEPLOY_DEFAULT_PORT:-}"
 
-      DOMAIN_SUFFIX: "${DOMAIN_SUFFIX}"
-      RESERVED_DOMAINS: "${RESERVED_DOMAINS}"
-      DEPLOY_TTL_MIN: "${DEPLOY_TTL_MIN}"
-      DEPLOY_TTL_MAX_MIN: "${DEPLOY_TTL_MAX_MIN}"
-      MAX_DOMAINS_PER_USER: "${MAX_DOMAINS_PER_USER}"
-      DOMAIN_ATTACH_REQUIRE_IDENTITY: "${DOMAIN_ATTACH_REQUIRE_IDENTITY}"
-      DOMAIN_ATTACH_PER_HOUR: "${DOMAIN_ATTACH_PER_HOUR}"
-      DOMAIN_VERIFY_INTERVAL_SEC: "${DOMAIN_VERIFY_INTERVAL_SEC}"
-      DOMAIN_REVERIFY_HOURS: "${DOMAIN_REVERIFY_HOURS}"
-      DOMAIN_VERIFY_GRACE_HOURS: "${DOMAIN_VERIFY_GRACE_HOURS}"
-      PROJECT_DEPLOY_RETENTION: "${PROJECT_DEPLOY_RETENTION}"
+      DOMAIN_SUFFIX: "${DOMAIN_SUFFIX:-}"
+      RESERVED_DOMAINS: "${RESERVED_DOMAINS:-}"
+      # The DNS targets an attached custom domain is told to point at. They
+      # were in the env template and in the development manifest, and this file
+      # did not pass them — so in production `POST /api/v1/domains` answered
+      # 503 edge_address_unreserved no matter what the operator configured,
+      # because the application refuses an attach while it has no address to
+      # hand out. Empty is still a valid state: it means custom domains are
+      # not offered on this install.
+      DOMAIN_CNAME_TARGET: "${DOMAIN_CNAME_TARGET:-}"
+      DOMAIN_A_RECORD_TARGET: "${DOMAIN_A_RECORD_TARGET:-}"
+      DEPLOY_TTL_MIN: "${DEPLOY_TTL_MIN:-}"
+      DEPLOY_TTL_MAX_MIN: "${DEPLOY_TTL_MAX_MIN:-}"
+      MAX_DOMAINS_PER_USER: "${MAX_DOMAINS_PER_USER:-}"
+      DOMAIN_ATTACH_REQUIRE_IDENTITY: "${DOMAIN_ATTACH_REQUIRE_IDENTITY:-}"
+      DOMAIN_ATTACH_PER_HOUR: "${DOMAIN_ATTACH_PER_HOUR:-}"
+      DOMAIN_VERIFY_INTERVAL_SEC: "${DOMAIN_VERIFY_INTERVAL_SEC:-}"
+      DOMAIN_REVERIFY_HOURS: "${DOMAIN_REVERIFY_HOURS:-}"
+      DOMAIN_VERIFY_GRACE_HOURS: "${DOMAIN_VERIFY_GRACE_HOURS:-}"
+      PROJECT_DEPLOY_RETENTION: "${PROJECT_DEPLOY_RETENTION:-}"
 
       BUILDKIT_HOST: "tcp://buildkitd:1234"
       WORKDIR_ROOT: "/var/snaphost/builds"
-      MAX_REPO_SIZE_MB: "${MAX_REPO_SIZE_MB}"
-      MAX_BUILD_TIME_MIN: "${MAX_BUILD_TIME_MIN}"
-      MAX_CONCURRENT_PER_USER: "${MAX_CONCURRENT_PER_USER}"
-      ALLOWED_GIT_HOSTS: "${ALLOWED_GIT_HOSTS}"
-      ALLOWED_BASE_IMAGES: "${ALLOWED_BASE_IMAGES}"
-      ALLOWED_BASE_IMAGES_PERMISSIVE: "${ALLOWED_BASE_IMAGES_PERMISSIVE}"
+      MAX_REPO_SIZE_MB: "${MAX_REPO_SIZE_MB:-}"
+      MAX_BUILD_TIME_MIN: "${MAX_BUILD_TIME_MIN:-}"
+      MAX_CONCURRENT_PER_USER: "${MAX_CONCURRENT_PER_USER:-}"
+      ALLOWED_GIT_HOSTS: "${ALLOWED_GIT_HOSTS:-}"
+      ALLOWED_BASE_IMAGES: "${ALLOWED_BASE_IMAGES:-}"
+      ALLOWED_BASE_IMAGES_PERMISSIVE: "${ALLOWED_BASE_IMAGES_PERMISSIVE:-}"
 
-      CONTAINER_CPU_LIMIT: "${CONTAINER_CPU_LIMIT}"
-      CONTAINER_MEMORY_MB: "${CONTAINER_MEMORY_MB}"
-      CONTAINER_DEFAULT_TTL_MIN: "${CONTAINER_DEFAULT_TTL_MIN}"
-      RUNTIME_PROBE_ENABLED: "${RUNTIME_PROBE_ENABLED}"
-      RUNTIME_PROBE_TIMEOUT_SEC: "${RUNTIME_PROBE_TIMEOUT_SEC}"
-      WATCHDOG_INTERVAL_SEC: "${WATCHDOG_INTERVAL_SEC}"
-      STRICT_IMAGE_VALIDATION: "${STRICT_IMAGE_VALIDATION}"
-      ALLOWED_IMAGE_PREFIXES: "${ALLOWED_IMAGE_PREFIXES}"
+      CONTAINER_CPU_LIMIT: "${CONTAINER_CPU_LIMIT:-}"
+      CONTAINER_MEMORY_MB: "${CONTAINER_MEMORY_MB:-}"
+      CONTAINER_DEFAULT_TTL_MIN: "${CONTAINER_DEFAULT_TTL_MIN:-}"
+      RUNTIME_PROBE_ENABLED: "${RUNTIME_PROBE_ENABLED:-}"
+      RUNTIME_PROBE_TIMEOUT_SEC: "${RUNTIME_PROBE_TIMEOUT_SEC:-}"
+      WATCHDOG_INTERVAL_SEC: "${WATCHDOG_INTERVAL_SEC:-}"
+      STRICT_IMAGE_VALIDATION: "${STRICT_IMAGE_VALIDATION:-true}"
+      ALLOWED_IMAGE_PREFIXES: "${ALLOWED_IMAGE_PREFIXES:-snaphost/}"
 
-      LLM_BASE_URL: "${LLM_BASE_URL}"
-      LLM_JSON_MODE: "${LLM_JSON_MODE}"
-      LLM_TIMEOUT: "${LLM_TIMEOUT}"
-      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
-      OPENROUTER_MODEL: "${OPENROUTER_MODEL}"
-      OPENROUTER_REFERER: "${OPENROUTER_REFERER}"
-      OPENROUTER_APP_NAME: "${OPENROUTER_APP_NAME}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-}"
+      LLM_JSON_MODE: "${LLM_JSON_MODE:-}"
+      LLM_TIMEOUT: "${LLM_TIMEOUT:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-}"
+      OPENROUTER_REFERER: "${OPENROUTER_REFERER:-}"
+      OPENROUTER_APP_NAME: "${OPENROUTER_APP_NAME:-}"
 
   # One-shot migrator under a profile, so a deployment can apply the schema as
   # its own step before the service that would otherwise do it at startup is
@@ -130,7 +156,7 @@ services:
   # `compose run --rm` finishes before the rollout continues, which is what
   # keeps them apart.
   snaphost-migrate:
-    image: "${GHCR_IMAGE_PREFIX}/snaphost:${SNAPHOST_VERSION}"
+    image: "${GHCR_IMAGE_PREFIX:-ghcr.io/justaba/snaphost-self}/snaphost:${SNAPHOST_VERSION:?set SNAPHOST_VERSION to a published version tag, for example v1.2.3}"
     profiles: ["migration"]
     entrypoint: ["/control-migrate"]
     restart: "no"
@@ -143,7 +169,7 @@ services:
       - snaphost_data:/var/snaphost/data
     environment:
       DATABASE_PATH: "/var/snaphost/data/snaphost.db"
-      LOG_LEVEL: "${LOG_LEVEL}"
+      LOG_LEVEL: "${LOG_LEVEL:-}"
 
   buildkitd:
     image: "moby/buildkit:v0.29.0-rootless"
@@ -169,8 +195,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "${BUILDKIT_CPU_LIMIT}"
-          memory: "${BUILDKIT_MEMORY_LIMIT}"
+          cpus: "${BUILDKIT_CPU_LIMIT:-4.0}"
+          memory: "${BUILDKIT_MEMORY_LIMIT:-4G}"
 
 volumes:
   snaphost_data:

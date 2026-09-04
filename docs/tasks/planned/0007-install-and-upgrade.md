@@ -1,9 +1,9 @@
 # Task 7 — Install and upgrade without us
 
-**Status:** Planned. Nothing started. Task 1 is complete; this task remains
-blocked on the version and registry decision below.
+**Status:** In progress. The version and registry decision below is settled as
+of 2026-09-03, which unblocks the rest of the work plan.
 **Created:** 2026-08-29
-**Updated:** 2026-08-30
+**Updated:** 2026-09-04
 
 ## Goal
 
@@ -11,12 +11,12 @@ Someone who is not us installs this on their own machine, upgrades it, and rolls
 it back when an upgrade goes wrong — without an SSH key we hold, a GitHub
 environment we own, or a CD pipeline that reaches into their box.
 
-That is what "self-hosted" means and the repository does not do it. What it does
-today is deploy *one specific machine*, `135.106.166.76`, from CI over SSH:
-a job builds an image tagged with a Git SHA, pushes it to a private GHCR
-package, `scp`s a release tarball to `/opt/snaphost/releases/<sha>/`, moves a
-`current` symlink, and runs `deploy.sh` on the far end. Every piece of that
-assumes the operator and the publisher are the same party.
+That is what "self-hosted" means and the repository does not do yet. At the
+start of this task it deployed *one specific machine*, `135.106.166.76`, from
+CI over SSH: a job built an image tagged with a Git SHA, pushed it to a private
+GHCR package, `scp`ed a release tarball to `/opt/snaphost/releases/<sha>/`,
+moved a `current` symlink, and ran `deploy.sh` on the far end. Item 2 has
+removed that path; a supported replacement is still being built here.
 
 ## Why this is a task rather than a fix
 
@@ -39,33 +39,50 @@ a pipeline that only ever moves forward. A path exercised once a month by one
 person is a path that rots. The fix is not more tests against fakes — it is a
 deployment story someone actually performs.
 
-## The decision this is blocked on
+## The version and registry model — settled 2026-09-03
 
-**The version and registry model.** Everything else hangs off it and it is not
-derivable from the code:
+Owner decision. Everything else in this task hangs off it, and none of it was
+derivable from the code.
 
-- **Version scheme.** Today an image is `ghcr.io/<repo>/snaphost:<40-hex-sha>`
-  and `deploy.sh` validates exactly that shape. An operator upgrades to a
-  *version*, not to a commit. Semantic versioning, a date scheme, or something
-  else — and whether per-SHA tags keep being published alongside, which is
-  cheap and makes bisecting a regression possible.
-- **Registry visibility.** The GHCR package is private and `deploy.sh` logs in
-  with a token file. A public package removes the login and the token from
-  every install; keeping it private means every operator needs credentials
-  from us, which is most of the way back to not being self-hosted.
-- **A `latest` tag, or not.** `validate_rendered_compose` currently refuses
-  one outright, and that refusal is correct for a pinned production rollout.
-  It is less obviously correct for an operator who wants `docker compose pull`
-  to mean something.
+- **Semantic versioning, with per-SHA tags published alongside.** An operator
+  upgrades to `v1.2.3`; `ghcr.io/<repo>/snaphost:<40-hex-sha>` keeps being
+  published from `main` so a regression can still be bisected. The version is
+  what `deploy.sh` validates and what the state files record; the SHA tag is a
+  debugging affordance and never an upgrade target.
 
-Until these are settled the rest cannot be written, because the version format
-decides the validation, the rollback target resolution, and the CI trigger.
+  The major number is where "this upgrade is not reversible" gets said out
+  loud. That matters here because rollback across a migration is already
+  refused without `MIGRATIONS_BACKWARD_COMPATIBLE`, and a date scheme cannot
+  express the difference between a release that is safe to roll back and one
+  that is not.
+
+- **The GHCR package is public.** `docker login`, the token file and
+  `GHCR_USERNAME` leave the install path entirely. Keeping it private would
+  mean issuing every operator a credential and rotating it, which is most of
+  the way back to not being self-hosted — and the image contains no secret:
+  it is the same binary this repository builds in public CI.
+
+- **No `latest` tag is published.** `validate_rendered_compose` keeps refusing
+  a floating tag, so a rendered manifest always names one exact version and two
+  installs of the same file cannot silently differ. What an operator wanted
+  `latest` for is a command, not a tag: `upgrade` with no argument resolves the
+  newest published version, prints it, and pins it into the env file.
+
+- **The manifest arrives as a `git clone` at the version tag.** The operator
+  owns a checkout at a stable path; upgrading is `git fetch` plus a checkout of
+  the new tag. `docker-compose.prod.yml`, `buildkitd.prod.toml`, the AppArmor
+  profile, the systemd units and `backup.sh` then move as one version with the
+  image they describe, which is the same skew Task 1 avoided by embedding the
+  panel in the binary. The cost is `git` as an install prerequisite and a
+  checkout an operator can edit — the latter is a feature for a self-hosted
+  product and a support hazard for us, and this repository has no support
+  obligation.
 
 ## Work plan
 
-1. [ ] Settle the version and registry model above. Write it down here.
+1. [x] Settle the version and registry model above. Written down there.
 
-2. [ ] **Stop CI from deploying.** Delete the `deploy-staging` job in
+2. [x] **Stop CI from deploying.** Deleted the `deploy-staging` job in
    [pipeline.yml](../../../.github/workflows/pipeline.yml),
    [production-deploy.yml](../../../.github/workflows/production-deploy.yml),
    [deploy-remote.sh](../../../.github/scripts/deploy-remote.sh) and
@@ -73,10 +90,20 @@ decides the validation, the rollback target resolution, and the CI trigger.
    `DEPLOY_SSH_*` secrets and both GitHub environments. The `image` job stays
    and gains a tag trigger.
 
-   `deploy-remote.sh` carries one thing worth not losing: the comment
-   explaining why `</dev/null` is load-bearing when a script is fed to
-   `ssh host bash -s`. Move it rather than delete it — the same hazard exists
-   wherever an operator pipes an install script to a shell.
+   The `image` job gained the tag trigger: a push to `main` publishes the
+   per-SHA tag, a `v*` tag publishes the version tag and the SHA, a pull
+   request builds and publishes nothing. The job refuses a tag that is not
+   `vMAJOR.MINOR.PATCH` rather than publishing something an operator cannot
+   name. Making the package public is a repository setting the workflow cannot
+   assert; until it is done, every install still needs a credential.
+
+   The `</dev/null` comment moved to `backup_database` in `deploy.sh`, where
+   the hazard still lives, and was rewritten around the case that outlives SSH:
+   a script being read from stdin by the shell running it, which is what
+   `curl … | bash` is.
+
+   The `DEPLOY_SSH_*` secrets and the `production` and `staging` GitHub
+   environments still exist as repository settings. Nothing reads them now.
 
 3. [ ] **An `install` path, which does not exist today.** The production box was
    brought up by hand, so there is no first-run story at all: create the
@@ -84,29 +111,94 @@ decides the validation, the rollback target resolution, and the CI trigger.
    the operator password once. Item 6a of Task 1 already generates that
    password; this is the same idea applied to the rest of the install.
 
-4. [ ] **Shrink the environment surface.** `.env.production.example` is 179
-   lines and `preflight` requires fifty-nine variables. That is a SaaS
-   operator's configuration file, not an installer's. Most already have sane
-   defaults in the Go config packages — the work is deciding which are genuinely
-   an operator's business (domain, an OpenRouter key, generated secrets) and
-   removing the rest from the required set. This touches Go, not only shell.
+4. [x] **Shrink the environment surface.** `preflight` requires three variables
+   where it required forty-five: `SNAPHOST_VERSION`, `DOMAIN_SUFFIX` and
+   `OPENROUTER_API_KEY`. Nothing else has a value that could only come from an
+   operator.
+
+   **No Go changed, and the reason is worth recording.** The item assumed this
+   would touch the config packages; it did not, because they already treat an
+   empty value as unset — `envOrDefault`, `parseIntEnv` and `parseBoolEnv` each
+   answer with their fallback. An unset variable therefore reaches the process
+   as an empty string and gets the default, so removing a line from the
+   required set is enough on its own.
+
+   That is true only for variables passed *into* the container. The ones
+   Compose interpolates itself — the image prefix, the published address and
+   port, both CPU and memory pairs — would render an invalid manifest from an
+   empty value, so those got defaults in `docker-compose.prod.yml` instead.
+   Two of them were load-bearing: `ALLOWED_IMAGE_PREFIXES` must be non-empty
+   while `STRICT_IMAGE_VALIDATION` is true, and the Go default for that flag is
+   true, so an install whose env file omitted both would have been refused at
+   startup.
+
+   Every remaining variable in the manifest carries `:-` rather than a copied
+   default. Compose warns on each unset variable, and forty warnings per
+   command teaches an operator to ignore output; an empty default silences that
+   without writing any number down twice.
+
+   `RUN_MIGRATIONS` stopped being configurable and is hard-coded to `false`.
+   Its Go default is `true`, so an env file that merely omitted the line got
+   startup migrations back — two containers on one SQLite file, which is the
+   thing the separate migrate step exists to prevent.
+
+   Fixed on the way, because the env template promised it and the manifest did
+   not deliver it: `DOMAIN_CNAME_TARGET` and `DOMAIN_A_RECORD_TARGET` are now
+   passed to the container. Without them a production install refused every
+   custom-domain attach with 503, whatever the operator configured.
+
+   `.env.production.example` is now 129 lines of which three are decisions; the
+   rest are commented-out defaults with the reasoning next to them.
+
+   The counts had already come down from 179 and fifty-nine before this item
+   started, because ADR 0008 removed `WEBHOOK_SECRET`, `RUNNER_BACKEND` and
+   `ALIAS_IDLE_GC_DAYS` along with the machinery that read them.
 
 5. [ ] **Rework `deploy.sh` into an operator CLI.** Most of its logic survives
-   and changes meaning rather than disappearing — see the table below. The
-   513-line script and its 519-line test suite are reshaped together.
+   and changes meaning rather than disappearing — see the table below.
 
-6. [ ] **Decide how the manifest reaches the operator.** Today
-   `docker-compose.prod.yml`, `buildkitd.prod.toml`, the AppArmor profile, the
-   Caddyfile and the systemd units arrive inside a release tarball or are
-   installed by hand from a checkout. Clone the repository, or download two
-   files? It changes every path in `deploy.sh` and `backup.sh` and every
-   instruction in the docs.
+   The first slice landed on 2026-09-04. `preflight` and `deploy` now accept
+   only strict `vMAJOR.MINOR.PATCH` versions; `latest`, versionless numbers,
+   leading-zero components and SHA arguments are refused. Successful deploys
+   persist the pinned version through atomic replacements of `production.env`
+   and state, and rollback updates both. A guard refuses later operations if
+   those files ever disagree. An existing installation may read its old
+   `sha=` state once, preserve that exact image as the transition rollback
+   target; the next successful release returns the installation to
+   version-only state.
+
+   The readiness defect was fixed in the same slice. `probe_internal` ran
+   `compose run --entrypoint curl snaphost`, but the runtime image contained no
+   `curl`; every real deploy therefore failed after migrations while the fake
+   accepted the nonexistent entrypoint. The production service now owns a
+   Docker healthcheck, the runtime image contains its `curl` client, and
+   `deploy.sh` waits specifically for `healthy` rather than treating a merely
+   running container as ready. The suite has an explicit cross-file regression
+   check for that contract and now covers 52 scenarios.
+
+   Still missing from this item: the `upgrade` command which fetches and checks
+   out a release tag (including no-argument newest-version resolution), and its
+   integration with the first-install path. Those cannot be honestly called
+   complete until exercised on a real host.
+
+6. [x] **How the manifest reaches the operator: a `git clone` at the version
+   tag.** Settled with the version model above. Every path in `deploy.sh` and
+   `backup.sh` and every instruction in the docs is written against a checkout
+   the operator owns at a stable location, not against `releases/<sha>/`.
 
 7. [ ] **Decide what happens to the uptime workflow.**
    [uptime.yml](../../../.github/workflows/uptime.yml) probes the box every ten
    minutes and opens one GitHub issue per incident, in this repository. That is
    a vendor watching their own machine. An operator's incidents are not our
    issues.
+
+   Still open, and now inconsistent: item 2 removed the pipeline that deployed
+   the host this workflow watches, and `uptime-check.sh` still defaults to that
+   host's three domains. It probes a machine this repository no longer ships
+   to. Deleting both is the reading this item argues for; what replaces it for
+   an installed host is the guidance already in
+   [monitoring.md](../../operations/monitoring.md) — an independent monitor,
+   because GitHub's schedules are best-effort and disabled after inactivity.
 
 8. [ ] **Docs.** [ci-cd.md](../../operations/ci-cd.md) is mostly deleted.
    [rollback.md](../../operations/rollback.md),
@@ -120,9 +212,9 @@ decides the validation, the rollback target resolution, and the CI trigger.
 
 | | |
 | --- | --- |
-| **Survives unchanged** | the `flock` lock shared with `backup.sh`; the dump before migrations; migrations as their own step ahead of the application; readiness plus the restart-loop check; the smoke checks; atomic state files; refusing to roll back across a migration without `MIGRATIONS_BACKWARD_COMPATIBLE` |
+| **Survives unchanged** | the `flock` lock shared with `backup.sh`; the dump before migrations; migrations as their own step ahead of the application; readiness plus the restart-loop check; the smoke checks; atomic state files and pulled-image digests; refusing to roll back across a migration without `MIGRATIONS_BACKWARD_COMPATIBLE` |
 | **Changes meaning** | version validation (a tag, not 40 hex); how the previous version is resolved for rollback; where the Compose file lives — a stable path the operator owns, not `releases/<sha>/` |
-| **Goes** | `docker login ghcr.io` with a token file; recording image digests for an SSH-delivered release; the `releases/<sha>/` layout and the `current` symlink, which are `deploy-remote.sh`'s model; `SNAPHOST_PUBLIC_SMOKE_URL` as a hard requirement — a box being installed may not have public HTTPS yet |
+| **Goes** | `docker login ghcr.io` with a token file; the `releases/<sha>/` layout and the `current` symlink, which are `deploy-remote.sh`'s model; `SNAPHOST_PUBLIC_SMOKE_URL` as a hard requirement — a box being installed may not have public HTTPS yet |
 
 ## Ordering
 
