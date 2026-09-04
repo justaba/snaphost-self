@@ -65,14 +65,13 @@ jobs:
           bash -n infra/deploy.sh
           bash -n infra/backup.sh
           bash -n infra/snaphostctl
-          bash -n .github/scripts/uptime-check.sh
           bash -n infra/tests/deploy_test.sh
           bash -n infra/tests/backup_test.sh
           bash -n infra/tests/snaphostctl_test.sh
       - name: Lint
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck --severity=warning infra/deploy.sh infra/backup.sh infra/snaphostctl .github/scripts/uptime-check.sh
+          shellcheck --severity=warning infra/deploy.sh infra/backup.sh infra/snaphostctl
       # All suites fake every external command, so they touch no Docker
       # daemon, database, credential, or network.
       - name: Deployment suite

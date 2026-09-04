@@ -20,15 +20,15 @@ Updated: 2026-09-04
 The application exposes metrics but the repository does not install Prometheus,
 Grafana or an alert manager. There is no durable metrics history.
 
-## External uptime workflow
+## External uptime monitoring
 
-.github/workflows/uptime.yml periodically runs
-.github/scripts/uptime-check.sh. Its default hostnames still describe the
-repository owner's inherited production environment. Override
-SNAPHOST_MONITOR_API, SNAPHOST_MONITOR_DASHBOARD and
-SNAPHOST_MONITOR_DEPLOY_SUFFIX for another environment.
+This repository deliberately does not schedule probes for installed hosts. The
+previous workflow watched the repository owner's inherited domains and opened
+incidents in this repository, which is not a suitable ownership model for a
+self-hosted installation. Configure an independent monitor under the operator's
+account instead.
 
-The probe checks:
+At minimum, probe:
 
 - health returns 200;
 - an anonymous protected API call returns 401;
@@ -36,12 +36,9 @@ The probe checks:
 - an impossible generated deploy hostname returns 404;
 - control-plane and deploy-suffix certificates exceed the expiry threshold.
 
-The unknown-host check is useful only after the environment has a working
-wildcard edge. The current portable production edge is incomplete, so this
-probe is not an install acceptance test.
-
-GitHub schedules are best-effort and may be delayed or disabled after repository
-inactivity. Use an independent monitor for a real installation.
+Run the monitor outside the target host and route alerts through an operator-owned
+channel. The generated-hostname and TLS probes become meaningful only after the
+production edge has been configured for that installation.
 
 ## Host checks
 
@@ -113,7 +110,7 @@ run, not that a future run remains scheduled.
   stuck sagas;
 - the audit log is readable in the panel but is not exported anywhere, so
   operator actions are not an alertable signal;
-- the uptime probe does not create a real deploy;
+- no packaged black-box monitor or synthetic deploy check is supplied;
 - no 1 GB build-pressure baseline is recorded;
 - no portable edge health contract exists before Task 4; Task 7's installer
   treats that edge as an explicit prerequisite.

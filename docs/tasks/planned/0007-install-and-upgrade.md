@@ -2,8 +2,7 @@
 
 **Status:** In progress. The portable operator command and runbook are
 implemented. A partial real-host rehearsal is recorded as of 2026-09-04; the
-public-release, encrypted off-host restore, 1 GB and inherited uptime workflow
-acceptance items remain.
+public-release, encrypted off-host restore and 1 GB acceptance items remain.
 **Created:** 2026-08-29
 **Updated:** 2026-09-04
 
@@ -196,19 +195,12 @@ derivable from the code.
    `backup.sh` and every instruction in the docs is written against a checkout
    the operator owns at a stable location, not against `releases/<sha>/`.
 
-7. [ ] **Decide what happens to the uptime workflow.**
-   [uptime.yml](../../../.github/workflows/uptime.yml) probes the box every ten
-   minutes and opens one GitHub issue per incident, in this repository. That is
-   a vendor watching their own machine. An operator's incidents are not our
-   issues.
-
-   Still open, and now inconsistent: item 2 removed the pipeline that deployed
-   the host this workflow watches, and `uptime-check.sh` still defaults to that
-   host's three domains. It probes a machine this repository no longer ships
-   to. Deleting both is the reading this item argues for; what replaces it for
-   an installed host is the guidance already in
-   [monitoring.md](../../operations/monitoring.md) — an independent monitor,
-   because GitHub's schedules are best-effort and disabled after inactivity.
+7. [x] **Remove repository-owned uptime.**
+   The inherited scheduled workflow and probe were deleted because they
+   defaulted to the repository owner's domains and opened incidents in this
+   repository. Self-hosted operators now receive guidance to configure an
+   independent monitor with operator-owned endpoints, credentials and alert
+   delivery in [monitoring.md](../../operations/monitoring.md).
 
 8. [x] **Docs.** [ci-cd.md](../../operations/ci-cd.md) is mostly deleted.
    [rollback.md](../../operations/rollback.md),

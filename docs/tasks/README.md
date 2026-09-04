@@ -9,8 +9,7 @@ Task 7 is in progress. Its version/registry model, CI separation, first-install
 command and checkout-aware upgrade/rollback implementation are done. A
 [partial VPS rehearsal](../operations/rehearsals/2026-09-04-vps.md) covers the
 real install, login, local restore and 4 GB build-pressure paths. Public release
-artifacts, encrypted off-host restore, the 1 GB drill and the inherited uptime
-workflow decision remain.
+artifacts, encrypted off-host restore and the 1 GB drill remain.
 
 Four pieces of work landed outside the numbered tasks. Two closed recorded
 gaps, one is the smallest useful part of Task 6, and one removed structure that
