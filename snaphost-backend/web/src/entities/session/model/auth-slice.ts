@@ -57,16 +57,17 @@ export const signIn = createAsyncThunk<Session, SignInData, { rejectValue: AuthE
   },
 );
 
-export const changePassword = createAsyncThunk<void, ChangePasswordData, { rejectValue: AuthError }>(
-  'auth/changePassword',
-  async (data, { rejectWithValue }) => {
-    try {
-      await auth.changePassword(data);
-    } catch (err) {
-      return rejectWithValue(toAuthError(err));
-    }
-  },
-);
+export const changePassword = createAsyncThunk<
+  void,
+  ChangePasswordData,
+  { rejectValue: AuthError }
+>('auth/changePassword', async (data, { rejectWithValue }) => {
+  try {
+    await auth.changePassword(data);
+  } catch (err) {
+    return rejectWithValue(toAuthError(err));
+  }
+});
 
 export const signOut = createAsyncThunk<void, void, { rejectValue: AuthError }>(
   'auth/signOut',

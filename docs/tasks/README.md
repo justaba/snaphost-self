@@ -19,7 +19,7 @@ wired. The generated-host certificate strategy, encrypted TLS-state restore
 and a real DNS/ACME rehearsal remain. See
 [the task](planned/0004-production-edge.md).
 
-Five pieces of work landed outside the numbered tasks. Three closed recorded
+Six pieces of work landed outside the numbered tasks. Four closed recorded
 gaps, one is the smallest useful part of Task 6, and one removed structure that
 Task 1 left behind rather than adding anything:
 
@@ -32,6 +32,10 @@ Task 1 left behind rather than adding anything:
   broader reclamation above 4 GB, and reacts below 5 GB of host free space.
   Rollout and rollback recreate BuildKit so a changed bind-mounted policy is
   applied immediately. This is intentionally separate from deploy-image GC.
+- **Frontend verification in CI.** A dedicated Node.js 22 job installs the
+  panel's frozen pnpm lockfile and runs Vitest, ESLint, Prettier and the
+  production build. Image publishing depends on it, so the embedded panel can
+  no longer bypass its own verification contract.
 - **Operator actions on the dashboard, and no admin console.** The whole
   /api/v1/admin surface and its seven panel screens are deleted. They existed
   so one role could administer other people's accounts; a self-hosted install

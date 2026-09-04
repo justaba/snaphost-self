@@ -15,13 +15,18 @@ The Go job, from the single snaphost-backend module, runs:
 - go vet ./...;
 - golangci-lint v1.64.8 built with the job's Go toolchain.
 
+The panel job uses Node.js 22 and the exact pnpm version declared in
+`web/package.json`. It installs the frozen lockfile, then runs Vitest, ESLint,
+Prettier and the production Vite build as separate steps.
+
 The shell job checks syntax and ShellCheck diagnostics for deployment, backup
 and operator scripts; runs the 60-scenario deployment, 41-scenario
 backup and 26-scenario install/upgrade suites; and verifies the systemd backup
 unit syntax. It also renders the real production Compose file and validates the
 production Caddyfile with the pinned Caddy 2.10.2 image.
 
-After those jobs pass, one Docker image is built. On main it is published as:
+After the Go, panel and shell jobs pass, one Docker image is built. On main it
+is published as:
 
 ~~~text
 ghcr.io/<owner>/<repository>/snaphost:<40-character-git-sha>
@@ -37,10 +42,10 @@ ghcr.io/<owner>/<repository>/snaphost:v1.2.3
 No `latest` tag is published. Pull requests build the image but publish
 nothing.
 
-The Docker build compiles the React panel and embeds it in the binary. CI does
-not currently run the panel's Vitest, ESLint or Prettier commands separately;
-a successful asset build is therefore weaker than the local panel verification
-contract.
+The Docker build compiles the React panel again and embeds it in the binary.
+The dedicated panel job remains the frontend verification boundary: a broken
+test, lint rule, format check or standalone production build prevents image
+publishing.
 
 The old .github/workflows/ci.yml is an inert manual tombstone.
 
@@ -74,7 +79,7 @@ service. The application has an in-container `/health`
 healthcheck; the deploy script waits for Docker to report `healthy` and does
 not accept a merely running process as ready.
 
-The production env example requires three operator decisions and documents
+The production env example requires five operator decisions and documents
 optional overrides. Application defaults remain in Go rather than being copied
 into a second configuration surface.
 

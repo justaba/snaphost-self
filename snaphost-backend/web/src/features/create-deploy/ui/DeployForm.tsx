@@ -20,12 +20,7 @@ interface DeployFormProps {
   onCancel: () => void;
 }
 
-export default function DeployForm({
-  submitting,
-  error,
-  onSubmit,
-  onCancel,
-}: DeployFormProps) {
+export default function DeployForm({ submitting, error, onSubmit, onCancel }: DeployFormProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const form = useForm<DeployFormValues>({
     resolver: zodResolver(deployFormSchema),

@@ -85,6 +85,8 @@ a project name both take the directory name and share volumes.
 ```
 cd snaphost-backend && go build ./... && go vet ./... && go test ./...
 gofmt -l cmd internal          # must print nothing
+cd web && pnpm install --frozen-lockfile && pnpm test && pnpm lint
+pnpm format:check && pnpm build
 ```
 
 `golangci-lint` runs **only in a container**:

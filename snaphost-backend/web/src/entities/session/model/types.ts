@@ -28,11 +28,7 @@ export interface ChangePasswordData {
 }
 
 export type AuthErrorCode =
-  | 'invalid_credentials'
-  | 'weak_password'
-  | 'rate_limited'
-  | 'network_error'
-  | 'unknown';
+  'invalid_credentials' | 'weak_password' | 'rate_limited' | 'network_error' | 'unknown';
 
 export interface AuthError {
   code: AuthErrorCode;
