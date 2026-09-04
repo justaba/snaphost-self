@@ -5,6 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SCRIPT="$ROOT/infra/deploy.sh"
 DOCKERFILE="$ROOT/snaphost-backend/docker/Dockerfile"
 PROD_COMPOSE="$ROOT/infra/docker-compose.prod.yml"
+RUNTIME_CONFIG="$ROOT/snaphost-backend/internal/runtime/config/config.go"
 VERSION=v1.2.3
 OLD_VERSION=v1.2.2
 LEGACY_SHA=0123456789abcdef0123456789abcdef01234567
@@ -249,6 +250,16 @@ setup_case; run_capture preflight "$LEGACY_SHA"; [[ $RC -ne 0 ]] && pass 'SHA is
 setup_case; sed -i 's/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=latest/' "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'floating version in env is rejected' || fail 'floating version in env is rejected'
 setup_case; rm "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'missing env' || fail 'missing env'
 setup_case; echo 'PUBLIC_HOST=example.com' >>"$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'placeholder env' || fail 'placeholder env'
+setup_case
+cp "$ROOT/infra/.env.production.example" "$ENV_FILE"
+sed -i \
+  -e "s/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=$OLD_VERSION/" \
+  -e 's/^DOMAIN_SUFFIX=.*/DOMAIN_SUFFIX=apps.prod.invalid/' \
+  -e 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=key/' \
+  "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+run_capture preflight "$VERSION"
+[[ $RC -eq 0 ]] && pass 'comments in the complete production template are not placeholders' || fail 'comments in the complete production template are not placeholders'
 setup_case; chmod 640 "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass '0640 production env rejected' || fail '0640 production env rejected'
 setup_case; chmod 644 "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass '0644 production env rejected' || fail '0644 production env rejected'
 setup_case; export FAIL_CONFIG=1; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'Compose validation failure' || fail 'Compose validation failure'
@@ -265,6 +276,17 @@ if sed -n '/^FROM debian:12-slim/,$p' "$DOCKERFILE" | grep -qE '^[[:space:]]+cur
   pass 'runtime image and production healthcheck share a real readiness client'
 else
   fail 'runtime image and production healthcheck share a real readiness client'
+fi
+
+# The control process asks the host Docker daemon for this exact network name
+# when it starts a user container. Compose prefixes an unnamed network with its
+# project, which passed rendered-manifest checks but failed the first real VPS
+# deploy with "network snaphost-net not found".
+if sed -n '/^  control:$/,/^  data:$/p' "$PROD_COMPOSE" | grep -Fqx '    name: snaphost-net' \
+  && grep -Fq 'const TraefikNetwork = "snaphost-net"' "$RUNTIME_CONFIG"; then
+  pass 'production control network matches the host runtime network'
+else
+  fail 'production control network matches the host runtime network'
 fi
 
 # Task 7 item 4: preflight asserts three variables, not forty-five. Everything

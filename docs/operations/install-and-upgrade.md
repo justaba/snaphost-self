@@ -1,8 +1,8 @@
 # Install and upgrade
 
-Status: Operator commands implemented and covered by fake-command tests; the
-required real-VPS install, upgrade, rollback, restore and low-memory rehearsals
-are not yet recorded
+Status: Operator commands implemented; a partial real-VPS rehearsal is
+recorded, while public-release, encrypted off-host restore and 1 GB acceptance
+remain
 Type: Operations
 Updated: 2026-09-04
 
@@ -27,9 +27,10 @@ insecure opt-in described below.
 - outbound HTTPS to GitHub and the public GHCR package;
 - DNS and an HTTPS reverse proxy supplied by the operator.
 
-There is not yet a supported minimum RAM claim. In particular, 1 GB has not
-been proven while a representative Node project is building; do not size a
-production host from idle usage alone.
+There is not yet a supported minimum RAM claim. A 4 GB host completed the
+recorded cold Node build with 997.2 MiB of host memory in use at peak, but 1 GB
+has not been proven; do not size a production host from that extrapolation or
+from idle usage alone.
 
 The GHCR package must be public. If an install asks for `docker login`, package
 visibility is wrong; a registry credential is not part of this contract.
@@ -70,7 +71,8 @@ The command:
 
 1. refuses a dirty checkout or a checkout not at the requested tag;
 2. writes `/opt/snaphost/env/production.env` with mode `0600`;
-3. derives the numeric group of `/var/run/docker.sock`;
+3. derives the numeric group of `/var/run/docker.sock` and a BuildKit CPU limit
+   that does not exceed the host CPU count;
 4. installs and reloads the BuildKit AppArmor profile;
 5. pulls the exact version, migrates SQLite and waits for Docker health;
 6. installs and starts `snaphost-backup.timer`;
@@ -202,6 +204,11 @@ Important paths:
 
 `infra/tests/snaphostctl_test.sh` exercises install, resume, protected secrets,
 HTTP opt-in, exact-tag upgrades, newest-version selection, downgrade and
-off-main refusal, failure compensation, dry-run and checkout-aware rollback.
-Those tests fake Git, Docker, AppArmor and systemd. They do not replace Task 7's
-acceptance drills on a fresh real VPS.
+host CPU sizing, off-main refusal, failure compensation, dry-run and
+checkout-aware rollback.
+Those tests fake Git, Docker, AppArmor and systemd. The
+[2026-09-04 VPS rehearsal](rehearsals/2026-09-04-vps.md) adds real-host install,
+login, local restore, upgrade/rollback and 4 GB build-pressure evidence, and
+records the defects it exposed. It used an isolated registry/origin because no
+public SemVer release existed, used a plaintext local backup, and did not run
+on 1 GB; those remaining acceptance boundaries are not waived by the drill.

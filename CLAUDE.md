@@ -500,9 +500,9 @@ do not reintroduce the former service webhook API to implement it.
   prunes on a retention policy that never touches a dump the deployment state
   references.
 
-Changing any of those means running `infra/tests/deploy_test.sh` (53 tests),
+Changing any of those means running `infra/tests/deploy_test.sh` (55 tests),
 `infra/tests/backup_test.sh` (41) and, for the host release contract,
-`infra/tests/snaphostctl_test.sh` (21). They need GNU coreutils and
+`infra/tests/snaphostctl_test.sh` (22). They need GNU coreutils and
 `flock`, so on Windows run them in a Linux container. Their fakes are part of the
 test: the `docker` fake refuses `up` for a service the manifest does not define,
 because a `rollback_to` naming seven deleted services once passed the suite.
@@ -522,13 +522,15 @@ Written down rather than fixed, so nobody rediscovers them:
 - **No end-to-end custom-domain TLS.** DNS verification exists, but the
   application deliberately exposes no authorization endpoint for Caddy `ask`;
   a narrow edge contract still needs to be designed.
-- **Install code exists; production proof does not.**
+- **Install code exists; production proof is partial.**
   [infra/snaphostctl](infra/snaphostctl) implements first install,
   checkout-aware upgrade and coordinated rollback. Its fake-command suite is
   [infra/tests/snaphostctl_test.sh](infra/tests/snaphostctl_test.sh), and the
   operator contract is [the runbook](docs/operations/install-and-upgrade.md).
+  The [first VPS rehearsal](docs/operations/rehearsals/2026-09-04-vps.md)
+  covers real install/upgrade/rollback, local restore and a 4 GB cold build.
   [Task 7](docs/tasks/planned/0007-install-and-upgrade.md) stays in progress
-  until the real-VPS install/upgrade/rollback, restore and low-memory drills are
+  until public artifacts, encrypted off-host restore and a real 1 GB drill are
   recorded.
 
 ## Documents

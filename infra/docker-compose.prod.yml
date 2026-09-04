@@ -210,6 +210,11 @@ volumes:
 
 networks:
   control:
+    # The application creates deploy containers through the host Docker
+    # daemon and attaches them by this bare name. Without an explicit name,
+    # Compose prefixes it with the project ("snaphost_control"), while the
+    # runtime asks Docker for "snaphost-net" and every site fails to start.
+    name: snaphost-net
     driver: bridge
   data:
     driver: bridge

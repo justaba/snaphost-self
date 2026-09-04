@@ -70,6 +70,7 @@ type recordingDeploymentStore struct {
 	err                  error
 	setRunningErr        error
 	statuses             []string
+	statusContextErrs    []error
 	setRunningContextErr *error
 	markImageErr         error
 	markedImages         []string
@@ -81,8 +82,9 @@ func (b *recordingDeploymentStore) GetDeploy(context.Context, string) (*deployme
 	}
 	return b.info, nil
 }
-func (b *recordingDeploymentStore) UpdateDeployStatus(_ context.Context, _ string, status string, _ *string) error {
+func (b *recordingDeploymentStore) UpdateDeployStatus(ctx context.Context, _ string, status string, _ *string) error {
 	b.statuses = append(b.statuses, status)
+	b.statusContextErrs = append(b.statusContextErrs, ctx.Err())
 	return nil
 }
 func (b *recordingDeploymentStore) SetDeployRunning(ctx context.Context, _ string, _ deployments.SetRunningRequest) error {
@@ -428,20 +430,33 @@ func TestDeployPublishesValidationFailureLog(t *testing.T) {
 
 func TestDeployPublishesBackendFailureLog(t *testing.T) {
 	pub := &recordingPublisher{}
+	store := &recordingDeploymentStore{info: deployableInfo()}
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	svc := NewService(
-		fakeBackend{runErr: fmt.Errorf("provider failed\nwith token=redacted?")},
-		&recordingDeploymentStore{info: deployableInfo()},
+		fakeBackend{
+			runErr: fmt.Errorf("provider failed\nwith token=redacted?"),
+			onRun:  cancelRequest,
+		},
+		store,
 		pub,
 		strictCfg(),
 		zap.NewNop(),
 	)
 
-	_, err := svc.Deploy(context.Background(), req())
+	_, err := svc.Deploy(requestCtx, req())
 	if err == nil {
 		t.Fatal("Deploy() error = nil, want backend error")
 	}
 
 	assertLogContains(t, pub.lines, "backend run failed: provider failed with token=[redacted]")
+	if got, want := strings.Join(store.statuses, ","), "provisioning,building"; got != want {
+		t.Fatalf("status updates = %q, want retryable %q", got, want)
+	}
+	for i, contextErr := range store.statusContextErrs {
+		if contextErr != nil {
+			t.Fatalf("status update %d inherited cancelled request context: %v", i, contextErr)
+		}
+	}
 }
 
 func TestDeployRollsBackContainerWhenRunningStateCannotPersist(t *testing.T) {

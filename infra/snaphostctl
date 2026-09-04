@@ -51,7 +51,7 @@ require_root() {
 
 require_tools() {
   local tool
-  for tool in docker git install realpath stat awk sed grep sort tail mktemp chmod chown mv mkdir dirname apparmor_parser systemctl; do
+  for tool in docker git install realpath stat awk sed grep sort tail mktemp chmod chown mv mkdir dirname nproc apparmor_parser systemctl; do
     command -v "$tool" >/dev/null || die "required command is unavailable: $tool"
   done
   docker compose version >/dev/null || die "Docker Compose v2 is unavailable"
@@ -145,6 +145,13 @@ socket_gid() {
   stat -c '%g' "$DOCKER_SOCKET"
 }
 
+host_cpu_count() {
+  local count
+  count=$(nproc)
+  [[ "$count" =~ ^[1-9][0-9]*$ ]] || die "cannot determine a positive host CPU count"
+  printf '%s\n' "$count"
+}
+
 set_env_value() {
   local key=$1 value=$2 dir tmp line found=false
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$key contains a newline"
@@ -166,6 +173,11 @@ set_env_value() {
   fi
   chown --reference="$ENV_FILE" "$tmp" || { rm -f -- "$tmp"; die "cannot preserve env ownership"; }
   mv -f -- "$tmp" "$ENV_FILE" || { rm -f -- "$tmp"; die "cannot publish env update"; }
+}
+
+prepare_runtime_directories() {
+  mkdir -p "$INSTALL_ROOT/env" "$STATE_DIR" "$BACKUP_DIR"
+  chmod 700 "$INSTALL_ROOT/env" "$STATE_DIR" "$BACKUP_DIR"
 }
 
 validate_domain_suffix() {
@@ -217,13 +229,12 @@ read_install_inputs() {
 create_install_env() {
   local version=$1 gid=$2 template=$CHECKOUT_ROOT/infra/.env.production.example
   [[ -f "$template" ]] || die "production env template is missing: $template"
-  mkdir -p "$INSTALL_ROOT/env" "$STATE_DIR" "$BACKUP_DIR"
-  chmod 700 "$INSTALL_ROOT/env" "$STATE_DIR" "$BACKUP_DIR"
   command install -m 600 "$template" "$ENV_FILE"
   set_env_value SNAPHOST_VERSION "$version"
   set_env_value DOMAIN_SUFFIX "$INSTALL_DOMAIN_SUFFIX"
   set_env_value OPENROUTER_API_KEY "$INSTALL_OPENROUTER_KEY"
   set_env_value DOCKER_SOCKET_GID "$gid"
+  ensure_buildkit_cpu_env
   if [[ -n "$INSTALL_OPERATOR_EMAIL" ]]; then
     set_env_value OPERATOR_EMAIL "$INSTALL_OPERATOR_EMAIL"
   fi
@@ -242,6 +253,22 @@ ensure_socket_gid_env() {
   gid=$(socket_gid)
   [[ "$gid" =~ ^[0-9]+$ ]] || die "Docker socket group is not numeric: $gid"
   set_env_value DOCKER_SOCKET_GID "$gid"
+}
+
+ensure_buildkit_cpu_env() {
+  local configured cpus limit
+  cpus=$(host_cpu_count)
+  configured=$(env_value BUILDKIT_CPU_LIMIT 2>/dev/null || true)
+  if [[ -z "$configured" ]]; then
+    if (( cpus < 4 )); then limit="${cpus}.0"; else limit=4.0; fi
+    set_env_value BUILDKIT_CPU_LIMIT "$limit"
+    return
+  fi
+  [[ "$configured" =~ ^([0-9]+)(\.[0-9]+)?$ ]] \
+    || die "BUILDKIT_CPU_LIMIT is not a positive number: $configured"
+  awk -v configured="$configured" -v cpus="$cpus" \
+    'BEGIN { exit !(configured > 0 && configured <= cpus) }' \
+    || die "BUILDKIT_CPU_LIMIT=$configured exceeds the host capacity of $cpus CPUs"
 }
 
 install_apparmor_profile() {
@@ -341,11 +368,13 @@ install_release() {
 
   gid=$(socket_gid)
   [[ "$gid" =~ ^[0-9]+$ ]] || die "Docker socket group is not numeric: $gid"
+  prepare_runtime_directories
   if [[ -f "$ENV_FILE" ]]; then
     check_protected_file "production env file" "$ENV_FILE"
     [[ $(env_value SNAPHOST_VERSION) == "$version" ]] || die "incomplete install env targets a different version"
     log "Resuming incomplete installation from $ENV_FILE"
     ensure_socket_gid_env
+    ensure_buildkit_cpu_env
   else
     read_install_inputs
     create_install_env "$version" "$gid"
@@ -421,6 +450,7 @@ upgrade_release() {
   [[ "$configured" == "$current" ]] || die "env version $configured does not match installed state $current"
   require_checkout_at_release "$current"
   ensure_socket_gid_env
+  ensure_buildkit_cpu_env
 
   fetch_releases
   if [[ -n "$requested" ]]; then

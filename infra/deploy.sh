@@ -149,7 +149,11 @@ preflight_checks() {
   check_tools
   [[ -f "$COMPOSE_FILE" ]] || die "Compose file does not exist: $COMPOSE_FILE"
   check_protected_file "production env" "$ENV_FILE"
-  if grep -Eqi 'replace-with-|example-|example\.com|example-registry' "$ENV_FILE"; then
+  if awk '
+    /^[[:space:]]*(#|$)/ { next }
+    tolower($0) ~ /(replace-with-|example-|example\.com|example-registry)/ { found=1 }
+    END { exit found ? 0 : 1 }
+  ' "$ENV_FILE"; then
     die "production env contains a template placeholder"
   fi
   # Three variables, where there used to be forty-five.

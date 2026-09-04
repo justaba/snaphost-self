@@ -98,7 +98,12 @@ echo "systemctl $*" >>"${FAKE_LOG:?}"
 [[ ${FAIL_SYSTEMD:-0} != 1 ]]
 FAKE
 
-chmod +x "$BIN/git" "$BIN/docker" "$BIN/apparmor_parser" "$BIN/systemctl"
+cat >"$BIN/nproc" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_NPROC:-2}"
+FAKE
+
+chmod +x "$BIN/git" "$BIN/docker" "$BIN/apparmor_parser" "$BIN/systemctl" "$BIN/nproc"
 
 PASS=0
 FAIL=0
@@ -172,6 +177,7 @@ FAKE
   export SNAPHOST_INSTALL_OPENROUTER_KEY_FILE="$KEY_FILE"
   export SNAPHOST_INSTALL_OPERATOR_EMAIL=operator@example.test
   export SNAPHOST_INSTALL_PUBLIC_URL=https://panel.example.test
+  export FAKE_NPROC=2
   unset SNAPHOST_INSTALL_ALLOW_HTTP DIRTY_CHECKOUT FAIL_FETCH TAG_OFF_MAIN FAIL_CHECKOUT FAIL_DEPLOY FAIL_ROLLBACK_ACTUAL FAIL_APPARMOR_FIRST FAIL_SYSTEMD
   CTL="$CHECKOUT/infra/snaphostctl"
 }
@@ -236,12 +242,31 @@ run_capture install "$VERSION"
 if [[ $RC -ne 0 ]] && grep -q 'permissions must be 0600 or 0400' "$OUTPUT"; then pass 'install refuses a readable API-key file'; else fail 'install refuses a readable API-key file'; fi
 
 setup_case
+mkdir -p "$CHECKOUT/env"
+cp "$ROOT/infra/.env.production.example" "$SNAPHOST_ENV_FILE"
+sed -i \
+  -e "s/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=$VERSION/" \
+  -e 's/^DOMAIN_SUFFIX=.*/DOMAIN_SUFFIX=apps.example.test/' \
+  -e 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=key/' \
+  "$SNAPHOST_ENV_FILE"
+printf '%s\n' 'BUILDKIT_CPU_LIMIT=4.0' >>"$SNAPHOST_ENV_FILE"
+chmod 600 "$SNAPHOST_ENV_FILE"
+run_capture install "$VERSION"
+if [[ $RC -ne 0 ]] && grep -q 'exceeds the host capacity of 2 CPUs' "$OUTPUT" \
+  && ! grep -q '^deploy ' "$FAKE_LOG"; then
+  pass 'install refuses a BuildKit CPU limit larger than the host'
+else fail 'install refuses a BuildKit CPU limit larger than the host'; fi
+
+setup_case
 run_capture install "$VERSION"
 if [[ $RC -eq 0 ]] \
   && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$SNAPHOST_ENV_FILE") == "$VERSION" ]] \
   && [[ $(awk -F= '$1=="DOMAIN_SUFFIX"{print $2}' "$SNAPHOST_ENV_FILE") == apps.example.test ]] \
   && [[ $(awk -F= '$1=="DOCKER_SOCKET_GID"{print $2}' "$SNAPHOST_ENV_FILE") == 998 ]] \
+  && [[ $(awk -F= '$1=="BUILDKIT_CPU_LIMIT"{print $2}' "$SNAPHOST_ENV_FILE") == 2.0 ]] \
   && [[ $(stat -c '%a' "$SNAPHOST_ENV_FILE") == 600 ]] \
+  && [[ $(stat -c '%a' "$CHECKOUT/state") == 700 ]] \
+  && [[ $(stat -c '%a' "$CHECKOUT/backups") == 700 ]] \
   && [[ -x "$SNAPHOST_CLI_TARGET" ]] \
   && grep -q 'first-login-password' "$OUTPUT" \
   && grep -q "WorkingDirectory=$CHECKOUT" "$CASE_DIR/etc/systemd/snaphost-backup.service" \

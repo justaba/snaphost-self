@@ -1,8 +1,9 @@
 # Task 7 — Install and upgrade without us
 
 **Status:** In progress. The portable operator command and runbook are
-implemented as of 2026-09-04. The inherited uptime workflow decision and the
-real-host acceptance drills remain.
+implemented. A partial real-host rehearsal is recorded as of 2026-09-04; the
+public-release, encrypted off-host restore, 1 GB and inherited uptime workflow
+acceptance items remain.
 **Created:** 2026-08-29
 **Updated:** 2026-09-04
 
@@ -112,7 +113,9 @@ derivable from the code.
    directories, derives the Docker socket group, installs the BuildKit
    AppArmor profile, deploys, installs the backup timer and a stable CLI copy,
    and prints the generated operator password. A failed pre-migration first
-   deploy can resume without rewriting the protected env file.
+   deploy can resume without rewriting the protected env file. The first VPS
+   rehearsal exposed self-rejection of the full env template and a four-CPU
+   default on a two-CPU machine; the installer now covers both cases.
 
 4. [x] **Shrink the environment surface.** `preflight` requires three variables
    where it required forty-five: `SNAPHOST_VERSION`, `DOMAIN_SUFFIX` and
@@ -176,8 +179,9 @@ derivable from the code.
    accepted the nonexistent entrypoint. The production service now owns a
    Docker healthcheck, the runtime image contains its `curl` client, and
    `deploy.sh` waits specifically for `healthy` rather than treating a merely
-   running container as ready. The suite has an explicit cross-file regression
-   check for that contract and now covers 53 scenarios.
+   running container as ready. The suite has explicit cross-file regression
+   checks for that contract and the host-visible runtime network, and now
+   covers 55 scenarios.
 
    The outer `snaphostctl` command now owns the host and Git lifecycle.
    `upgrade` fetches tags and `origin/main`, rejects dirty/skewed/downgrade/
@@ -185,7 +189,7 @@ derivable from the code.
    checks out the target and invokes that release's deploy engine. A failed
    deploy restores the original checkout and AppArmor profile. `rollback`
    moves runtime, state, checkout, AppArmor and systemd together; its dry-run
-   is read-only. The separate suite covers 21 scenarios.
+   is read-only. The separate suite covers 22 scenarios.
 
 6. [x] **How the manifest reaches the operator: a `git clone` at the version
    tag.** Settled with the version model above. Every path in `deploy.sh` and
@@ -242,10 +246,11 @@ hand the final integrated Caddy configuration to Task 4 when it lands.
   runbook has a working platform and can log into it — with no credential
   issued by us and no SSH access granted to us.
 - Upgrade and rollback are both performed against a real machine, not only
-  against fakes. The 2026-08-03 rehearsal is the last one that happened, it
-  predates the collapse to one service and SQLite, and the path it exercised
-  was broken shortly afterwards.
-- A restore drill against a SQLite dump, which has never been run.
+  against fakes. The 2026-09-04 rehearsal proves the host mechanics against an
+  isolated origin and registry; the published GitHub/GHCR path still has to be
+  repeated once a real release exists.
+- A restore drill against a SQLite dump, followed by final acceptance against
+  an encrypted artifact fetched back from its off-host destination.
 - A representative Node application builds on the minimum supported host
   without OOM-killing the control plane or an already running site. Record host
   RAM, swap, BuildKit limit, peak usage and build duration.
@@ -254,6 +259,21 @@ hand the final integrated Caddy configuration to Task 4 when it lands.
 - The shell test suites still pass, and their fakes still refuse what the real
   commands refuse — the property added on 2026-08-29 after both suites were
   found to be agreeing with themselves.
+
+## Acceptance evidence — 2026-09-04
+
+The [first VPS rehearsal](../../operations/rehearsals/2026-09-04-vps.md)
+completed real install, login, local backup/restore, checkout-aware upgrade,
+guarded rollback, and two successful Vite deploys. A measured cold build took
+147 seconds on a 2-vCPU/4-GB/no-swap host, peaked at 997.2 MiB used, caused no
+OOM or restart, and left an already running site serving.
+
+The drill also found and fixed the env-template placeholder check, host CPU
+sizing, the production network name, duplicate saga scheduling during a long
+build, and retry state after a temporary runtime failure. It does not close the
+task: it used a loopback registry and local Git origin because GitHub had no
+SemVer release, restored a local plaintext dump, and did not exercise a 1 GB
+host.
 
 ## Out of scope
 

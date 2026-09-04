@@ -102,7 +102,9 @@ func NewService(b backend.Backend, deploys DeploymentStore, pub logs.Publisher, 
 
 // Deploy runs a container for the given deploy request. On success it persists
 // the control-plane running state and starts a background log-forwarding
-// goroutine. On failure it stores the failed status and reason.
+// goroutine. A backend failure restores the deployable state so the saga can
+// retry it; validation and probe failures are terminal and are recorded by
+// their owning paths.
 func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
 	s.publishLog(req.DeployID, "runtime-startup", "deploy accepted by runner")
 	if err := s.validateDeployRequest(ctx, req); err != nil {
@@ -144,10 +146,18 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult,
 	result, err := s.backend.Run(ctx, backendReq)
 	if err != nil {
 		s.publishLogLevel(req.DeployID, "runtime-startup", "backend run failed: "+userVisibleError(err), "error")
-		// Persist the failure.
+		// Container-start failures are classified as retryable by the saga
+		// adapter. Leaving the row at provisioning would technically pass the
+		// next validation, but returning it to building makes the retry contract
+		// explicit and preserves the latest error for operator visibility. Use a
+		// fresh context because a daemon/network failure may arrive together with
+		// cancellation of the request that initiated it.
 		errMsg := err.Error()
-		if stateErr := s.deploys.UpdateDeployStatus(ctx, req.DeployID, "failed", &errMsg); stateErr != nil {
-			s.log.Error("failed to persist deploy failure", zap.Error(stateErr))
+		stateCtx, stateCancel := context.WithTimeout(context.Background(), runningPersistenceTimeout)
+		stateErr := s.deploys.UpdateDeployStatus(stateCtx, req.DeployID, "building", &errMsg)
+		stateCancel()
+		if stateErr != nil {
+			s.log.Error("failed to restore deploy state for retry", zap.Error(stateErr))
 		}
 		return nil, fmt.Errorf("backend run failed: %w", err)
 	}

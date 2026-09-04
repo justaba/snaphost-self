@@ -6,9 +6,11 @@ Updated: 2026-09-04
 ## Active
 
 Task 7 is in progress. Its version/registry model, CI separation, first-install
-command and checkout-aware upgrade/rollback implementation are done. The
-inherited uptime workflow decision and the real-host install, restore and
-low-memory acceptance drills remain.
+command and checkout-aware upgrade/rollback implementation are done. A
+[partial VPS rehearsal](../operations/rehearsals/2026-09-04-vps.md) covers the
+real install, login, local restore and 4 GB build-pressure paths. Public release
+artifacts, encrypted off-host restore, the 1 GB drill and the inherited uptime
+workflow decision remain.
 
 Four pieces of work landed outside the numbered tasks. Two closed recorded
 gaps, one is the smallest useful part of Task 6, and one removed structure that
@@ -68,7 +70,9 @@ container remains.
 The last recorded comparable footprint was 44.7 MiB across four containers
 before the registry was removed; the application was 6.8 MiB. The current local
 manifest has three containers and has not been remeasured as a complete stack.
-Real build pressure on a 1 GB host is also still unmeasured.
+The 2026-09-04 cold Node build peaked at 997.2 MiB of host memory while another
+site served, but it ran on a 4 GB machine. Real pressure on a 1 GB host is still
+unmeasured.
 
 ## Planned
 
@@ -79,7 +83,7 @@ Real build pressure on a 1 GB host is also still unmeasured.
 | 4 — The edge | Integrate Caddy with verified-domain authorization and dynamic Docker routing; remove Traefik from the intended production path. | — |
 | 5 — Git webhooks | Deploy on push. | — |
 | 6 — Operator actions *(partially completed)* | Stop, start, project deletion and the audit read surface are done. Audited shell access into a container remains. | — |
-| 7 — Install and upgrade without us *(in progress)* | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. Code and runbook exist; real-host proof remains. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
+| 7 — Install and upgrade without us *(in progress)* | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. Code, runbook and partial VPS proof exist; public-release, off-host restore and 1 GB proof remain. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
 
 Tasks 2, 3 and 6 include their corresponding panel work. Task 1 delivered the
 first operator UI rather than a final interface for future resources.

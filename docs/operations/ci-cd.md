@@ -16,8 +16,8 @@ The Go job, from the single snaphost-backend module, runs:
 - golangci-lint v1.64.8 built with the job's Go toolchain.
 
 The shell job checks syntax and ShellCheck diagnostics for deployment, backup,
-operator and uptime scripts; runs the 53-scenario deployment, 41-scenario
-backup and 21-scenario install/upgrade suites; and verifies the systemd backup
+operator and uptime scripts; runs the 55-scenario deployment, 41-scenario
+backup and 22-scenario install/upgrade suites; and verifies the systemd backup
 unit syntax.
 
 After those jobs pass, one Docker image is built. On main it is published as:

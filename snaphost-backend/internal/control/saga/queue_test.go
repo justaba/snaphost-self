@@ -75,6 +75,66 @@ func TestEnqueueOnAFullQueueHonoursTheContext(t *testing.T) {
 	}
 }
 
+// The stale-saga sweep runs while a normal build is still waiting on npm or a
+// compiler. Re-enqueuing the same deploy during that wait used to leave two
+// copies behind the active consumer; both ran immediately after the first
+// attempt and raced durable deploy state.
+func TestQueueDeduplicatesADeployWhileQueuedAndRunning(t *testing.T) {
+	q := NewQueue(4, zap.NewNop())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	job := SagaJob{DeployID: "d1"}
+	if err := q.Enqueue(ctx, job); err != nil {
+		t.Fatalf("first Enqueue: %v", err)
+	}
+	if err := q.Enqueue(ctx, job); !errors.Is(err, ErrAlreadyScheduled) {
+		t.Fatalf("duplicate buffered Enqueue = %v, want ErrAlreadyScheduled", err)
+	}
+	if got := q.Depth(); got != 1 {
+		t.Fatalf("queue depth after buffered duplicate = %d, want 1", got)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	secondCall := make(chan struct{}, 1)
+	calls := 0
+	go func() {
+		_ = q.Consume(ctx, func(SagaJob) error {
+			calls++
+			if calls > 1 {
+				secondCall <- struct{}{}
+				return nil
+			}
+			close(started)
+			<-release
+			close(finished)
+			return nil
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the active handler")
+	}
+	if err := q.Enqueue(ctx, job); !errors.Is(err, ErrAlreadyScheduled) {
+		t.Fatalf("duplicate active Enqueue = %v, want ErrAlreadyScheduled", err)
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the handler")
+	}
+	select {
+	case <-secondCall:
+		t.Fatal("a duplicate job reached the handler")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // A handler error is the normal way a saga step reports "try again later". The
 // consumer must keep going: the resume sweeper is what brings that saga back,
 // and a loop that stopped here would strand every deploy behind it.

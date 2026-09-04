@@ -2,6 +2,7 @@ package saga
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.uber.org/zap"
@@ -94,6 +95,11 @@ func (w *Worker) sweepOnce(ctx context.Context) {
 			job.CredentialID = *s.CredentialID
 		}
 		if err := w.Queue.Enqueue(ctx, job); err != nil {
+			if errors.Is(err, ErrAlreadyScheduled) {
+				w.Log.Debug("resume sweeper: saga is already queued or active",
+					zap.String("deploy_id", s.DeployID))
+				continue
+			}
 			w.Log.Warn("resume sweeper: enqueue failed",
 				zap.String("deploy_id", s.DeployID), zap.Error(err))
 			continue
