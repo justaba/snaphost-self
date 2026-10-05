@@ -21,3 +21,15 @@ func TestBuildTraefikLabelsIncludesSnapHostOwnership(t *testing.T) {
 		t.Fatalf("user id label = %q", labels["snaphost.deploy.user_id"])
 	}
 }
+
+func TestBuildTraefikLabelsOmitsRouterInProduction(t *testing.T) {
+	labels := BuildTraefikLabels("deploy", "user", "internal-slug", "", 3000)
+	if labels["snaphost.deploy.managed_by"] != "snaphost" {
+		t.Fatalf("ownership labels missing: %#v", labels)
+	}
+	for key := range labels {
+		if len(key) >= len("traefik.") && key[:len("traefik.")] == "traefik." {
+			t.Fatalf("production label set contains %q", key)
+		}
+	}
+}

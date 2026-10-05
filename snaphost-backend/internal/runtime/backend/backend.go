@@ -23,8 +23,8 @@ type RunRequest struct {
 	Port int
 	// TTL is the duration after which the container must be stopped.
 	TTL time.Duration
-	// Subdomain is the hostname prefix (e.g. "proj-abc123") — the backend
-	// composes the full URL with the configured domain suffix.
+	// Subdomain is a stable runtime identifier. Local development may use it
+	// for a Traefik hostname; production publishes only verified domains.
 	Subdomain string
 }
 
@@ -32,7 +32,8 @@ type RunRequest struct {
 type RunResult struct {
 	// ContainerID is the Docker container id.
 	ContainerID string
-	// EndpointURL is the full public URL (e.g. http://proj-abc123.localhost).
+	// EndpointURL is populated only for a local development route. Production
+	// leaves it empty until a verified project domain is attached.
 	EndpointURL string
 	// StartedAt is the time the container started.
 	StartedAt time.Time

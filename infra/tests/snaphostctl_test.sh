@@ -183,10 +183,9 @@ FAKE
   export SNAPHOST_SYSTEMD_DIR="$CASE_DIR/etc/systemd"
   export SNAPHOST_CLI_TARGET="$CASE_DIR/usr/local/sbin/snaphostctl"
   export SNAPHOST_TEST_EUID=0 SNAPHOST_TEST_DOCKER_SOCKET_GID=998
-  export SNAPHOST_INSTALL_DOMAIN_SUFFIX=apps.example.test
   export SNAPHOST_INSTALL_CONTROL_DOMAIN=panel.control.test
   export SNAPHOST_INSTALL_ACME_EMAIL=acme@control.test
-  export SNAPHOST_INSTALL_OPENROUTER_KEY_FILE="$KEY_FILE"
+  unset SNAPHOST_INSTALL_OPENROUTER_KEY_FILE SNAPHOST_INSTALL_LLM_ENABLED
   export SNAPHOST_INSTALL_OPERATOR_EMAIL=operator@example.test
   export SNAPHOST_INSTALL_PUBLIC_URL=https://panel.control.test
   export FAKE_NPROC=2
@@ -201,7 +200,6 @@ seed_installed() {
   CTL=$SNAPHOST_CLI_TARGET
   cat >"$SNAPHOST_ENV_FILE" <<EOF
 SNAPHOST_VERSION=$CURRENT_VERSION
-DOMAIN_SUFFIX=apps.example.test
 OPENROUTER_API_KEY=sk-or-v1-test-key
 SNAPHOST_CONTROL_DOMAIN=panel.control.test
 SNAPHOST_ACME_EMAIL=acme@control.test
@@ -263,16 +261,47 @@ if [[ $RC -ne 0 ]] && grep -q 'does not match installed release' "$OUTPUT"; then
 
 setup_case
 chmod 644 "$KEY_FILE"
+export SNAPHOST_INSTALL_LLM_ENABLED=true SNAPHOST_INSTALL_OPENROUTER_KEY_FILE="$KEY_FILE"
 run_capture install "$VERSION"
 if [[ $RC -ne 0 ]] && grep -q 'permissions must be 0600 or 0400' "$OUTPUT"; then pass 'install refuses a readable API-key file'; else fail 'install refuses a readable API-key file'; fi
 
 setup_case
-export SNAPHOST_INSTALL_CONTROL_DOMAIN=panel.example.test
 run_capture install "$VERSION"
-if [[ $RC -ne 0 ]] && grep -q 'must not share their final two DNS labels' "$OUTPUT" \
+if [[ $RC -eq 0 ]] && grep -qx 'LLM_ENABLED=false' "$SNAPHOST_ENV_FILE" \
+  && ! grep -q '^OPENROUTER_API_KEY=' "$SNAPHOST_ENV_FILE"; then
+  pass 'install succeeds without a key or AI prompt and persists disabled AI'
+else fail 'install succeeds without a key or AI prompt and persists disabled AI'; fi
+
+setup_case
+export SNAPHOST_INSTALL_LLM_ENABLED=true SNAPHOST_INSTALL_OPENROUTER_KEY_FILE="$KEY_FILE"
+run_capture install "$VERSION"
+if [[ $RC -eq 0 ]] && grep -qx 'LLM_ENABLED=true' "$SNAPHOST_ENV_FILE" \
+  && grep -qx 'OPENROUTER_API_KEY=sk-or-v1-test-key' "$SNAPHOST_ENV_FILE" \
+  && ! grep -q 'sk-or-v1-test-key' "$OUTPUT" "$FAKE_LOG"; then
+  pass 'explicit AI install saves a protected key without logging it'
+else fail 'explicit AI install saves a protected key without logging it'; fi
+
+setup_case
+export SNAPHOST_INSTALL_LLM_ENABLED=true
+run_capture install "$VERSION" </dev/null
+if [[ $RC -ne 0 ]] && grep -q 'KEY_FILE is required when' "$OUTPUT" \
   && ! grep -q '^deploy ' "$FAKE_LOG"; then
-  pass 'install refuses a control domain in the deploy cookie boundary'
-else fail 'install refuses a control domain in the deploy cookie boundary'; fi
+  pass 'AI opt-in without a key fails before deployment'
+else fail 'AI opt-in without a key fails before deployment'; fi
+
+setup_case
+export SNAPHOST_INSTALL_OPENROUTER_KEY_FILE="$KEY_FILE"
+run_capture install "$VERSION"
+if [[ $RC -ne 0 ]] && grep -q 'set SNAPHOST_INSTALL_LLM_ENABLED=true' "$OUTPUT"; then
+  pass 'an API-key file alone does not silently enable AI'
+else fail 'an API-key file alone does not silently enable AI'; fi
+
+setup_case
+export SNAPHOST_INSTALL_LLM_ENABLED=typo
+run_capture install "$VERSION"
+if [[ $RC -ne 0 ]] && grep -q 'must be true or false' "$OUTPUT"; then
+  pass 'install rejects an invalid AI switch'
+else fail 'install rejects an invalid AI switch'; fi
 
 setup_case
 unset SNAPHOST_INSTALL_ACME_EMAIL
@@ -283,12 +312,19 @@ if [[ $RC -eq 0 ]] \
 else fail 'install defaults ACME contact to the configured operator email'; fi
 
 setup_case
+export SNAPHOST_INSTALL_ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory
+run_capture install "$VERSION"
+if [[ $RC -eq 0 ]] \
+  && [[ $(awk -F= '$1=="SNAPHOST_ACME_CA"{print $2}' "$SNAPHOST_ENV_FILE") == "$SNAPHOST_INSTALL_ACME_CA" ]]; then
+  pass 'install persists the explicit staging ACME directory'
+else fail 'install persists the explicit staging ACME directory'; fi
+unset SNAPHOST_INSTALL_ACME_CA
+
+setup_case
 mkdir -p "$CHECKOUT/env"
 cp "$ROOT/infra/.env.production.example" "$SNAPHOST_ENV_FILE"
 sed -i \
   -e "s/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=$VERSION/" \
-  -e 's/^DOMAIN_SUFFIX=.*/DOMAIN_SUFFIX=apps.example.test/' \
-  -e 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=key/' \
   -e 's/^SNAPHOST_CONTROL_DOMAIN=.*/SNAPHOST_CONTROL_DOMAIN=panel.control.test/' \
   -e 's/^SNAPHOST_ACME_EMAIL=.*/SNAPHOST_ACME_EMAIL=acme@control.test/' \
   "$SNAPHOST_ENV_FILE"
@@ -304,7 +340,6 @@ setup_case
 run_capture install "$VERSION"
 if [[ $RC -eq 0 ]] \
   && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$SNAPHOST_ENV_FILE") == "$VERSION" ]] \
-  && [[ $(awk -F= '$1=="DOMAIN_SUFFIX"{print $2}' "$SNAPHOST_ENV_FILE") == apps.example.test ]] \
   && [[ $(awk -F= '$1=="SNAPHOST_CONTROL_DOMAIN"{print $2}' "$SNAPHOST_ENV_FILE") == panel.control.test ]] \
   && [[ $(awk -F= '$1=="SNAPHOST_ACME_EMAIL"{print $2}' "$SNAPHOST_ENV_FILE") == acme@control.test ]] \
   && [[ $(awk -F= '$1=="DOMAIN_CNAME_TARGET"{print $2}' "$SNAPHOST_ENV_FILE") == panel.control.test ]] \

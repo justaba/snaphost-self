@@ -317,6 +317,10 @@ func (r *Repository) SetRunning(ctx context.Context, deployID uuid.UUID, imageRe
 	defer func() { _ = tx.Rollback() }()
 
 	now := controldb.Now()
+	var endpointValue any
+	if endpointURL != "" {
+		endpointValue = endpointURL
+	}
 	result, err := tx.ExecContext(ctx,
 		// stopped_at is cleared, and that matters more than it looks. It is
 		// written with a COALESCE so it records the *first* stop and never
@@ -330,7 +334,7 @@ func (r *Repository) SetRunning(ctx context.Context, deployID uuid.UUID, imageRe
 		     container_id = ?, ttl_expires_at = ?, image_deleted_at = NULL,
 		     stopped_at = NULL, updated_at = ?
 		 WHERE id = ? AND status IN ('building', 'provisioning', 'running')`,
-		imageRef, endpointURL, subdomain, containerID,
+		imageRef, endpointValue, subdomain, containerID,
 		controldb.NullTime(ttlExpiresAt), now, deployID.String(),
 	)
 	if err != nil {
@@ -352,7 +356,7 @@ func (r *Repository) SetRunning(ctx context.Context, deployID uuid.UUID, imageRe
 		     endpoint_url = ?,
 		     started_at = COALESCE(started_at, ?)
 		 WHERE deploy_id = ? AND current_step IN ('built', 'provisioning', 'running')`,
-		containerID, endpointURL, now, deployID.String(),
+		containerID, endpointValue, now, deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("record running container in saga: %w", err)

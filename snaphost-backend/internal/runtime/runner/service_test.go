@@ -406,7 +406,7 @@ func TestDeployPublishesLifecycleLogs(t *testing.T) {
 		"image validation passed",
 		"preparing deployment",
 		"backend run started: fake",
-		"public URL ready: https://proj.example.test",
+		"development URL ready: https://proj.example.test",
 	}
 	assertLogTexts(t, pub.lines, want)
 }

@@ -94,8 +94,8 @@ func (b *DockerBackend) Run(ctx context.Context, req backend.RunRequest) (*backe
 	}
 	networkName := fmt.Sprintf("snaphost-deploy-%s", req.DeployID)
 
-	// 3. Build Traefik labels.
-	labels := BuildTraefikLabels(req.DeployID, req.UserID, req.Subdomain, b.cfg.DomainSuffix, req.Port)
+	// 3. Build ownership labels and optional local-development Traefik labels.
+	labels := BuildTraefikLabels(req.DeployID, req.UserID, req.Subdomain, b.cfg.DevDomainSuffix, req.Port)
 
 	// 4. Build container config.
 	exposedPort := nat.Port(fmt.Sprintf("%d/tcp", req.Port))
@@ -148,9 +148,13 @@ func (b *DockerBackend) Run(ctx context.Context, req backend.RunRequest) (*backe
 
 	// 10. Build result.
 	now := time.Now().UTC()
-	endpointURL := fmt.Sprintf("http://%s.%s", req.Subdomain, b.cfg.DomainSuffix)
-
-	b.publishLog(req.DeployID, "runtime-startup", fmt.Sprintf("deployment live at %s", endpointURL), "info")
+	endpointURL := ""
+	if b.cfg.DevDomainSuffix != "" {
+		endpointURL = fmt.Sprintf("http://%s.%s", req.Subdomain, b.cfg.DevDomainSuffix)
+		b.publishLog(req.DeployID, "runtime-startup", fmt.Sprintf("development URL ready at %s", endpointURL), "info")
+	} else {
+		b.publishLog(req.DeployID, "runtime-startup", "deployment running; attach a verified domain to publish it", "info")
+	}
 
 	return &backend.RunResult{
 		ContainerID:  resp.ID,

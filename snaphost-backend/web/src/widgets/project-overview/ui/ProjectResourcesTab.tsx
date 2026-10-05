@@ -46,12 +46,6 @@ function ProjectResourcesTab({ deploy }: ProjectResourcesTabProps) {
         hint={deploy.image_ref ?? undefined}
       />
       <Row
-        icon={<Network size={14} />}
-        label="Поддомен"
-        value={deploy.subdomain ?? '—'}
-        hint={deploy.endpoint_url ?? undefined}
-      />
-      <Row
         icon={<HardDrive size={14} />}
         label="Образ на диске"
         value={imageState(deploy)}

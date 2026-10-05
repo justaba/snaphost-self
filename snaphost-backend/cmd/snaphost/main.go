@@ -179,7 +179,7 @@ func main() {
 	// 7. Background loops, after everything they touch exists.
 	startBackground(ctx, ctlCfg, rtCfg, ctl, bld, rt, uploadsStore, credsStore, log)
 
-	edgeRoutes := edge.NewRepository(pool, ctlCfg.DomainSuffix)
+	edgeRoutes := edge.NewRepository(pool)
 	servers := []struct {
 		name   string
 		server *http.Server
@@ -234,16 +234,20 @@ type aiParts struct {
 }
 
 func buildAI(pool *sql.DB, cfg *aiconfig.Config, log *zap.Logger) aiParts {
-	inner := aillm.NewClient(aillm.Config{
-		APIKey:   cfg.OpenRouterAPIKey,
-		BaseURL:  cfg.LLMBaseURL,
-		Model:    cfg.OpenRouterModel,
-		Referer:  cfg.OpenRouterReferer,
-		AppName:  cfg.OpenRouterAppName,
-		Timeout:  cfg.LLMTimeout,
-		JSONMode: cfg.LLMJSONMode,
-	}, log)
-	circuit := aillm.NewCircuitClient(inner, 10, 60*time.Second)
+	var circuit *aillm.CircuitClient
+	if cfg.LLMEnabled {
+		inner := aillm.NewClient(aillm.Config{
+			APIKey:   cfg.OpenRouterAPIKey,
+			BaseURL:  cfg.LLMBaseURL,
+			Model:    cfg.OpenRouterModel,
+			Referer:  cfg.OpenRouterReferer,
+			AppName:  cfg.OpenRouterAppName,
+			Timeout:  cfg.LLMTimeout,
+			JSONMode: cfg.LLMJSONMode,
+		}, log)
+		circuit = aillm.NewCircuitClient(inner, 10, 60*time.Second)
+	}
+	log.Info("Dockerfile generation configured", zap.Bool("llm_enabled", cfg.LLMEnabled))
 	svc := aiservice.New(aicache.NewRepository(pool), aiusage.NewRepository(pool), circuit, cfg, log)
 	return aiParts{service: svc}
 }
@@ -371,7 +375,6 @@ func buildControl(
 
 	attachLimiter := domain.Limiter(domain.NewMemoryLimiter(cfg.DomainAttachPerHour, time.Hour))
 	domainHandler := domain.NewHandler(domainRepo, attachLimiter, domain.Config{
-		PlatformSuffix:  cfg.DomainSuffix,
 		ReservedDomains: cfg.ReservedDomains,
 		MaxPerUser:      cfg.MaxDomainsPerUser,
 		RequireIdentity: cfg.DomainAttachRequireIdentity,

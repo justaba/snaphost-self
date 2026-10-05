@@ -74,6 +74,12 @@ Everything is driven by the root `Makefile` and `docker compose` against
 
 Before the first run, copy `infra/.env.example` to `infra/.env`.
 
+LLM Dockerfile generation is an explicit optional fallback. `LLM_ENABLED`
+defaults to `false`, including when a legacy `OPENROUTER_API_KEY` remains in
+the env file. Only `LLM_ENABLED=true` requires a provider key. With AI disabled,
+project Dockerfiles and built-in templates work; an unsupported project fails
+permanently with a hint to add a Dockerfile, without a provider request.
+
 **The Compose project is named in the compose file** (`name: snaphost-self`), not
 passed on the command line, so every invocation agrees on it. If you run
 `docker compose` by hand from `infra/`, pass `-p snaphost-self`: the original
@@ -495,7 +501,8 @@ webhook API or give Caddy the Docker socket.
 - `infra/docker-compose.yml` — local development: the app, BuildKit, Traefik.
 - `infra/docker-compose.prod.yml` — production: a GHCR image pinned to a
   `vMAJOR.MINOR.PATCH` release, a migrate service, BuildKit and digest-pinned
-  Caddy as the sole owner of 80/443. No `build:`, no Traefik, no registry. The
+  stock Caddy as the sole owner of 80/443. No Compose `build:`, no Traefik,
+  no site registry. The
   app healthcheck runs inside its runtime image.
 - [infra/deploy.sh](infra/deploy.sh) — `preflight` / `deploy <version>` /
   `rollback`.
@@ -505,13 +512,14 @@ webhook API or give Caddy the Docker socket.
   back across a migration without `MIGRATIONS_BACKWARD_COMPATIBLE=true`. Never
   restores.
 - [infra/backup.sh](infra/backup.sh) — scheduled dump on a systemd timer, shares
-  `deploy.sh`'s lock, verifies the archive, encrypts with `age`, copies to S3,
+  `deploy.sh`'s lock, verifies the archive, optionally encrypts with `age` and
+  uploads to S3,
   prunes on a retention policy that never touches a dump the deployment state
   references.
 
-Changing any of those means running `infra/tests/deploy_test.sh` (60 tests),
+Changing any of those means running `infra/tests/deploy_test.sh` (62 tests),
 `infra/tests/backup_test.sh` (41) and, for the host release contract,
-`infra/tests/snaphostctl_test.sh` (26). They need GNU coreutils and
+`infra/tests/snaphostctl_test.sh` (31). They need GNU coreutils and
 `flock`, so on Windows run them in a Linux container. Their fakes are part of the
 test: the `docker` fake refuses `up` for a service the manifest does not define,
 because a `rollback_to` naming seven deleted services once passed the suite.
@@ -524,15 +532,13 @@ Written down rather than fixed, so nobody rediscovers them:
   usable and the sweep reclaims it, so the only way forward is deploying the
   project again. The button that used to say «Перезапустить» called an endpoint
   this backend has never had.
-- **Traefik remains local-only.** Production Caddy now routes through the
-  monolith without a Docker socket, while local development keeps Traefik for
-  generated-host convenience.
-- **The edge runtime and installation exist; public proof does not.** The
-  fail-closed Caddy `ask` handler and dynamic Host-to-container proxy are
-  implemented. Compose Caddy owns 80/443, and `snaphostctl` includes its state
-  and lifecycle. The generated-host certificate policy is not final, encrypted
-  TLS-state restore is unproved, and public DNS/ACME behavior has not been
-  rehearsed end to end.
+- **Traefik remains local-only.** Production Caddy routes verified project
+  domains through the monolith without a Docker socket. Local development may
+  enable generated Traefik hosts with `DEV_DOMAIN_SUFFIX`.
+- **The edge is accepted.** Compose Caddy owns 80/443 and serves verified
+  project domains with fail-closed on-demand TLS. Public staging and production
+  DNS/ACME checks and encrypted local TLS-state recovery are recorded in
+  [Task 4](docs/tasks/completed/0004-production-edge.md).
 - **Install code exists; production proof is partial.**
   [infra/snaphostctl](infra/snaphostctl) implements first install,
   checkout-aware upgrade and coordinated rollback. Its fake-command suite is
@@ -541,7 +547,7 @@ Written down rather than fixed, so nobody rediscovers them:
   The [first VPS rehearsal](docs/operations/rehearsals/2026-09-04-vps.md)
   covers real install/upgrade/rollback, local restore and a 4 GB cold build.
   [Task 7](docs/tasks/planned/0007-install-and-upgrade.md) stays in progress
-  until public artifacts, encrypted off-host restore and a real 1 GB drill are
+  until public artifacts and a real 1 GB drill are
   recorded.
 
 ## Documents

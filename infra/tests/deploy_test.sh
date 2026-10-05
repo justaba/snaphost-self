@@ -5,6 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SCRIPT="$ROOT/infra/deploy.sh"
 DOCKERFILE="$ROOT/snaphost-backend/docker/Dockerfile"
 PROD_COMPOSE="$ROOT/infra/docker-compose.prod.yml"
+DEV_COMPOSE="$ROOT/infra/docker-compose.yml"
 PROD_CADDYFILE="$ROOT/infra/Caddyfile.production.example"
 PROD_BUILDKIT_CONFIG="$ROOT/infra/buildkitd.prod.toml"
 DEV_BUILDKIT_CONFIG="$ROOT/infra/buildkitd.toml"
@@ -155,7 +156,6 @@ SNAPHOST_VERSION=$OLD_VERSION
 GHCR_IMAGE_PREFIX=ghcr.io/acme/repo
 SNAPHOST_BIND_ADDRESS=0.0.0.0
 SNAPHOST_PORT=8080
-DOMAIN_SUFFIX=apps.prod.invalid
 SNAPHOST_CONTROL_DOMAIN=panel.control.invalid
 SNAPHOST_ACME_EMAIL=operator@control.invalid
 SNAPHOST_CADDY_STATE_DIR=$CASE_DIR/caddy
@@ -217,7 +217,17 @@ EOF
 # Deployment state as it looks after a successful release, which is the only
 # state a rollback is ever launched from.
 set_case_env_version() {
-  sed -i "s/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=$1/" "$ENV_FILE"
+  replace_env_value SNAPHOST_VERSION "$1"
+}
+
+replace_env_value() {
+  local key=$1 value=$2
+  awk -F= -v key="$key" -v value="$value" '
+    $1 == key { print key "=" value; next }
+    { print }
+  ' "$ENV_FILE" >"$ENV_FILE.tmp"
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
 }
 
 seed_deployed_state() {
@@ -253,18 +263,14 @@ setup_case; run_capture preflight v1.2; [[ $RC -ne 0 ]] && pass 'version require
 setup_case; run_capture preflight v01.2.3; [[ $RC -ne 0 ]] && pass 'version rejects leading zero' || fail 'version rejects leading zero'
 setup_case; run_capture preflight latest; [[ $RC -ne 0 ]] && pass 'latest version is rejected' || fail 'latest version is rejected'
 setup_case; run_capture preflight "$LEGACY_SHA"; [[ $RC -ne 0 ]] && pass 'SHA is not an upgrade target' || fail 'SHA is not an upgrade target'
-setup_case; sed -i 's/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=latest/' "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'floating version in env is rejected' || fail 'floating version in env is rejected'
+setup_case; replace_env_value SNAPHOST_VERSION latest; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'floating version in env is rejected' || fail 'floating version in env is rejected'
 setup_case; rm "$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'missing env' || fail 'missing env'
 setup_case; echo 'PUBLIC_HOST=example.com' >>"$ENV_FILE"; run_capture preflight "$VERSION"; [[ $RC -ne 0 ]] && pass 'placeholder env' || fail 'placeholder env'
 setup_case
 cp "$ROOT/infra/.env.production.example" "$ENV_FILE"
-sed -i \
-  -e "s/^SNAPHOST_VERSION=.*/SNAPHOST_VERSION=$OLD_VERSION/" \
-  -e 's/^DOMAIN_SUFFIX=.*/DOMAIN_SUFFIX=apps.prod.invalid/' \
-  -e 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=key/' \
-  -e 's/^SNAPHOST_CONTROL_DOMAIN=.*/SNAPHOST_CONTROL_DOMAIN=panel.control.invalid/' \
-  -e 's/^SNAPHOST_ACME_EMAIL=.*/SNAPHOST_ACME_EMAIL=operator@control.invalid/' \
-  "$ENV_FILE"
+replace_env_value SNAPHOST_VERSION "$OLD_VERSION"
+replace_env_value SNAPHOST_CONTROL_DOMAIN panel.control.invalid
+replace_env_value SNAPHOST_ACME_EMAIL operator@control.invalid
 chmod 600 "$ENV_FILE"
 run_capture preflight "$VERSION"
 [[ $RC -eq 0 ]] && pass 'comments in the complete production template are not placeholders' || fail 'comments in the complete production template are not placeholders'
@@ -278,8 +284,8 @@ setup_case; export WRONG_IMAGE_VERSION=v1.2.30; run_capture preflight "$VERSION"
 # test passed while every real rollout failed after migrations. The runtime now
 # owns a Docker healthcheck and contains the client that healthcheck executes;
 # deploy.sh waits for that health state instead of inventing a second container.
-if sed -n '/^FROM debian:12-slim/,$p' "$DOCKERFILE" | grep -qE '^[[:space:]]+curl[[:space:]]+\\$' \
-  && sed -n '/^  snaphost:/,/^  [a-zA-Z0-9_-]*:/p' "$PROD_COMPOSE" | grep -Fq 'http://127.0.0.1:8080/health' \
+if grep -qE '^[[:space:]]+curl[[:space:]]+\\$' <<<"$(sed -n '/^FROM debian:12-slim/,$p' "$DOCKERFILE")" \
+  && grep -Fq 'http://127.0.0.1:8080/health' <<<"$(sed -n '/^  snaphost:/,/^  [a-zA-Z0-9_-]*:/p' "$PROD_COMPOSE")" \
   && ! grep -q -- '--entrypoint curl' "$SCRIPT"; then
   pass 'runtime image and production healthcheck share a real readiness client'
 else
@@ -309,6 +315,9 @@ if grep -Fq '${SNAPHOST_BIND_ADDRESS:-127.0.0.1}:${SNAPHOST_PORT:-8080}:8080' "$
   && grep -Fq 'EDGE_ASK_PORT: "8082"' "$PROD_COMPOSE" \
   && grep -Fq 'ask http://snaphost:8082/tls/ask' "$PROD_CADDYFILE" \
   && grep -Fq 'reverse_proxy snaphost:8081' "$PROD_CADDYFILE" \
+  && ! grep -Fq 'DOMAIN_SUFFIX' "$PROD_COMPOSE" \
+  && ! grep -Fiq 'cloudflare' "$PROD_COMPOSE" \
+  && ! grep -Fq 'dns cloudflare' "$PROD_CADDYFILE" \
   && ! sed -n '/^  caddy:/,/^  [a-zA-Z0-9_-]*:/p' "$PROD_COMPOSE" | grep -Fq '/var/run/docker.sock'; then
   pass 'Compose Caddy exclusively owns public ports and uses internal edge listeners'
 else
@@ -332,6 +341,16 @@ else
   fail 'BuildKit cache GC is bounded in development and production'
 fi
 
+# A rootless BuildKit container needs unmasked system paths so each Dockerfile
+# RUN can mount its own /proc. Without this the daemon looks healthy but every
+# non-trivial local build fails at execution time on Docker Desktop.
+if sed -n '/^  buildkitd:/,/^  [a-zA-Z0-9_-]*:/p' "$DEV_COMPOSE" \
+  | grep -Fq -- '- systempaths=unconfined'; then
+  pass 'development BuildKit can execute Dockerfile RUN steps'
+else
+  fail 'development BuildKit can execute Dockerfile RUN steps'
+fi
+
 # A bind-mounted config can change without changing Compose's service hash.
 # Both forward rollout and rollback must therefore recreate infrastructure or
 # an upgraded host keeps the old policy until an unrelated restart.
@@ -341,28 +360,25 @@ else
   fail 'rollout and rollback apply infrastructure and edge configuration changes'
 fi
 
-# Task 7 item 4: preflight asserts five variables, not forty-five. Everything
+# Preflight asserts three variables. Everything
 # else has a default in the application, and an unset variable reaches it as an
 # empty string, which its config readers already treat as unset.
 setup_case
 cat >"$ENV_FILE" <<EOF
 SNAPHOST_VERSION=$OLD_VERSION
-DOMAIN_SUFFIX=apps.prod.invalid
-OPENROUTER_API_KEY=key
 SNAPHOST_CONTROL_DOMAIN=panel.control.invalid
 SNAPHOST_ACME_EMAIL=operator@control.invalid
 EOF
 chmod 600 "$ENV_FILE"
 run_capture preflight "$VERSION"
-[[ $RC -eq 0 ]] && pass 'preflight passes on the five required variables alone' || fail 'preflight passes on the five required variables alone'
+[[ $RC -eq 0 ]] && pass 'preflight passes with three required values and no AI key' || fail 'preflight passes with three required values and no AI key'
 
-# ...and still refuses when one of the five is absent, which is what stops the
+# ...and still refuses when one of the three is absent, which is what stops the
 # shorter list from becoming no list.
-for missing in SNAPHOST_VERSION DOMAIN_SUFFIX OPENROUTER_API_KEY SNAPHOST_CONTROL_DOMAIN SNAPHOST_ACME_EMAIL; do
+for missing in SNAPHOST_VERSION SNAPHOST_CONTROL_DOMAIN SNAPHOST_ACME_EMAIL; do
   setup_case
   cat >"$ENV_FILE" <<EOF
 SNAPHOST_VERSION=$OLD_VERSION
-DOMAIN_SUFFIX=apps.prod.invalid
 OPENROUTER_API_KEY=key
 SNAPHOST_CONTROL_DOMAIN=panel.control.invalid
 SNAPHOST_ACME_EMAIL=operator@control.invalid
@@ -372,6 +388,29 @@ EOF
   run_capture preflight "$VERSION"
   [[ $RC -ne 0 ]] && pass "preflight refuses a missing $missing" || fail "preflight refuses a missing $missing"
 done
+
+# Opting in requires a key before pulling images or starting migrations.
+setup_case
+printf '%s\n' 'LLM_ENABLED=true' >>"$ENV_FILE"
+grep -v '^OPENROUTER_API_KEY=' "$ENV_FILE" >"$ENV_FILE.tmp"
+mv "$ENV_FILE.tmp" "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+run_capture preflight "$VERSION"
+if [[ $RC -ne 0 ]] && grep -q 'OPENROUTER_API_KEY is missing' "$OUTPUT"; then
+  pass 'preflight requires a key only after explicit AI opt-in'
+else fail 'preflight requires a key only after explicit AI opt-in'; fi
+
+setup_case
+printf '%s\n' 'LLM_ENABLED=true' >>"$ENV_FILE"
+run_capture preflight "$VERSION"
+[[ $RC -eq 0 ]] && pass 'preflight accepts AI opt-in with a key' || fail 'preflight accepts AI opt-in with a key'
+
+setup_case
+printf '%s\n' 'LLM_ENABLED=typo' >>"$ENV_FILE"
+run_capture preflight "$VERSION"
+if [[ $RC -ne 0 ]] && grep -q 'LLM_ENABLED must be true or false' "$OUTPUT"; then
+  pass 'preflight rejects an invalid AI switch'
+else fail 'preflight rejects an invalid AI switch'; fi
 
 # A host part-way through its first install has no public HTTPS yet. The public
 # smoke is skipped rather than fatal, and says so — a deploy that verified less

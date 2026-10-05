@@ -44,18 +44,14 @@ func newEdgeRepository(t *testing.T) (*Repository, string) {
 		userID, projectID, deployID); err != nil {
 		t.Fatalf("seed custom domain: %v", err)
 	}
-	return NewRepository(db, "apps.example.test"), deployID
+	return NewRepository(db), deployID
 }
 
-func TestRepositoryResolvesGeneratedAndVerifiedCustomHosts(t *testing.T) {
+func TestRepositoryResolvesVerifiedCustomHost(t *testing.T) {
 	repo, deployID := newEdgeRepository(t)
 	wantTarget := "http://snaphost-deploy-" + deployID + ":4173"
 
-	for _, host := range []string{
-		"proj-live.apps.example.test",
-		"Proj-Live.Apps.Example.Test.:443",
-		"app.example.test",
-	} {
+	for _, host := range []string{"app.example.test", "App.Example.Test.:443"} {
 		route, err := repo.Resolve(context.Background(), host)
 		if err != nil {
 			t.Fatalf("Resolve(%q): %v", host, err)
@@ -70,10 +66,8 @@ func TestRepositoryFailsClosedForAnythingNotRoutable(t *testing.T) {
 	repo, deployID := newEdgeRepository(t)
 
 	for _, host := range []string{
-		"unknown.apps.example.test",
-		"nested.proj-live.apps.example.test",
+		"proj-live.apps.example.test",
 		"unknown.example.test",
-		"apps.example.test",
 	} {
 		if _, err := repo.Resolve(context.Background(), host); !errors.Is(err, ErrRouteNotFound) {
 			t.Errorf("Resolve(%q) error = %v, want ErrRouteNotFound", host, err)
@@ -83,7 +77,7 @@ func TestRepositoryFailsClosedForAnythingNotRoutable(t *testing.T) {
 	if _, err := repo.db.Exec(`UPDATE deploys SET status = 'stopped' WHERE id = ?`, deployID); err != nil {
 		t.Fatal(err)
 	}
-	for _, host := range []string{"proj-live.apps.example.test", "app.example.test"} {
+	for _, host := range []string{"app.example.test"} {
 		if _, err := repo.Resolve(context.Background(), host); !errors.Is(err, ErrRouteNotFound) {
 			t.Errorf("stopped Resolve(%q) error = %v, want ErrRouteNotFound", host, err)
 		}
@@ -100,9 +94,49 @@ func TestRepositoryRequiresVerifiedCustomDomain(t *testing.T) {
 		t.Fatalf("pending custom domain error = %v, want ErrRouteNotFound", err)
 	}
 
-	// Changing custom-domain state must not disturb the generated route to the
-	// same running deploy.
-	if _, err := repo.Resolve(context.Background(), "proj-live.apps.example.test"); err != nil {
-		t.Fatalf("generated route after custom-domain change: %v", err)
+}
+
+func TestRepositoryAliasMoveRollbackAndDetachWithoutReload(t *testing.T) {
+	repo, originalID := newEdgeRepository(t)
+	const nextID = "82ba969b-6c6e-49b4-8ae0-373357793766"
+	if _, err := repo.db.Exec(`INSERT INTO deploys (id, user_id, project_id, source_type, status, subdomain, container_id)
+		SELECT ?, user_id, project_id, source_type, 'running', 'proj-next', 'next-container' FROM deploys WHERE id = ?`, nextID, originalID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`INSERT INTO deploy_sagas (deploy_id, user_id, current_step, app_port)
+		SELECT ?, user_id, 'running', 8080 FROM deploy_sagas WHERE deploy_id = ?`, nextID, originalID); err != nil {
+		t.Fatal(err)
+	}
+	checkTarget := func(want string) {
+		t.Helper()
+		route, err := repo.Resolve(context.Background(), "app.example.test")
+		if err != nil || route.DeployID != want {
+			t.Fatalf("alias target = %#v, %v; want %s", route, err, want)
+		}
+	}
+	checkTarget(originalID)
+	if _, err := repo.db.Exec(`UPDATE custom_domains SET target_deploy_id = ? WHERE domain = 'app.example.test'`, nextID); err != nil {
+		t.Fatal(err)
+	}
+	checkTarget(nextID)
+	if _, err := repo.db.Exec(`UPDATE custom_domains SET target_deploy_id = ? WHERE domain = 'app.example.test'`, originalID); err != nil {
+		t.Fatal(err)
+	}
+	checkTarget(originalID)
+	if _, err := repo.db.Exec(`UPDATE custom_domains SET status = 'revoked' WHERE domain = 'app.example.test'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Resolve(context.Background(), "app.example.test"); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("revoked alias error = %v, want ErrRouteNotFound", err)
+	}
+}
+
+func TestRepositoryRejectsTargetlessVerifiedAlias(t *testing.T) {
+	repo, _ := newEdgeRepository(t)
+	if _, err := repo.db.Exec(`UPDATE custom_domains SET target_deploy_id = NULL WHERE domain = 'app.example.test'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Resolve(context.Background(), "app.example.test"); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("targetless alias error = %v, want ErrRouteNotFound", err)
 	}
 }

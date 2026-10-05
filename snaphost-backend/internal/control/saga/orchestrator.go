@@ -303,7 +303,7 @@ func (o *Orchestrator) stepFinalize(ctx context.Context, deployID uuid.UUID, sta
 	if err := o.Repo.UpdateStep(ctx, deployID, StepRunning); err != nil {
 		return err
 	}
-	if state.EndpointURL != nil {
+	if state.EndpointURL != nil && *state.EndpointURL != "" {
 		o.publish(deployID, "saga", "info", "deployment ready at "+*state.EndpointURL)
 	} else {
 		o.publish(deployID, "saga", "info", "deployment ready")

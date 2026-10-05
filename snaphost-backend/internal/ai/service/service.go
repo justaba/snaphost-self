@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"snaphost/internal/ai/cache"
@@ -15,6 +16,10 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// ErrLLMDisabled asks the operator to supply a Dockerfile when neither a
+// built-in template nor an explicitly enabled provider can generate one.
+var ErrLLMDisabled = errors.New("no built-in Dockerfile template matches this project and AI generation is disabled; add a Dockerfile to the repository or enable optional AI Dockerfile generation")
 
 // Service orchestrates Dockerfile generation: cache lookup → template match → LLM fallback.
 type Service struct {
@@ -96,7 +101,7 @@ func (s *Service) GenerateDockerfile(ctx context.Context, req llm.GenerateReques
 	// The cache exists to avoid paying for an LLM call. Rendering a template
 	// is local, deterministic and takes microseconds, so there is nothing to
 	// save and an upgrade to lose.
-	if cached, err := s.cache.Get(ctx, signature); err == nil && cached.Source != "template" {
+	if cached, err := s.cache.Get(ctx, signature); s.cfg.LLMEnabled && err == nil && cached.Source != "template" {
 		_ = s.cache.IncrementUsage(ctx, signature)
 		s.recordUsage(ctx, req, "cache", cached.Source, "", 0, 0, int(time.Since(start).Milliseconds()), true, nil, true)
 		return &ServiceResponse{
@@ -116,7 +121,7 @@ func (s *Service) GenerateDockerfile(ctx context.Context, req llm.GenerateReques
 	if match, ok := templates.FindMatch(signals); ok {
 		rendered, err := templates.Render(match.Template, match.Vars)
 		if err != nil {
-			s.log.Warn("template render failed, falling through to LLM",
+			s.log.Warn("Dockerfile template render failed",
 				zap.String("template", match.Template.ID),
 				zap.Error(err),
 			)
@@ -135,6 +140,10 @@ func (s *Service) GenerateDockerfile(ctx context.Context, req llm.GenerateReques
 				},
 			}, nil
 		}
+	}
+
+	if !s.cfg.LLMEnabled || s.llm == nil {
+		return nil, ErrLLMDisabled
 	}
 
 	// 5. LLM fallback — enforce standard security constraints.

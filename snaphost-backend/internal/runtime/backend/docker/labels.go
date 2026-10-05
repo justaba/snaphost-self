@@ -6,21 +6,22 @@ import (
 	"snaphost/internal/runtime/config"
 )
 
-// BuildTraefikLabels returns Docker labels that configure Traefik v3 HTTP routing
-// for a deployment container. The labels instruct Traefik to route requests for
-// {subdomain}.{domainSuffix} to the container on the specified port.
+// BuildTraefikLabels always records ownership. It adds Traefik routing labels
+// only when local development explicitly supplies a domain suffix; production
+// routing uses verified domains through Caddy.
 func BuildTraefikLabels(deployID, userID, subdomain, domainSuffix string, port int) map[string]string {
-	return map[string]string{
-		// Traefik v3 routing labels.
-		"traefik.enable":         "true",
-		"traefik.docker.network": config.RoutingNetwork,
-		fmt.Sprintf("traefik.http.routers.%s.rule", deployID):                      fmt.Sprintf("Host(`%s.%s`)", subdomain, domainSuffix),
-		fmt.Sprintf("traefik.http.routers.%s.entrypoints", deployID):               "web",
-		fmt.Sprintf("traefik.http.services.%s.loadbalancer.server.port", deployID): fmt.Sprintf("%d", port),
-
-		// SnapHost-specific labels used by the watchdog and operational tooling.
+	labels := map[string]string{
 		"snaphost.deploy.id":         deployID,
 		"snaphost.deploy.user_id":    userID,
 		"snaphost.deploy.managed_by": "snaphost",
 	}
+	if domainSuffix == "" {
+		return labels
+	}
+	labels["traefik.enable"] = "true"
+	labels["traefik.docker.network"] = config.RoutingNetwork
+	labels[fmt.Sprintf("traefik.http.routers.%s.rule", deployID)] = fmt.Sprintf("Host(`%s.%s`)", subdomain, domainSuffix)
+	labels[fmt.Sprintf("traefik.http.routers.%s.entrypoints", deployID)] = "web"
+	labels[fmt.Sprintf("traefik.http.services.%s.loadbalancer.server.port", deployID)] = fmt.Sprintf("%d", port)
+	return labels
 }

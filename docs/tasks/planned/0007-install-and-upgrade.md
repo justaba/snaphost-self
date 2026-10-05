@@ -2,9 +2,9 @@
 
 **Status:** In progress. The portable operator command and runbook are
 implemented. A partial real-host rehearsal is recorded as of 2026-09-04; the
-public-release, encrypted off-host restore and 1 GB acceptance items remain.
+public-release and 1 GB acceptance items remain.
 **Created:** 2026-08-29
-**Updated:** 2026-09-04
+**Updated:** 2026-10-05
 
 ## Goal
 
@@ -117,19 +117,21 @@ derivable from the code.
    rehearsal exposed self-rejection of the full env template and a four-CPU
    default on a two-CPU machine; the installer now covers both cases.
 
-4. [x] **Shrink the environment surface.** `preflight` initially required
-   three variables where it required forty-five. Compose Caddy makes two more
-   genuine operator decisions mandatory: `SNAPHOST_CONTROL_DOMAIN` and
-   `SNAPHOST_ACME_EMAIL`. The required set is therefore five:
-   `SNAPHOST_VERSION`, `DOMAIN_SUFFIX`, `OPENROUTER_API_KEY`, the control domain
-   and ACME email.
+4. [x] **Shrink the environment surface.** The required set is three:
+   `SNAPHOST_VERSION`, `SNAPHOST_CONTROL_DOMAIN` and `SNAPHOST_ACME_EMAIL`.
+   As of 2026-10-04, AI generation is optional and defaults to disabled.
+   Only an explicit `LLM_ENABLED=true` requires `OPENROUTER_API_KEY`; the
+   application and installer enforce this together. A stored key alone
+   does not opt in. Project Dockerfiles and built-in templates need no key.
 
-   **No Go changed, and the reason is worth recording.** The item assumed this
-   would touch the config packages; it did not, because they already treat an
+   The initial reduction needed no Go changes because the other config
+   packages already treat an
    empty value as unset — `envOrDefault`, `parseIntEnv` and `parseBoolEnv` each
    answer with their fallback. An unset variable therefore reaches the process
    as an empty string and gets the default, so removing a line from the
-   required set is enough on its own.
+   required set was enough for those settings. Optional AI additionally
+   required a Go configuration switch and a permanent error when neither a
+   template nor an enabled provider can generate the Dockerfile.
 
    That is true only for variables passed *into* the container. The ones
    Compose interpolates itself — the image prefix, the published address and
@@ -155,7 +157,7 @@ derivable from the code.
    passed to the container. Without them a production install refused every
    custom-domain attach with 503, whatever the operator configured.
 
-   `.env.production.example` now has five required decisions; the
+   `.env.production.example` now has three required values; the
    rest are commented-out defaults with the reasoning next to them.
 
    The counts had already come down from 179 and fifty-nine before this item
@@ -232,10 +234,12 @@ and production manifest are now settled inputs. This task can change the
 release model and shrink the environment surface once instead of tracking a
 moving multi-service collapse.
 
-Task 4 now provides the application-side edge contract and Caddyfile, while
-Task 7 installs their pinned Compose Caddy lifecycle. Task 4 still owns the
-generated-host certificate strategy and public DNS/ACME proof; those do not
-block the already implemented release install, upgrade and rollback contract.
+Completed [Task 4](../completed/0004-production-edge.md) provides the
+application-side edge contract and Caddyfile. Its public DNS/ACME and local
+TLS-state restore acceptance passed on 2026-10-05. Task 7 owns installing that
+package from a published SemVer release, then upgrading and rolling it back on
+a real host. The VDS edge rehearsal used a locally built image and therefore
+does not satisfy this task's release-install criterion.
 
 ## Acceptance criteria
 
@@ -246,8 +250,9 @@ block the already implemented release install, upgrade and rollback contract.
   against fakes. The 2026-09-04 rehearsal proves the host mechanics against an
   isolated origin and registry; the published GitHub/GHCR path still has to be
   repeated once a real release exists.
-- A restore drill against a SQLite dump, followed by final acceptance against
-  an encrypted artifact fetched back from its off-host destination.
+- A restore drill against a SQLite dump produced by the documented local
+  backup flow. Off-host object storage is an optional operator policy rather
+  than an installation acceptance dependency.
 - A representative Node application builds on the minimum supported host
   without OOM-killing the control plane or an already running site. Record host
   RAM, swap, BuildKit limit, peak usage and build duration.

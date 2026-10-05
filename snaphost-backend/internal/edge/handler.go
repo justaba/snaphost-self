@@ -35,7 +35,6 @@ func (h *TLSAskHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
 	_, err := h.resolver.Resolve(r.Context(), host)
 	switch {
 	case err == nil:

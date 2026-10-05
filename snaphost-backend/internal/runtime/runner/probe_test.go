@@ -55,7 +55,7 @@ func probeCfg(enabled bool) *config.Config {
 	cfg.RuntimeProbeEnabled = enabled
 	cfg.RuntimeProbeTimeoutSec = 5
 	cfg.ContainerDefaultTTLMin = 30
-	cfg.DomainSuffix = "localhost"
+	cfg.DevDomainSuffix = "localhost"
 	return cfg
 }
 

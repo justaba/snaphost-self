@@ -182,9 +182,13 @@ func (r *Repository) MarkImageBuilt(ctx context.Context, deployID uuid.UUID, ima
 
 // MarkContainerRunning records the container runtime details.
 func (r *Repository) MarkContainerRunning(ctx context.Context, deployID uuid.UUID, containerID, endpointURL string) error {
+	var endpointValue any
+	if endpointURL != "" {
+		endpointValue = endpointURL
+	}
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE deploy_sagas SET container_running = 1, container_id = ?, endpoint_url = ? WHERE deploy_id = ?`,
-		containerID, endpointURL, deployID.String(),
+		containerID, endpointValue, deployID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("mark container running: %w", err)

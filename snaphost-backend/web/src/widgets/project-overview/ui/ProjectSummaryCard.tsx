@@ -34,8 +34,8 @@ function parseRepoName(repoUrl: string): string {
   }
 }
 
-/** The address to show: a verified domain that is actually serving beats the
- *  generated URL, because that is the one the user gives other people. */
+/** Production uses the verified project domain. endpoint_url exists only for
+ *  local development when DEV_DOMAIN_SUFFIX enables a Traefik route. */
 function publicAddress(
   latest: DeploySummary,
   domains: CustomDomain[],

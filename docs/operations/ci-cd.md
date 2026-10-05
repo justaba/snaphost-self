@@ -20,10 +20,10 @@ The panel job uses Node.js 22 and the exact pnpm version declared in
 Prettier and the production Vite build as separate steps.
 
 The shell job checks syntax and ShellCheck diagnostics for deployment, backup
-and operator scripts; runs the 60-scenario deployment, 41-scenario
-backup and 26-scenario install/upgrade suites; and verifies the systemd backup
-unit syntax. It also renders the real production Compose file and validates the
-production Caddyfile with the pinned Caddy 2.10.2 image.
+and operator scripts; runs the deployment, backup and install/upgrade suites;
+and verifies the systemd backup unit syntax. It also renders the real
+production Compose file, validates the stock digest-pinned Caddy 2.10.2
+Caddyfile, and runs local on-demand TLS and persistent-state integration checks.
 
 After the Go, panel and shell jobs pass, one Docker image is built. On main it
 is published as:
@@ -69,7 +69,7 @@ infra/docker-compose.prod.yml runs:
 - snaphost from an exact GHCR semantic-version tag;
 - snaphost-migrate as a profile-only one-shot using the same SQLite volume;
 - rootless buildkitd;
-- digest-pinned Caddy 2.10.2.
+- stock Caddy 2.10.2 pinned by image digest.
 
 The manifest publishes the application recovery port on loopback. Caddy alone
 publishes 80/443 and sends routing and certificate-authorization requests to
@@ -79,7 +79,7 @@ service. The application has an in-container `/health`
 healthcheck; the deploy script waits for Docker to report `healthy` and does
 not accept a merely running process as ready.
 
-The production env example requires five operator decisions and documents
+The production env example requires three operator values and documents
 optional overrides. Application defaults remain in Go rather than being copied
 into a second configuration surface.
 

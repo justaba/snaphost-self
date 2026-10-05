@@ -195,7 +195,11 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (*DeployResult,
 		return nil, wrapTransient(persistErr)
 	}
 
-	s.publishLog(req.DeployID, "runtime-startup", "public URL ready: "+result.EndpointURL)
+	if result.EndpointURL != "" {
+		s.publishLog(req.DeployID, "runtime-startup", "development URL ready: "+result.EndpointURL)
+	} else {
+		s.publishLog(req.DeployID, "runtime-startup", "deployment ready for a verified project domain")
+	}
 
 	// Start background log forwarder tied to a context that cancels when the
 	// container stops or the TTL expires.

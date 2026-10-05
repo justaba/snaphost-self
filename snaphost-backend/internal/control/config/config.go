@@ -50,11 +50,6 @@ type Config struct {
 	// Must exceed SagaBuildTimeoutMin so a slow build can still clone.
 	GitCredTTLMin int
 
-	// DomainSuffix is the platform's own runtime domain suffix. Route
-	// lookups for hosts under it resolve through deploys.subdomain;
-	// anything else is treated as a custom domain. It is also the
-	// namespace users are refused when attaching a domain.
-	DomainSuffix string
 	// ReservedDomains are the platform's other zones, above all the
 	// control-plane domain the dashboard and API answer on. User deploys
 	// live on a different registrable domain from sessions on purpose —
@@ -79,7 +74,8 @@ type Config struct {
 	// stay running as rollback targets.
 	ProjectDeployRetention int
 
-	// MaxDomainsPerUser is the per-tier custom domain count (free tier: 1).
+	// MaxDomainsPerUser bounds custom domains. Zero means unlimited, which is
+	// the self-host default so every project can have its own domain.
 	MaxDomainsPerUser int
 	// DomainAttachRequireIdentity gates domain attach on a payment-verified
 	// account. Default off: payment collection does not exist yet, so the
@@ -181,7 +177,6 @@ func Load() (*Config, error) {
 	}
 	cfg.GitCredTTLMin = credTTL
 
-	cfg.DomainSuffix = envOrDefault("DOMAIN_SUFFIX", "")
 	for _, zone := range strings.Split(os.Getenv("RESERVED_DOMAINS"), ",") {
 		if zone = strings.TrimSpace(zone); zone != "" {
 			cfg.ReservedDomains = append(cfg.ReservedDomains, zone)
@@ -209,7 +204,7 @@ func Load() (*Config, error) {
 		// of disk forever. A week is long enough that restarting last week's
 		// site still works and short enough that the host does not fill.
 		{"STOPPED_IMAGE_GRACE_HOURS", 168, &cfg.StoppedImageGraceHours},
-		{"MAX_DOMAINS_PER_USER", 1, &cfg.MaxDomainsPerUser},
+		{"MAX_DOMAINS_PER_USER", 0, &cfg.MaxDomainsPerUser},
 		{"DOMAIN_ATTACH_PER_HOUR", 5, &cfg.DomainAttachPerHour},
 		{"DOMAIN_VERIFY_INTERVAL_SEC", 60, &cfg.DomainVerifyIntervalSec},
 		{"DOMAIN_REVERIFY_HOURS", 24, &cfg.DomainReverifyHours},

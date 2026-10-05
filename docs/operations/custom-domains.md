@@ -1,121 +1,145 @@
-# Custom domains
+# Project domains
 
-Status: Compose edge implemented; public DNS/ACME proof remains
+Status: Public control and project-domain ACME verified on 2026-10-05
 Type: Operations
-Updated: 2026-09-04
+Updated: 2026-10-05
 
-The application can register a domain, prove ownership through DNS, keep its
-verification state, point it at a running deploy and route it through the
-Compose-managed Caddy edge. The public path has not yet been accepted against
-real operator-owned DNS and ACME.
+Production publishes projects only through explicit verified domains. It does
+not allocate generated hostnames and has no `DOMAIN_SUFFIX`, wildcard
+certificate or DNS-provider API token.
 
 ## Enable attachment
 
-At least one stable public target must be configured:
+Configure at least one stable public target:
 
-- DOMAIN_CNAME_TARGET for subdomains;
-- DOMAIN_A_RECORD_TARGET for apex domains.
+- `DOMAIN_CNAME_TARGET` for subdomains;
+- `DOMAIN_A_RECORD_TARGET` for apex domains.
 
-When both are empty, POST /api/v1/domains returns 503
-edge_address_unreserved. This is the default local-development behavior because
-the repository does not reserve a public address for the operator.
+When both are empty, `POST /api/v1/domains` returns 503
+`edge_address_unreserved`. `snaphostctl install` sets the control hostname as
+the default CNAME target. Set the A-record target to the VPS address if apex
+domains are supported.
 
-RESERVED_DOMAINS must include the control-plane domain and DOMAIN_SUFFIX is
-always reserved implicitly. MAX_DOMAINS_PER_USER and
-DOMAIN_ATTACH_PER_HOUR bound attachment attempts. Do not enable
-DOMAIN_ATTACH_REQUIRE_IDENTITY: no payment or external identity signal exists
-in this self-hosted fork, so enabling it intentionally refuses every attach.
+`RESERVED_DOMAINS` must include the control-plane hostname; the installer adds
+it automatically. `MAX_DOMAINS_PER_USER=0` means unlimited and is the self-host
+default so every project can have a domain. A positive value applies a global
+cap. `DOMAIN_ATTACH_PER_HOUR` still limits attachment attempts.
 
 ## Attach and verify
 
 Attach by project:
 
-~~~json
+```json
 POST /api/v1/domains
 {
   "domain": "app.example.com",
   "project_id": "<uuid>"
 }
-~~~
+```
 
-A deploy_id may be supplied instead; it selects that deploy as the initial
+A `deploy_id` may be supplied instead; it selects that deploy as the initial
 target and derives its project. Exactly one target form is required.
 
-The response includes the TXT challenge and configured CNAME/A instructions.
-Create the returned _snaphost-verify.<hostname> TXT record and point application
-traffic at the configured stable edge.
+The response contains the TXT ownership challenge and configured CNAME/A
+instructions. Create the returned `_snaphost-verify.<hostname>` TXT record and
+point application traffic at the stable edge.
 
-The in-process verifier checks pending rows every
-DOMAIN_VERIFY_INTERVAL_SEC. Verified rows are periodically rechecked according
-to DOMAIN_REVERIFY_HOURS and the grace policy. Only verified domains with a
-running target are authorized and routed by the edge.
+The verifier checks pending rows every `DOMAIN_VERIFY_INTERVAL_SEC`. Verified
+rows are periodically rechecked according to `DOMAIN_REVERIFY_HOURS` and the
+grace policy. Only a verified domain with a running target is authorized and
+routed.
 
-List the row through GET /api/v1/domains to see status and last_error. Common
-verification errors are txt_not_found, txt_mismatch and dns_lookup_failed.
+If authoritative DNS returns the TXT but the domain remains
+`pending/txt_not_found`, query from the application host too. Its configured
+recursive resolvers may still cache NXDOMAIN. The public rehearsal saw the
+correct answer at `ns1.smartape.ru`, `ns2.smartape.ru` and `1.1.1.1`, while the
+VDS's default resolvers still returned NXDOMAIN. Wait for the negative cache
+to expire or give the application a resolver that already sees the record;
+do not bypass the ownership check or mark the database row verified by hand.
 
 ## Publish and rollback
 
-After a deploy passes its runtime probe, the saga best-effort moves every
-verified domain of that project to the new deploy. A promotion failure leaves
-the domain on the prior working deploy and logs a warning.
+After a deploy passes its runtime probe, the saga moves every verified domain
+of that project to the new deploy. A promotion failure leaves the previous
+working target in place.
 
-Manual publish or rollback is the same atomic pointer update:
+Manual publish and rollback use the same pointer update:
 
-~~~json
+```json
 POST /api/v1/domains/<domain-id>/target
 {
   "deploy_id": "<running-deploy-uuid>"
 }
-~~~
+```
 
-The target must be a running deploy in the same project.
-
-Archive clients must reuse a stable project_key when creating deploys. Without
-it, every archive is a new project and an existing domain cannot follow the new
-build.
+The deploy must be running and belong to the same project. Archive clients must
+reuse a stable `project_key`; otherwise each archive creates another project
+and the existing domain cannot follow it.
 
 ## Production edge
 
-`infra/docker-compose.prod.yml` runs the digest-pinned Caddy 2.10.2 image and
-publishes 80/tcp, 443/tcp and 443/udp. No other production service owns those
-ports. `infra/Caddyfile.production.example` uses two narrow internal
-dependencies:
+Production Compose uses the digest-pinned stock Caddy 2.10.2 image and publishes
+80/tcp, 443/tcp and 443/udp. It has two narrow internal dependencies:
 
-- `http://snaphost:8082/tls/ask` authorizes on-demand issuance only when the exact
-  hostname resolves to a running deploy;
+- `http://snaphost:8082/tls/ask` authorizes issuance only when the exact domain
+  resolves to a verified running target;
 - `http://snaphost:8081` resolves the request Host and proxies it to the deploy
   container on `snaphost-net`.
 
-Those application listeners are not published on the host. They are not
-registered below `/api` or `/internal`, and Caddy receives no Docker socket. An
-alias target move takes effect on the next request because the proxy reads
-SQLite for every request.
+The listeners are not published on the host. Caddy receives no Docker socket or
+DNS credential. The control-plane hostname is a fixed Caddy site. Project
+domains use on-demand HTTP-01 or TLS-ALPN issuance and must already point to the
+edge before validation.
 
-`snaphostctl install` requires `SNAPHOST_INSTALL_CONTROL_DOMAIN` and an ACME
-email, stores them in the protected production env, reserves the control
-hostname from attachment, sets it as the default CNAME traffic target and
-creates `/opt/snaphost/state/caddy/{data,config}` with mode 0700. Keep the
-application recovery bind at its default `127.0.0.1:8080`.
+Every request resolves SQLite state independently, so alias promotion,
+rollback and detach need no Caddy reload. Unknown, pending, revoked, stopped and
+targetless domains fail closed. A cached certificate may still complete TLS
+after revocation, but routing answers 404.
 
-The remaining boundary is public acceptance: no generated-host wildcard/DNS
-challenge contract is packaged, and real public DNS, ACME issue, promotion,
-rollback and detach still need a VPS rehearsal. The current catch-all uses
-on-demand certificates and its fail-closed `ask` endpoint; issuing one
-certificate per preview can encounter CA rate limits.
+## Public acceptance rehearsal
 
-Before starting the stack, point the control hostname at the VPS and configure
-wildcard DNS for `DOMAIN_SUFFIX`. Custom subdomains normally CNAME to the
-control hostname; apex domains need `DOMAIN_A_RECORD_TARGET` set to the VPS
-address. Ensure the firewall admits TCP 80/443 and UDP 443, and that no host
-web server is already bound there.
+Use operator-owned control and project domains. For the first run, set
+`SNAPHOST_INSTALL_ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory`
+and use an isolated staging Caddy state directory. Check DNS externally:
+
+```bash
+dig @1.1.1.1 +short A panel.example.org
+dig @1.1.1.1 +short A project.example.com
+dig @1.1.1.1 +short TXT _snaphost-verify.project.example.com
+```
+
+After the domain is verified and targets a running deploy, record HTTP results
+and certificate details:
+
+```bash
+curl --noproxy '*' -ksS -o /dev/null -w '%{http_code}\n' https://panel.example.org/health
+curl --noproxy '*' -ksS -o /dev/null -w '%{http_code}\n' https://project.example.com/
+echo | openssl s_client -connect project.example.com:443 -servername project.example.com 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -serial -dates -ext subjectAltName
+sudo docker compose --project-name snaphost \
+  --env-file /opt/snaphost/env/production.env \
+  -f /opt/snaphost/infra/docker-compose.prod.yml logs --no-color caddy
+```
+
+Exercise unknown, pending, revoked and stopped domain handshakes. Promote the
+verified alias to a new deploy, return it to the prior deploy, then detach it.
+Record response changes and the unchanged Caddy container ID.
+
+After staging succeeds, use a fresh `/opt/snaphost/state/caddy` directory,
+switch `SNAPHOST_ACME_CA` to the production Let's Encrypt directory and repeat
+without `curl -k`. Do not copy staging state into production.
+
+`snaphost.ru` and `kinocassa.ru` point to VDS `31.177.109.37`. Their public
+staging and production certificates, live HTTPS routing, alias promotion and
+rollback, stopped and detached denial, and local encrypted Caddy-state restore
+passed; see the [2026-10-05 rehearsal](rehearsals/2026-10-05-public-caddy-control.md).
+External S3-compatible TLS backup is not part of this installation contract.
 
 ## Detach
 
-DELETE /api/v1/domains/<id> revokes the row. New requests stop routing and new
-certificate authorization fails closed. A certificate already cached by Caddy
-remains in edge storage until its own lifecycle removes it; possession of that
-certificate does not restore a revoked route.
+`DELETE /api/v1/domains/<id>` revokes the row. New certificate authorization
+fails and requests stop routing. Existing certificate material in Caddy state
+does not restore the revoked route.
 
 See [ADR 0007](../decisions/0007-custom-domain-tls-edge.md) and
-[deployment model](../architecture/deployment-model.md). Remaining acceptance
-work is tracked in [Task 4](../tasks/planned/0004-production-edge.md).
+[completed Task 4](../tasks/completed/0004-production-edge.md).

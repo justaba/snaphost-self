@@ -101,8 +101,8 @@ loopback recovery port and exposes its edge listeners inside the control
 network.
 `infra/snaphostctl` installs it from `/opt/snaphost`, checks out release tags
 for upgrades and keeps runtime, state and checkout aligned on rollback. Task 7
-still has real-host acceptance work; Task 4 owns the generated-certificate
-policy and public DNS/ACME proof.
+still has release-install acceptance work. Completed Task 4 records public
+DNS/ACME proof of the packaged project-domain on-demand certificate policy.
 
 See [packages and external components](services.md),
 [deploy lifecycle](deploy-lifecycle.md), and [security](security.md).

@@ -4,7 +4,7 @@ name: snaphost-self
 # version, BuildKit for builds and a pinned Caddy public edge.
 #
 # An unset variable means "use the application's default", so this file renders
-# from five operator decisions. The empty
+# from three required operator values. The empty
 # defaults are not decoration — Compose warns on every unset variable, and
 # forty of those on each command is how an operator learns to ignore output.
 # What is NOT written here is a copy of any default the Go config packages
@@ -109,7 +109,6 @@ services:
       SAGA_RESUME_INTERVAL_SEC: "${SAGA_RESUME_INTERVAL_SEC:-}"
       DEPLOY_DEFAULT_PORT: "${DEPLOY_DEFAULT_PORT:-}"
 
-      DOMAIN_SUFFIX: "${DOMAIN_SUFFIX:-}"
       RESERVED_DOMAINS: "${RESERVED_DOMAINS:-}"
       # The DNS targets an attached custom domain is told to point at. They
       # were in the env template and in the development manifest, and this file
@@ -151,15 +150,13 @@ services:
       LLM_BASE_URL: "${LLM_BASE_URL:-}"
       LLM_JSON_MODE: "${LLM_JSON_MODE:-}"
       LLM_TIMEOUT: "${LLM_TIMEOUT:-}"
+      LLM_ENABLED: "${LLM_ENABLED:-false}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       OPENROUTER_MODEL: "${OPENROUTER_MODEL:-}"
       OPENROUTER_REFERER: "${OPENROUTER_REFERER:-}"
       OPENROUTER_APP_NAME: "${OPENROUTER_APP_NAME:-}"
 
   caddy:
-    # Pin both the human-readable version and the manifest digest. Caddy is the
-    # public entry point; silently changing it during an unrelated application
-    # rollback would make that rollback non-reproducible.
     image: "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"
     restart: unless-stopped
     depends_on:
@@ -178,6 +175,7 @@ services:
     environment:
       SNAPHOST_CONTROL_DOMAIN: "${SNAPHOST_CONTROL_DOMAIN:?set the panel/API hostname}"
       SNAPHOST_ACME_EMAIL: "${SNAPHOST_ACME_EMAIL:?set the ACME account email}"
+      SNAPHOST_ACME_CA: "${SNAPHOST_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777

@@ -158,20 +158,9 @@ preflight_checks() {
   ' "$ENV_FILE"; then
     die "production env contains a template placeholder"
   fi
-  # Five variables, where there used to be forty-five.
-  #
-  # The long list was a SaaS operator's configuration file asserted line by
-  # line. Every entry on it that is not here has a default in the Go config
-  # packages, and an unset variable reaches them as an empty string, which
-  # every reader (`envOrDefault`, `parseIntEnv`, `parseBoolEnv`) already treats
-  # as "unset" and answers with that default. Requiring them bought nothing and
-  # cost an installer forty-two decisions it has no basis to make.
-  #
-  # What survives is what has no default that could be right:
+  # Three required operator values; AI generation is a separate opt-in.
   #
   #   SNAPHOST_VERSION    the version to run; the whole point of an upgrade
-  #   DOMAIN_SUFFIX       generated deploy hostnames are meaningless without it
-  #   OPENROUTER_API_KEY  the application refuses to start without one
   #   SNAPHOST_CONTROL_DOMAIN  the fixed panel/API hostname Caddy serves
   #   SNAPHOST_ACME_EMAIL      the ACME account contact Caddy uses
   #
@@ -181,9 +170,25 @@ preflight_checks() {
   # render an invalid manifest rather than fall back, which is why they need the
   # default at that layer instead of an assertion at this one.
   local key configured_version configured_value
-  for key in SNAPHOST_VERSION DOMAIN_SUFFIX OPENROUTER_API_KEY SNAPHOST_CONTROL_DOMAIN SNAPHOST_ACME_EMAIL; do
+  for key in SNAPHOST_VERSION SNAPHOST_CONTROL_DOMAIN SNAPHOST_ACME_EMAIL; do
     require_env "$key"
   done
+  local llm_enabled
+  llm_enabled=$(env_value LLM_ENABLED 2>/dev/null || true)
+  case "$llm_enabled" in
+    ''|false) ;;
+    true)
+      require_env OPENROUTER_API_KEY
+      [[ $(env_value OPENROUTER_API_KEY) =~ [^[:space:]] ]] || die "OPENROUTER_API_KEY is empty when LLM_ENABLED=true"
+      ;;
+    *) die "LLM_ENABLED must be true or false" ;;
+  esac
+  local acme_ca
+  acme_ca=$(env_value SNAPHOST_ACME_CA 2>/dev/null || true)
+  case "$acme_ca" in
+    ''|https://acme-v02.api.letsencrypt.org/directory|https://acme-staging-v02.api.letsencrypt.org/directory) ;;
+    *) die "SNAPHOST_ACME_CA must be the Let's Encrypt production or staging directory" ;;
+  esac
   configured_version=$(env_value SNAPHOST_VERSION)
   is_version "$configured_version" || is_legacy_sha "$configured_version" || \
     die "SNAPHOST_VERSION in env file must be vMAJOR.MINOR.PATCH (or a legacy 40-character Git SHA during transition)"
@@ -304,16 +309,16 @@ acquire_lock() {
 # host and no credential for us to issue and rotate per operator. That was the
 # registry half of Task 7's version decision.
 #
-# The digests are still recorded. A version tag is immutable by convention, not
-# by the registry, so the digest is the only durable answer to "what actually
-# ran" — and it costs one inspect per image.
+# Pulled image digests are recorded. A
+# version tag is immutable by convention, not by the registry; these hashes
+# record what actually ran.
 pull_images() {
-  action "pull all target images" compose pull
+  action "pull all target images" compose pull snaphost buildkitd caddy
   [[ "$DRY_RUN" == true ]] && { IMAGE_DIGESTS="dry-run"; return; }
   local image digest entries=()
   while IFS= read -r image; do
     digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image") || die "cannot resolve digest for pulled image"
-    [[ -n "$digest" && "$digest" != '<no value>' ]] || die "pulled image has no repository digest"
+    [[ -n "$digest" && "$digest" != '<no value>' ]] || die "image has no digest or ID: $image"
     entries+=("$digest")
   done < <(compose config --images)
   IMAGE_DIGESTS=$(IFS=,; echo "${entries[*]}")
@@ -323,7 +328,7 @@ ensure_previous_images() {
   [[ -n "$PREVIOUS_VERSION" ]] || return 0
   local target=$TARGET_VERSION
   TARGET_VERSION=$PREVIOUS_VERSION
-  action "pull previous rollback images" compose pull
+  action "pull previous rollback images" compose pull snaphost buildkitd caddy
   TARGET_VERSION=$target
 }
 

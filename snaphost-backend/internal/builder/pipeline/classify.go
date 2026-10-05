@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"snaphost/internal/ai/llm"
+	aiservice "snaphost/internal/ai/service"
 	"snaphost/internal/builder/clone"
 )
 
@@ -75,7 +76,7 @@ func classifyAIError(err error, log *zap.Logger) error {
 		errors.Is(err, llm.ErrUpstream) {
 		return Transient(err)
 	}
-	if errors.Is(err, llm.ErrInvalidOutput) {
+	if errors.Is(err, llm.ErrInvalidOutput) || errors.Is(err, aiservice.ErrLLMDisabled) {
 		return Permanent(err)
 	}
 	log.Warn("Dockerfile generator returned an unclassified error", zap.Error(err))

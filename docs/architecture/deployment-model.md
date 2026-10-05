@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-09-04
+Updated: 2026-09-24
 
 ## Data model
 
@@ -11,7 +11,7 @@ Publishing is split into three layers:
 | Layer | Lifetime | Role |
 | --- | --- | --- |
 | Project | permanent | Owner-scoped identity for one source and the settings or domains that survive a build. |
-| Deploy | immutable result | One build, image, container and generated hostname. |
+| Deploy | immutable result | One build, image, container and stable internal slug; local development may also expose a generated hostname. |
 | Custom domain | permanent mutable alias | A verified hostname pointing to one running deploy in its project. |
 
 Git deploys derive a stable source key from repository and branch. Archive
@@ -21,16 +21,16 @@ without one, each uploaded archive creates a separate project.
 Publishing a new version and rolling back are both pointer updates. Moving a
 domain alias does not rebuild or restart either deploy.
 
-## Generated hostnames
+## Public hostnames
 
-Every deploy receives a unique subdomain under DOMAIN_SUFFIX. The Docker
-runtime adds routing labels to the container and attaches it to snaphost-net.
-Local Traefik reads those labels and forwards the generated host to the
-container port.
+Production deploys have no generated public hostname. A project becomes public
+only after its verified domain points to a running deploy. Local development
+may set `DEV_DOMAIN_SUFFIX`; the Docker runtime then adds Traefik routing labels
+for a disposable local URL.
 
-The generated subdomain resolves only when the deploy is running and has a
-stored container ID and endpoint. Local DNS for arbitrary subdomains is an
-operator or workstation responsibility; localhost behavior varies by resolver.
+The runtime always keeps a stable internal deploy slug and attaches the
+container to `snaphost-net`. Without the development suffix it emits ownership
+labels only and leaves `endpoint_url` empty.
 
 ## Custom domains
 
@@ -49,8 +49,8 @@ authorization. They are available only on the Compose control network, are not
 published on the host, and do not form a general `/internal` service API. Caddy
 receives no Docker socket.
 
-The resolver accepts only a generated hostname or verified custom-domain alias
-with a running deploy, recorded container and valid saga port. It constructs
+The production resolver accepts only a verified project-domain alias with a
+running deploy, recorded container and valid saga port. It constructs
 the upstream from the deploy ID instead of accepting an arbitrary stored or
 request-supplied URL. Alias moves are visible on the next request.
 
@@ -61,15 +61,10 @@ in production. Otherwise a deployed application may set a parent-domain cookie
 that the panel receives. Origin-scoped storage such as localStorage is already
 isolated per hostname, but cookies are scoped by registrable domain.
 
-The production edge must therefore provide:
-
-- a control-plane domain for the panel and API;
-- a separate deploy suffix for generated sites;
-- preferably a Public Suffix List entry for that deploy suffix, or another
-  mechanism that prevents one generated site setting cookies for its siblings.
-
-This remains a deployment requirement. The installer requires both names and
-conservatively refuses values that share their final two DNS labels.
+The operator must keep the control hostname outside any registrable domain
+used for untrusted project sites. `RESERVED_DOMAINS` should include every
+operator-owned parent zone that projects must not attach; the installer adds
+the exact control hostname automatically.
 
 ## Local and production placement
 
@@ -92,6 +87,6 @@ from a tag checkout at `/opt/snaphost` and keeps checkout, env and state on the
 same release during upgrade and rollback.
 
 Task 2 changes preview TTLs into opt-in expiry and adds persistent per-project
-configuration. Task 4 defines the generated-host certificate policy and proves
-the public DNS/ACME path. Task 7 still owns the remaining real-host proof of the release,
-upgrade and rollback contract.
+configuration. Completed Task 4 packages the verified project-domain policy
+and records public DNS/ACME proof. Task 7 owns the remaining real-host proof
+of the release, upgrade and rollback contract.

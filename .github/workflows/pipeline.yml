@@ -92,15 +92,15 @@ jobs:
           bash -n infra/tests/deploy_test.sh
           bash -n infra/tests/backup_test.sh
           bash -n infra/tests/snaphostctl_test.sh
+          bash -n infra/tests/caddy_integration_test.sh
+          python3 -c 'from pathlib import Path; compile(Path("infra/tests/optional_ai_integration_test.py").read_text(), "optional_ai_integration_test.py", "exec")'
       - name: Lint
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck --severity=warning infra/deploy.sh infra/backup.sh infra/snaphostctl
+          shellcheck --severity=warning infra/deploy.sh infra/backup.sh infra/snaphostctl infra/tests/caddy_integration_test.sh
       - name: Production configurations
         env:
           SNAPHOST_VERSION: v0.0.0
-          DOMAIN_SUFFIX: apps.example.invalid
-          OPENROUTER_API_KEY: ci-placeholder
           SNAPHOST_CONTROL_DOMAIN: panel.example.invalid
           SNAPHOST_ACME_EMAIL: operator@example.invalid
         run: |
@@ -110,8 +110,9 @@ jobs:
             -v "$PWD/infra/Caddyfile.production.example:/etc/caddy/Caddyfile:ro" \
             caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-      # All suites fake every external command, so they touch no Docker
-      # daemon, database, credential, or network.
+      - name: Caddy routing and persistent-state integration
+        run: bash infra/tests/caddy_integration_test.sh
+      # These three script suites fake external commands.
       - name: Deployment suite
         run: bash infra/tests/deploy_test.sh
       - name: Backup suite

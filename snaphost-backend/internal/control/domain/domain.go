@@ -81,8 +81,7 @@ func NewToken() (string, error) {
 
 // Normalize lowercases the hostname and strips the parts a browser would not
 // send anyway — surrounding space, a port, a trailing dot. It is deliberately
-// the same normalization the router applies to generated hostnames, so both
-// route-lookup branches agree on what a host is.
+// the same normalization the production edge applies to project domains.
 func Normalize(host string) string {
 	host = strings.TrimSpace(strings.ToLower(host))
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -92,11 +91,9 @@ func Normalize(host string) string {
 }
 
 // Validate checks an attach request. reservedZones are the domains the
-// platform owns — the runtime suffix whose subdomains we hand out, and the
-// control-plane domain the dashboard and API answer on. Neither may be
-// claimed by a user: the first is our namespace to allocate, and the second is
-// where sessions live, so an attach that even reached `pending` there would be
-// a confusing dead end at best.
+// platform owns, above all the control-plane domain where sessions live. They
+// may not be claimed by a project; an attach that even reached `pending` there
+// would be a confusing dead end at best.
 //
 // The returned code is a stable identifier the dashboard maps to an
 // explanation, not just an error string.

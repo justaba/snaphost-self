@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Operations
-Updated: 2026-08-30
+Updated: 2026-10-04
 
 ## Prerequisites
 
@@ -15,15 +15,34 @@ run the Compose stack.
 
 ## Configure
 
-Copy the tracked example and replace the required API-key placeholder:
+Copy the tracked example:
 
 ~~~bash
 cp infra/.env.example infra/.env
 ~~~
 
-OPENROUTER_API_KEY is currently required at startup even when a built-in
-Dockerfile template would satisfy a particular deploy. Do not commit
-infra/.env.
+No provider key is required. `LLM_ENABLED` defaults to `false`; projects use
+their own Dockerfile or a built-in template. If no template matches, add a
+Dockerfile to the project. Do not commit `infra/.env`.
+
+To opt into AI generation, set both `LLM_ENABLED=true` and
+`OPENROUTER_API_KEY` in `infra/.env` and recreate the application container.
+An existing key alone does not enable AI. `LLM_BASE_URL` and `OPENROUTER_MODEL`
+can select a compatible provider and model when the option is enabled.
+
+To verify a complete deployment without AI credentials, build the image and
+run the isolated integration test:
+
+~~~bash
+docker build -f snaphost-backend/docker/Dockerfile \
+  -t snaphost-optional-ai:test snaphost-backend
+python3 infra/tests/optional_ai_integration_test.py
+~~~
+
+It starts a separate application and BuildKit, checks a project Dockerfile and
+a built-in template through real builds and HTTP responses, and checks that an
+unsupported project fails with a Dockerfile hint without retries. It uses
+temporary application state and cleans up its containers and deploy image tags.
 
 On a Linux host, set DOCKER_SOCKET_GID to the numeric group of the Docker
 socket when it is not root:

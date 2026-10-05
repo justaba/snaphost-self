@@ -9,8 +9,9 @@ current stack has one application process, BuildKit, Docker and an edge.
 
 ## Application does not start
 
-Check snaphost logs for configuration validation. OPENROUTER_API_KEY is
-required. With
+Check snaphost logs for configuration validation. `OPENROUTER_API_KEY` is
+required only with `LLM_ENABLED=true`; leave AI disabled for template-only
+generation. With
 STRICT_IMAGE_VALIDATION=true, ALLOWED_IMAGE_PREFIXES must be non-empty.
 
 If Docker calls fail with permission denied, compare DOCKER_SOCKET_GID with the
@@ -43,9 +44,11 @@ For archives, inspect upload and unpack size limits and path-containment errors.
 
 ## Dockerfile generation fails
 
-Built-in templates run before the LLM. Inspect detection logs and the generated
-Dockerfile validation result. OpenRouter errors matter only when no template
-matches.
+Built-in templates work without a provider key. When no template matches and
+AI is disabled, the deploy fails without retries and asks for a Dockerfile.
+Add one to the repository, or opt in with `LLM_ENABLED=true` and a provider key.
+Inspect detection logs and the generated Dockerfile validation result.
+OpenRouter errors matter only when AI is enabled and no template matches.
 
 Both user Dockerfiles and generated Dockerfiles must use an allowed, tagged base
 image and must work with the runtime's read-only root filesystem.
@@ -83,9 +86,9 @@ In local development, confirm Traefik is running, the user container is
 attached to `snaphost-net` and its labels contain the full generated hostname.
 Local resolver behavior for `*.localhost` is platform-dependent.
 
-In production, `DOMAIN_SUFFIX` needs wildcard DNS pointing at the VPS where
-Compose Caddy owns 80/443. Test the application-side contracts from inside the
-snaphost container without public DNS:
+Production has no generated URL. Attach and verify a project domain, point its
+A/AAAA or CNAME record at the VPS where Compose Caddy owns 80/443, and test the
+application-side contracts from inside the snaphost container:
 
 ~~~bash
 sudo docker compose --project-name snaphost \

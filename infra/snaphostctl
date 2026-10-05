@@ -25,10 +25,11 @@ Usage: snaphostctl install <vMAJOR.MINOR.PATCH>
        snaphostctl rollback [--dry-run]
 
 Install input:
-  SNAPHOST_INSTALL_DOMAIN_SUFFIX             generated-site domain suffix
   SNAPHOST_INSTALL_CONTROL_DOMAIN            panel/API hostname
   SNAPHOST_INSTALL_ACME_EMAIL                ACME account email (defaults to operator email)
-  SNAPHOST_INSTALL_OPENROUTER_KEY_FILE       0400/0600 file containing the API key
+  SNAPHOST_INSTALL_ACME_CA                   optional Let's Encrypt staging directory for rehearsal
+  SNAPHOST_INSTALL_LLM_ENABLED              true enables optional AI Dockerfile generation (default false)
+  SNAPHOST_INSTALL_OPENROUTER_KEY_FILE       optional 0400/0600 API-key file, used only with LLM enabled
   SNAPHOST_INSTALL_OPERATOR_EMAIL            optional operator email
   SNAPHOST_INSTALL_PUBLIC_URL                optional health/smoke URL
   SNAPHOST_INSTALL_ALLOW_HTTP=true            explicitly permit an HTTP URL
@@ -194,34 +195,15 @@ prepare_runtime_directories() {
   chmod 700 "$INSTALL_ROOT/env" "$STATE_DIR" "$BACKUP_DIR"
 }
 
-validate_domain_suffix() {
+validate_dns_name() {
   local value=$1
-  (( ${#value} <= 253 )) || die "domain suffix is too long"
+  (( ${#value} <= 253 )) || die "domain is too long"
   [[ "$value" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || \
-    die "domain suffix must be a lowercase DNS name"
-}
-
-validate_edge_domains() {
-  local deploy_suffix=$1 control_domain=$2 deploy_tail control_tail
-  validate_domain_suffix "$control_domain"
-  [[ "$control_domain" != "$deploy_suffix" ]] || \
-    die "control domain must differ from the generated-site domain suffix"
-
-  # This deliberately applies a stricter, easily audited rule than trying to
-  # reproduce the changing Public Suffix List in Bash. Different final two
-  # labels guarantee separation for ordinary domains and conservatively reject
-  # ambiguous public-suffix cases such as co.uk.
-  deploy_tail=${deploy_suffix%.*}
-  deploy_tail=${deploy_tail##*.}.${deploy_suffix##*.}
-  control_tail=${control_domain%.*}
-  control_tail=${control_tail##*.}.${control_domain##*.}
-  [[ "$deploy_tail" != "$control_tail" ]] || \
-    die "control domain and generated-site suffix must not share their final two DNS labels"
+    die "domain must be a lowercase DNS name"
 }
 
 ensure_edge_env() {
-  local suffix control email operator reserved cname
-  suffix=$(env_value DOMAIN_SUFFIX) || die "DOMAIN_SUFFIX is missing from production env"
+  local control email operator reserved cname
   control=$(env_value SNAPHOST_CONTROL_DOMAIN 2>/dev/null || true)
   email=$(env_value SNAPHOST_ACME_EMAIL 2>/dev/null || true)
   operator=$(env_value OPERATOR_EMAIL 2>/dev/null || true)
@@ -234,7 +216,7 @@ ensure_edge_env() {
     fi
     set_env_value SNAPHOST_CONTROL_DOMAIN "$control"
   fi
-  validate_edge_domains "$suffix" "$control"
+  validate_dns_name "$control"
 
   if [[ -z "$email" ]]; then
     email=${SNAPHOST_INSTALL_ACME_EMAIL:-$operator}
@@ -245,6 +227,7 @@ ensure_edge_env() {
     set_env_value SNAPHOST_ACME_EMAIL "$email"
   fi
   [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "ACME email is invalid"
+  validate_acme_ca_env
 
   reserved=$(env_value RESERVED_DOMAINS 2>/dev/null || true)
   if [[ ",${reserved}," != *",${control},"* ]]; then
@@ -259,16 +242,25 @@ ensure_edge_env() {
 }
 
 validate_installed_edge_env() {
-  local suffix control email configured
-  suffix=$(env_value DOMAIN_SUFFIX) || die "DOMAIN_SUFFIX is missing from production env"
+  local control email configured
   control=$(env_value SNAPHOST_CONTROL_DOMAIN) || die "SNAPHOST_CONTROL_DOMAIN is missing from production env"
   email=$(env_value SNAPHOST_ACME_EMAIL) || die "SNAPHOST_ACME_EMAIL is missing from production env"
   [[ -n "$control" && -n "$email" ]] || die "installed Caddy edge configuration is incomplete"
-  validate_edge_domains "$suffix" "$control"
+  validate_dns_name "$control"
   [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "ACME email is invalid"
+  validate_acme_ca_env
   configured=$(env_value SNAPHOST_CADDY_STATE_DIR 2>/dev/null || true)
   CADDY_STATE_DIR=${configured:-$CADDY_STATE_DIR}
   validate_caddy_state_path "$CADDY_STATE_DIR"
+}
+
+validate_acme_ca_env() {
+  local value
+  value=$(env_value SNAPHOST_ACME_CA 2>/dev/null || true)
+  case "$value" in
+    ''|https://acme-v02.api.letsencrypt.org/directory|https://acme-staging-v02.api.letsencrypt.org/directory) ;;
+    *) die "SNAPHOST_ACME_CA must be the Let's Encrypt production or staging directory" ;;
+  esac
 }
 
 validate_public_url() {
@@ -284,29 +276,27 @@ validate_public_url() {
 }
 
 read_install_inputs() {
-  INSTALL_DOMAIN_SUFFIX=${SNAPHOST_INSTALL_DOMAIN_SUFFIX:-}
   INSTALL_CONTROL_DOMAIN=${SNAPHOST_INSTALL_CONTROL_DOMAIN:-}
   INSTALL_OPERATOR_EMAIL=${SNAPHOST_INSTALL_OPERATOR_EMAIL:-}
   INSTALL_ACME_EMAIL=${SNAPHOST_INSTALL_ACME_EMAIL:-$INSTALL_OPERATOR_EMAIL}
+  INSTALL_ACME_CA=${SNAPHOST_INSTALL_ACME_CA:-}
   INSTALL_PUBLIC_URL=${SNAPHOST_INSTALL_PUBLIC_URL:-}
-
-  if [[ -z "$INSTALL_DOMAIN_SUFFIX" ]]; then
-    [[ -t 0 ]] || die "SNAPHOST_INSTALL_DOMAIN_SUFFIX is required for non-interactive install"
-    read -r -p 'Generated-site domain suffix: ' INSTALL_DOMAIN_SUFFIX
-  fi
-  validate_domain_suffix "$INSTALL_DOMAIN_SUFFIX"
 
   if [[ -z "$INSTALL_CONTROL_DOMAIN" ]]; then
     [[ -t 0 ]] || die "SNAPHOST_INSTALL_CONTROL_DOMAIN is required for non-interactive install"
     read -r -p 'Panel/API hostname: ' INSTALL_CONTROL_DOMAIN
   fi
-  validate_edge_domains "$INSTALL_DOMAIN_SUFFIX" "$INSTALL_CONTROL_DOMAIN"
+  validate_dns_name "$INSTALL_CONTROL_DOMAIN"
 
   if [[ -z "$INSTALL_ACME_EMAIL" ]]; then
     [[ -t 0 ]] || die "SNAPHOST_INSTALL_ACME_EMAIL is required when operator email is unset"
     read -r -p 'ACME account email: ' INSTALL_ACME_EMAIL
   fi
   [[ "$INSTALL_ACME_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "ACME email is invalid"
+  case "$INSTALL_ACME_CA" in
+    ''|https://acme-v02.api.letsencrypt.org/directory|https://acme-staging-v02.api.letsencrypt.org/directory) ;;
+    *) die "SNAPHOST_INSTALL_ACME_CA must be the Let's Encrypt production or staging directory" ;;
+  esac
 
   validate_public_url "$INSTALL_PUBLIC_URL"
   if [[ "$INSTALL_PUBLIC_URL" == https://* ]]; then
@@ -320,12 +310,22 @@ read_install_inputs() {
     die "operator email is invalid"
   fi
 
+  INSTALL_LLM_ENABLED=${SNAPHOST_INSTALL_LLM_ENABLED:-false}
+  INSTALL_OPENROUTER_KEY=
   local key_file=${SNAPHOST_INSTALL_OPENROUTER_KEY_FILE:-}
+  case "$INSTALL_LLM_ENABLED" in
+    false)
+      [[ -z "$key_file" ]] || die "set SNAPHOST_INSTALL_LLM_ENABLED=true to use an OpenRouter key file"
+      return 0
+      ;;
+    true) ;;
+    *) die "SNAPHOST_INSTALL_LLM_ENABLED must be true or false" ;;
+  esac
   if [[ -n "$key_file" ]]; then
     check_protected_file "OpenRouter key file" "$key_file"
     INSTALL_OPENROUTER_KEY=$(<"$key_file")
   else
-    [[ -t 0 ]] || die "SNAPHOST_INSTALL_OPENROUTER_KEY_FILE is required for non-interactive install"
+    [[ -t 0 ]] || die "SNAPHOST_INSTALL_OPENROUTER_KEY_FILE is required when SNAPHOST_INSTALL_LLM_ENABLED=true"
     read -r -s -p 'OpenRouter API key: ' INSTALL_OPENROUTER_KEY
     printf '\n'
   fi
@@ -337,10 +337,13 @@ create_install_env() {
   [[ -f "$template" ]] || die "production env template is missing: $template"
   command install -m 600 "$template" "$ENV_FILE"
   set_env_value SNAPHOST_VERSION "$version"
-  set_env_value DOMAIN_SUFFIX "$INSTALL_DOMAIN_SUFFIX"
-  set_env_value OPENROUTER_API_KEY "$INSTALL_OPENROUTER_KEY"
+  set_env_value LLM_ENABLED "$INSTALL_LLM_ENABLED"
+  if [[ "$INSTALL_LLM_ENABLED" == true ]]; then
+    set_env_value OPENROUTER_API_KEY "$INSTALL_OPENROUTER_KEY"
+  fi
   set_env_value SNAPHOST_CONTROL_DOMAIN "$INSTALL_CONTROL_DOMAIN"
   set_env_value SNAPHOST_ACME_EMAIL "$INSTALL_ACME_EMAIL"
+  [[ -z "$INSTALL_ACME_CA" ]] || set_env_value SNAPHOST_ACME_CA "$INSTALL_ACME_CA"
   set_env_value SNAPHOST_CADDY_STATE_DIR "$CADDY_STATE_DIR"
   set_env_value RESERVED_DOMAINS "$INSTALL_CONTROL_DOMAIN"
   set_env_value DOMAIN_CNAME_TARGET "$INSTALL_CONTROL_DOMAIN"

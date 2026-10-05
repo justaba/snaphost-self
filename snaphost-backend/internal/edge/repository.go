@@ -35,24 +35,10 @@ type Resolver interface {
 
 // Repository resolves routes directly from the monolith's SQLite store.
 type Repository struct {
-	db           *sql.DB
-	domainSuffix string
+	db *sql.DB
 }
 
-func NewRepository(db *sql.DB, domainSuffix string) *Repository {
-	return &Repository{db: db, domainSuffix: NormalizeHost(domainSuffix)}
-}
-
-const generatedRouteSQL = `
-SELECT d.id, d.container_id, s.app_port
-FROM deploys d
-JOIN deploy_sagas s ON s.deploy_id = d.id
-WHERE d.subdomain = ?
-  AND d.status = 'running'
-  AND d.container_id IS NOT NULL
-  AND d.container_id <> ''
-  AND s.app_port IS NOT NULL
-LIMIT 1`
+func NewRepository(db *sql.DB) *Repository { return &Repository{db: db} }
 
 const customRouteSQL = `
 SELECT d.id, d.container_id, s.app_port
@@ -67,23 +53,17 @@ WHERE cd.domain = ?
   AND s.app_port IS NOT NULL
 LIMIT 1`
 
-// Resolve maps either an exact generated hostname or a verified custom-domain
-// alias to a running container. Unknown, pending, stopped and targetless rows
-// are deliberately indistinguishable.
+// Resolve maps a verified custom-domain alias to a running container. Unknown,
+// pending, stopped and targetless rows are deliberately indistinguishable.
 func (r *Repository) Resolve(ctx context.Context, rawHost string) (*Route, error) {
 	host := NormalizeHost(rawHost)
 	if host == "" {
 		return nil, ErrRouteNotFound
 	}
 
-	query, arg := customRouteSQL, host
-	if subdomain, ok := r.generatedSubdomain(host); ok {
-		query, arg = generatedRouteSQL, subdomain
-	}
-
 	var deployID, containerID string
 	var port int
-	if err := r.db.QueryRowContext(ctx, query, arg).Scan(&deployID, &containerID, &port); err != nil {
+	if err := r.db.QueryRowContext(ctx, customRouteSQL, host).Scan(&deployID, &containerID, &port); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrRouteNotFound
 		}
@@ -101,23 +81,6 @@ func (r *Repository) Resolve(ctx context.Context, rawHost string) (*Route, error
 		DeployID: deployID,
 		Target:   "http://" + net.JoinHostPort(targetHost, strconv.Itoa(port)),
 	}, nil
-}
-
-func (r *Repository) generatedSubdomain(host string) (string, bool) {
-	if r.domainSuffix == "" {
-		return "", false
-	}
-	suffix := "." + r.domainSuffix
-	if !strings.HasSuffix(host, suffix) {
-		return "", false
-	}
-	subdomain := strings.TrimSuffix(host, suffix)
-	// Runtime-generated names are one DNS label. Refusing nested names avoids
-	// treating arbitrary descendants of the operator's suffix as deploys.
-	if subdomain == "" || strings.Contains(subdomain, ".") {
-		return "", false
-	}
-	return subdomain, true
 }
 
 // NormalizeHost applies the same normalization used by domain attachment and

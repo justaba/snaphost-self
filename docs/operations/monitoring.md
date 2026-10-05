@@ -33,12 +33,13 @@ At minimum, probe:
 - health returns 200;
 - an anonymous protected API call returns 401;
 - the embedded panel returns 200;
-- an impossible generated deploy hostname returns 404;
-- control-plane and deploy-suffix certificates exceed the expiry threshold.
+- an unknown project-domain SNI cannot obtain a certificate;
+- control-plane and attached project-domain certificates exceed the expiry
+  threshold.
 
 Run the monitor outside the target host and route alerts through an operator-owned
-channel. The generated-hostname and TLS probes become meaningful only after the
-production edge has been configured for that installation.
+channel. The project-domain and TLS probes become meaningful only after public
+DNS has been configured for that installation.
 
 ## Host checks
 

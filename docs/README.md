@@ -27,10 +27,11 @@ that disagrees with them is a documentation defect.
 - [Troubleshooting](operations/troubleshooting.md)
 
 The versioned installation contract is implemented in `infra/snaphostctl` and
-documented in the install runbook. It still needs the real-host acceptance
-drills tracked by [Task 7](tasks/planned/0007-install-and-upgrade.md). The edge
-runtime and Compose Caddy lifecycle exist, but generated-host certificate
-policy and public DNS/ACME proof remain in [Task 4](tasks/planned/0004-production-edge.md).
+documented in the install runbook. It still needs the release-install
+acceptance tracked by [Task 7](tasks/planned/0007-install-and-upgrade.md). The
+edge runtime and Compose Caddy lifecycle exist. Public DNS/ACME proof for both
+the control and project domains, plus local encrypted TLS-state restoration,
+are recorded in [completed Task 4](tasks/completed/0004-production-edge.md).
 
 ## Decisions and work status
 

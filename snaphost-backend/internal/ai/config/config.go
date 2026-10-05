@@ -2,7 +2,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -12,6 +11,10 @@ import (
 
 // Config holds all runtime configuration for Dockerfile generation.
 type Config struct {
+	// LLMEnabled explicitly enables the optional provider fallback. A stored
+	// API key alone never enables outbound generation requests.
+	LLMEnabled bool
+
 	// AllowedBaseImagePrefixes is the list of permitted Docker base image
 	// prefixes used to constrain LLM generation. Sourced from
 	// ALLOWED_BASE_IMAGES env var (comma-separated). Must be identical to
@@ -35,8 +38,8 @@ type Config struct {
 	LLMJSONMode bool
 
 	// OpenRouterAPIKey is the provider API key (env OPENROUTER_API_KEY,
-	// required). Named for its original provider; it authenticates to whatever
-	// LLMBaseURL points at. Never logged.
+	// required only when LLM_ENABLED=true). Named for its original provider;
+	// it authenticates to whatever LLMBaseURL points at. Never logged.
 	OpenRouterAPIKey string
 	// OpenRouterModel is the model identifier in "vendor/model" format
 	// (env OPENROUTER_MODEL, default "openai/gpt-4o-mini").
@@ -58,10 +61,17 @@ func Load() (*Config, error) {
 		LLMTimeout:        getEnvDuration("LLM_TIMEOUT", 30*time.Second),
 		LLMBaseURL:        getEnv("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
 		LLMJSONMode:       getEnvBool("LLM_JSON_MODE", true),
-		OpenRouterAPIKey:  os.Getenv("OPENROUTER_API_KEY"),
+		OpenRouterAPIKey:  strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")),
 		OpenRouterModel:   getEnv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
 		OpenRouterReferer: getEnv("OPENROUTER_REFERER", "https://snaphost.app"),
 		OpenRouterAppName: getEnv("OPENROUTER_APP_NAME", "SnapHost"),
+	}
+	switch os.Getenv("LLM_ENABLED") {
+	case "", "false":
+	case "true":
+		c.LLMEnabled = true
+	default:
+		return nil, fmt.Errorf("LLM_ENABLED must be true or false")
 	}
 
 	imagesStr := getEnv("ALLOWED_BASE_IMAGES", "node:,python:,golang:,ruby:,nginx:,alpine:,debian:,ubuntu:,gcr.io/distroless/,oven/bun:,denoland/deno:")
@@ -74,8 +84,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: ALLOWED_BASE_IMAGES resolved to empty list")
 	}
 
-	if c.OpenRouterAPIKey == "" {
-		return nil, errors.New("OPENROUTER_API_KEY is required")
+	if c.LLMEnabled && c.OpenRouterAPIKey == "" {
+		return nil, fmt.Errorf("OPENROUTER_API_KEY is required when LLM_ENABLED=true")
 	}
 
 	return c, nil

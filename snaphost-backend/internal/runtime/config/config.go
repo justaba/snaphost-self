@@ -10,9 +10,10 @@ import (
 
 // Config holds container-runtime configuration.
 type Config struct {
-	// DomainSuffix is appended to subdomains to form full hostnames
-	// (e.g. "localhost" in dev → proj-abc123.localhost).
-	DomainSuffix string
+	// DevDomainSuffix enables generated Traefik hostnames only in local
+	// development. Production leaves it empty and exposes deploys only through
+	// verified project domains.
+	DevDomainSuffix string
 	// DockerSocket is the path to the Docker daemon socket.
 	DockerSocket string
 	// ContainerCPULimit is the number of CPU cores allocated per user container.
@@ -54,8 +55,8 @@ const RoutingNetwork = "snaphost-net"
 // Required fields without defaults cause an error if unset.
 func Load() (*Config, error) {
 	cfg := &Config{
-		DomainSuffix: envOrDefault("DOMAIN_SUFFIX", "localhost"),
-		DockerSocket: envOrDefault("DOCKER_SOCKET", "/var/run/docker.sock"),
+		DevDomainSuffix: envOrDefault("DEV_DOMAIN_SUFFIX", ""),
+		DockerSocket:    envOrDefault("DOCKER_SOCKET", "/var/run/docker.sock"),
 	}
 
 	// Optional: CONTAINER_CPU_LIMIT (default 0.5)

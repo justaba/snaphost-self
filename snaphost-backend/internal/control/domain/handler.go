@@ -33,15 +33,12 @@ type Limiter interface {
 
 // Config holds the policy knobs the handler enforces.
 type Config struct {
-	// PlatformSuffix is our own runtime domain suffix; hosts under it are
-	// assigned by the platform and cannot be attached.
-	PlatformSuffix string
 	// ReservedDomains are the platform's other own zones — the control-plane
 	// domain the dashboard and API answer on, most importantly. User content
 	// lives on a different registrable domain than sessions do, and that
 	// separation is worth defending at attach time too.
 	ReservedDomains []string
-	// MaxPerUser is the per-tier domain count. Free tier is one.
+	// MaxPerUser is the account domain cap. Zero means unlimited.
 	MaxPerUser int
 	// RequireIdentity gates attach on a payment-verified account. Free
 	// custom domains attract phishing and spam and the cost lands on the
@@ -58,14 +55,9 @@ type Config struct {
 	ARecordTarget string
 }
 
-// reservedZones lists every domain a user may not attach: our runtime suffix
-// plus the platform's own zones.
+// reservedZones lists every platform-owned domain a user may not attach.
 func (c Config) reservedZones() []string {
-	zones := make([]string, 0, len(c.ReservedDomains)+1)
-	if c.PlatformSuffix != "" {
-		zones = append(zones, c.PlatformSuffix)
-	}
-	return append(zones, c.ReservedDomains...)
+	return append([]string(nil), c.ReservedDomains...)
 }
 
 // Handler exposes the public custom-domain API.

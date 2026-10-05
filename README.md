@@ -16,9 +16,10 @@ The single-binary architecture is implemented and tested. A versioned
 first-install, checkout-aware upgrade and coordinated rollback command now
 exist, with the operator procedure in the
 [install and upgrade runbook](docs/operations/install-and-upgrade.md). The
-project is still **not production-ready**: the install path has only a partial
-VPS rehearsal, and public DNS/ACME acceptance is not done. The remaining work is tracked in
-[Task 4](docs/tasks/planned/0004-production-edge.md) and
+project is still **not production-ready**: the release install path has only a
+partial VPS rehearsal. Public DNS/ACME edge acceptance passed and is recorded
+in [completed Task 4](docs/tasks/completed/0004-production-edge.md). The
+remaining release-install work is tracked in
 [Task 7](docs/tasks/planned/0007-install-and-upgrade.md).
 
 Current limitations that matter operationally:
@@ -26,8 +27,9 @@ Current limitations that matter operationally:
 - deployed sites are previews with a TTL; long-lived environments and volumes
   are future work;
 - Compose now installs Caddy and the application-side routing/TLS authorization
-  adapters, but real public DNS/ACME proof and the generated-host certificate
-  strategy remain; local development uses Traefik;
+  adapters. Production projects use verified individual domains with
+  fail-closed on-demand TLS; public DNS/ACME proof passed. Local development
+  uses Traefik;
 - managed databases and application authentication are not implemented.
 
 ## Architecture
@@ -110,6 +112,12 @@ make dev
 make logs-svc SVC=snaphost
 ```
 
+AI Dockerfile generation is optional and disabled by default. Projects use
+their own Dockerfile or a built-in template. To enable the provider fallback,
+set `LLM_ENABLED=true` and `OPENROUTER_API_KEY` in the protected env file.
+A key left in an existing env file does not enable AI by itself. Without AI,
+projects with no matching template ask the operator to add a Dockerfile.
+
 On the first start, the application creates the operator account and writes a
 generated one-time password to the `snaphost` container log. Open
 `http://localhost:8080` and sign in with `OPERATOR_EMAIL` (by default
@@ -152,9 +160,9 @@ snaphostctl upgrade [vMAJOR.MINOR.PATCH]
 snaphostctl rollback [--dry-run]
 ```
 
-The installer starts the pinned Compose Caddy service and persists its state
-below `/opt/snaphost/state/caddy`. The operator must point the panel hostname,
-generated-host wildcard and custom-domain traffic at the VPS; see the
+The installer pulls a digest-pinned stock Caddy image and persists certificate
+state below `/opt/snaphost/state/caddy`. The operator points the panel hostname
+and each verified project domain at the VPS; see the
 [custom-domain runbook](docs/operations/custom-domains.md).
 
 ## Relationship to upstream

@@ -1,23 +1,24 @@
 # Task catalog
 
 Status: Current
-Updated: 2026-09-04
+Updated: 2026-10-05
 
 ## Active
 
-Tasks 4 and 7 are in progress. Task 7's version/registry model, CI separation,
+Task 7 is in progress. Its version/registry model, CI separation,
 first-install command and checkout-aware upgrade/rollback implementation are
 done. A
 [partial VPS rehearsal](../operations/rehearsals/2026-09-04-vps.md) covers the
 real install, login, local restore and 4 GB build-pressure paths. Public release
-artifacts, encrypted off-host restore and the 1 GB drill remain.
+artifacts and the 1 GB drill remain.
 
-Task 4 now has a Compose-managed edge: Caddy exclusively owns 80/443 and calls
-an internal data-plane proxy plus a separate fail-closed `ask` listener without
-a Docker socket. Installer/upgrade/rollback lifecycle and persistent state are
-wired. The generated-host certificate strategy, encrypted TLS-state restore
-and a real DNS/ACME rehearsal remain. See
-[the task](planned/0004-production-edge.md).
+Completed Task 4 provides the Compose-managed edge: Caddy exclusively owns
+80/443 and calls an internal data-plane proxy plus a separate fail-closed
+`ask` listener without a Docker socket. Installer/upgrade/rollback lifecycle
+and persistent state are wired. The public DNS/ACME rehearsal passed for both
+control and project domains, including local encrypted TLS restore. The
+supported release-install path remains Task 7's acceptance work. See
+[the completed task](completed/0004-production-edge.md).
 
 Six pieces of work landed outside the numbered tasks. Four closed recorded
 gaps, one is the smallest useful part of Task 6, and one removed structure that
@@ -82,6 +83,7 @@ container remains.
 | Task | Result | Document |
 | --- | --- | --- |
 | 1 — Collapse the control plane into one binary | One Go application process with SQLite, local identity, direct package wiring, in-process queues, local Docker images and an embedded React panel. Current documentation was rewritten after the code settled. | [completed/0001-collapse-to-one-binary.md](completed/0001-collapse-to-one-binary.md) |
+| 4 — Production edge | Pinned Caddy, fail-closed project domains and dynamic routing passed local and public staging/production ACME checks, alias lifecycle, and encrypted local TLS-state restoration. Published-release installation remains Task 7. | [completed/0004-production-edge.md](completed/0004-production-edge.md) |
 
 The last recorded comparable footprint was 44.7 MiB across four containers
 before the registry was removed; the application was 6.8 MiB. The current local
@@ -96,10 +98,9 @@ unmeasured.
 | --- | --- | --- |
 | 2 — Deploys that live forever | Per-project environment variables, persistent volumes and TTL as an opt-in for previews rather than the default. | — |
 | 3 — Managed services | Template-defined databases and application authentication resources with volumes, health checks and injected connection data. | — |
-| 4 — The edge *(in progress)* | Compose Caddy, fail-closed authorization, dynamic Docker routing and lifecycle integration are implemented. Generated-host certificate policy, encrypted TLS-state restore and real DNS/ACME proof remain. | [planned/0004-production-edge.md](planned/0004-production-edge.md) |
 | 5 — Git webhooks | Deploy on push. | — |
 | 6 — Operator actions *(partially completed)* | Stop, start, project deletion and the audit read surface are done. Audited shell access into a container remains. | — |
-| 7 — Install and upgrade without us *(in progress)* | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. Code, runbook and partial VPS proof exist; public-release, off-host restore and 1 GB proof remain. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
+| 7 — Install and upgrade without us *(in progress)* | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. Code, runbook and partial VPS proof exist; public-release and 1 GB proof remain. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
 
 Tasks 2, 3 and 6 include their corresponding panel work. Task 1 delivered the
 first operator UI rather than a final interface for future resources.

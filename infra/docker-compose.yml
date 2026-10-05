@@ -65,13 +65,13 @@ services:
 
       # Deploys, projects and domains.
       DEPLOY_DEFAULT_PORT: ${DEPLOY_DEFAULT_PORT:-3000}
-      DOMAIN_SUFFIX: ${DOMAIN_SUFFIX:-localhost}
+      DEV_DOMAIN_SUFFIX: ${DEV_DOMAIN_SUFFIX:-localhost}
       RESERVED_DOMAINS: ${RESERVED_DOMAINS:-}
       DEPLOY_TTL_MIN: ${DEPLOY_TTL_MIN:-30}
       DEPLOY_TTL_MAX_MIN: ${DEPLOY_TTL_MAX_MIN:-30}
       DOMAIN_CNAME_TARGET: ${DOMAIN_CNAME_TARGET:-}
       DOMAIN_A_RECORD_TARGET: ${DOMAIN_A_RECORD_TARGET:-}
-      MAX_DOMAINS_PER_USER: ${MAX_DOMAINS_PER_USER:-1}
+      MAX_DOMAINS_PER_USER: ${MAX_DOMAINS_PER_USER:-0}
       DOMAIN_ATTACH_REQUIRE_IDENTITY: ${DOMAIN_ATTACH_REQUIRE_IDENTITY:-false}
       DOMAIN_ATTACH_PER_HOUR: ${DOMAIN_ATTACH_PER_HOUR:-5}
       DOMAIN_VERIFY_INTERVAL_SEC: ${DOMAIN_VERIFY_INTERVAL_SEC:-60}
@@ -100,7 +100,8 @@ services:
       ALLOWED_IMAGE_PREFIXES: ${ALLOWED_IMAGE_PREFIXES:-snaphost/}
 
       # Dockerfile generation.
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      LLM_ENABLED: "${LLM_ENABLED:-false}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
       OPENROUTER_REFERER: ${OPENROUTER_REFERER:-http://localhost:5173}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-SnapHost}
@@ -132,6 +133,10 @@ services:
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
+      # Rootless BuildKit gives every Dockerfile RUN its own /proc mount.
+      # Docker's default masked system paths reject that mount (most visibly
+      # on Docker Desktop) even though the daemon itself starts successfully.
+      - systempaths=unconfined
     volumes:
       - buildkit_cache:/home/user/.local/share/buildkit
       - ./buildkitd.toml:/home/user/.config/buildkit/buildkitd.toml:ro

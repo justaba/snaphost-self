@@ -1,21 +1,26 @@
 # Install and upgrade
 
-Status: Operator commands implemented; a partial real-VPS rehearsal is
-recorded, while public-release, encrypted off-host restore and 1 GB acceptance
-remain
+Status: Operator commands implemented; release install and 1 GB acceptance remain
 Type: Operations
-Updated: 2026-09-04
+Updated: 2026-10-05
 
 This is the supported release layout for one self-hosted machine. The operator
 owns one Git checkout at `/opt/snaphost`; its checked-out tag, the application
 image, `env/production.env` and `state/current.env` must all name the same exact
 release. `snaphostctl` enforces that invariant before it changes the host.
 
-The installer brings up the control plane, BuildKit and a digest-pinned Caddy
-service. Caddy is the only component that publishes 80/443; it reaches the
+The installer brings up the control plane, BuildKit and a digest-pinned stock
+Caddy image. Caddy is the only component that publishes 80/443; it reaches the
 application routing and TLS authorization listeners only through the Compose
 control network. A temporary plain-HTTP panel is possible only through an
 explicit, insecure opt-in described below.
+
+The [2026-10-05 VDS rehearsal](rehearsals/2026-10-05-public-caddy-control.md)
+passed public staging and production HTTPS for both the panel and a verified
+project domain, including encrypted local TLS restore. It used a locally built
+application image because no public SemVer release image was available to this
+rehearsal. It does not validate the supported `snaphostctl install` release
+path.
 
 ## Host prerequisites
 
@@ -25,10 +30,10 @@ explicit, insecure opt-in described below.
 - Git, GNU coreutils, `awk`, `sed`, `grep`, `flock`, `curl` and `ss` from
   iproute2;
 - root access for the install, AppArmor profile and systemd timer;
-- outbound HTTPS to GitHub, the public GHCR package and ACME endpoints;
+- outbound HTTPS to GitHub, Docker Hub, the public GHCR package and ACME
+  endpoints;
 - TCP ports 80/443 and UDP port 443 free for Compose Caddy;
-- operator-controlled DNS for a panel hostname and a generated-site suffix on
-  separate registrable domains.
+- operator-controlled DNS for the panel and every project domain.
 
 There is not yet a supported minimum RAM claim. A 4 GB host completed the
 recorded cold Node build with 997.2 MiB of host memory in use at peak, but 1 GB
@@ -47,35 +52,30 @@ SHA.
 VERSION=v1.2.3
 sudo git clone https://github.com/justaba/snaphost-self.git /opt/snaphost
 sudo git -C /opt/snaphost checkout --detach "$VERSION"
-sudo install -m 600 /dev/null /root/snaphost-openrouter.key
-sudoedit /root/snaphost-openrouter.key
 ~~~
-
-Put only the OpenRouter key in that file, with no shell assignment. Keeping it
-in a protected file avoids putting it in shell history or the process list.
 
 For a non-interactive install behind an HTTPS edge:
 
 ~~~bash
 sudo env \
-  SNAPHOST_INSTALL_DOMAIN_SUFFIX=apps.example.net \
   SNAPHOST_INSTALL_CONTROL_DOMAIN=panel.example.org \
   SNAPHOST_INSTALL_OPERATOR_EMAIL=operator@example.org \
   SNAPHOST_INSTALL_ACME_EMAIL=acme@example.org \
-  SNAPHOST_INSTALL_OPENROUTER_KEY_FILE=/root/snaphost-openrouter.key \
   SNAPHOST_INSTALL_PUBLIC_URL=https://panel.example.org \
   /opt/snaphost/infra/snaphostctl install "$VERSION"
 ~~~
 
 When the operator email is set, `SNAPHOST_INSTALL_ACME_EMAIL` may be omitted to
 reuse it. Omit `SNAPHOST_INSTALL_OPERATOR_EMAIL` to use `operator@localhost`.
-The panel hostname and generated suffix must not share their final two DNS
-labels; this conservative installer rule prevents accidental cookie-domain
-overlap without embedding a stale Public Suffix List. Omit
-`SNAPHOST_INSTALL_PUBLIC_URL` when HTTPS is not ready; the deploy then performs
+Omit `SNAPHOST_INSTALL_PUBLIC_URL` when HTTPS is not ready; the deploy then performs
 only its internal readiness check while Caddy waits for DNS. An interactive
-terminal may omit the domain, ACME-email and key-file variables and answer the
-prompts instead.
+terminal may omit the control-domain and ACME-email variables and answer the
+prompts instead. No provider key or AI prompt is required by default.
+For a first public rehearsal, set
+`SNAPHOST_INSTALL_ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory`
+and `SNAPHOST_CADDY_STATE_DIR=/opt/snaphost/state/caddy-staging` in the
+installer environment. The [custom-domain runbook](custom-domains.md#public-acceptance-rehearsal)
+describes the switch to fresh production state after staging succeeds.
 
 The command:
 
@@ -85,11 +85,11 @@ The command:
 3. derives the numeric group of `/var/run/docker.sock` and a BuildKit CPU limit
    that does not exceed the host CPU count;
 4. installs and reloads the BuildKit AppArmor profile;
-5. creates protected persistent Caddy state, pulls the exact version, migrates
+5. creates protected persistent Caddy state, pulls the digest-pinned stock
+   Caddy 2.10.2 image and exact application version, migrates
    SQLite and waits for snaphost and Caddy health;
-6. installs the database and TLS backup units and starts
-   `snaphost-backup.timer`; the private-key-bearing TLS timer remains disabled
-   until encrypted off-host backup is configured;
+6. installs the database and optional TLS backup units and starts only
+   `snaphost-backup.timer`;
 7. installs the stable command as `/usr/local/sbin/snaphostctl`;
 8. prints the generated operator password once.
 
@@ -114,9 +114,30 @@ deleting it.
 
 To set optional values before first start, copy
 `infra/.env.production.example` to `/opt/snaphost/env/production.env`, edit it,
-and keep it mode `0600`. Set the requested exact version and all five required
+and keep it mode `0600`. Set the requested exact version and all three required
 values. `snaphostctl install` recognizes that protected file as an incomplete
 install, derives `DOCKER_SOCKET_GID`, and continues without overwriting it.
+
+AI Dockerfile generation is disabled by default. Project Dockerfiles and
+built-in templates work without a key; other projects must supply a Dockerfile.
+To enable the optional fallback on first install, prepare a protected key file:
+
+~~~bash
+sudo install -m 600 /dev/null /root/snaphost-openrouter.key
+sudoedit /root/snaphost-openrouter.key
+~~~
+
+Put only the provider key in it, with no shell assignment. Add both
+`SNAPHOST_INSTALL_LLM_ENABLED=true` and
+`SNAPHOST_INSTALL_OPENROUTER_KEY_FILE=/root/snaphost-openrouter.key` to the
+installation command. Providing only the key-file argument is rejected to
+avoid silently enabling AI. An interactive install with AI explicitly enabled
+may enter the key at the hidden prompt instead.
+
+For an existing installation, set `LLM_ENABLED=true` and `OPENROUTER_API_KEY`
+in the protected `env/production.env` and recreate the application container.
+Set `LLM_ENABLED=false` to disable provider calls and the AI cache. A legacy
+API key without `LLM_ENABLED=true` no longer enables AI after upgrading.
 
 The application recovery port defaults to `127.0.0.1:8080`. Caddy owns public
 80/443. Do not publish the recovery port externally in production; keep the
@@ -134,10 +155,8 @@ opt-in are required:
 
 ~~~bash
 sudo env \
-  SNAPHOST_INSTALL_DOMAIN_SUFFIX=apps.example.net \
   SNAPHOST_INSTALL_CONTROL_DOMAIN=panel.example.org \
   SNAPHOST_INSTALL_ACME_EMAIL=acme@example.org \
-  SNAPHOST_INSTALL_OPENROUTER_KEY_FILE=/root/snaphost-openrouter.key \
   SNAPHOST_INSTALL_PUBLIC_URL=http://192.0.2.10:8080 \
   SNAPHOST_INSTALL_ALLOW_HTTP=true \
   /opt/snaphost/infra/snaphostctl install "$VERSION"
@@ -168,7 +187,9 @@ Upgrade and rollback restart BuildKit, the control plane and Caddy. Run them
 when no application build is active; an in-flight build cannot survive the
 daemon restart. Existing pre-edge installs must provide
 `SNAPHOST_INSTALL_CONTROL_DOMAIN` and `SNAPHOST_INSTALL_ACME_EMAIL` on their
-first upgrade so the command can add the new required settings.
+first upgrade so the command can add the new required settings. Obsolete
+`DOMAIN_SUFFIX` and Cloudflare-token lines can be removed from an older
+production env; current code ignores them.
 
 Do not edit or pull the checkout manually between releases. Operator
 customization belongs in the ignored `env/` directory or in a maintained fork
@@ -226,8 +247,8 @@ sudo docker compose \
 
 The state-file and Git commands must name the same release as
 `SNAPHOST_VERSION` in `env/production.env`. Also verify panel login through
-HTTPS, an anonymous 401 from a protected API, a real project build, off-host
-backup delivery, and the external monitor.
+HTTPS, an anonymous 401 from a protected API, a real project build, the local
+backup timer, and the external monitor.
 
 Important paths:
 
@@ -251,8 +272,18 @@ domain isolation, Caddy-state migration, HTTP opt-in, exact-tag upgrades,
 newest-version selection, downgrade and host CPU sizing, off-main refusal,
 failure compensation, dry-run and checkout-aware rollback.
 Those tests fake Git, Docker, AppArmor and systemd. The
+[local Caddy integration](../tasks/completed/0004-production-edge.md) additionally
+checks real TLS handshakes, on-demand refusal, alias moves and persistent Caddy
+state reuse against the pinned image. The
+[2026-10-05 public Caddy rehearsal](rehearsals/2026-10-05-public-caddy-control.md)
+proves trusted production HTTPS for the panel and verified project domain,
+including authenticated panel login. The
 [2026-09-04 VPS rehearsal](rehearsals/2026-09-04-vps.md) adds real-host install,
 login, local restore, upgrade/rollback and 4 GB build-pressure evidence, and
 records the defects it exposed. It used an isolated registry/origin because no
 public SemVer release existed, used a plaintext local backup, and did not run
 on 1 GB; those remaining acceptance boundaries are not waived by the drill.
+The [2026-09-22 edge rehearsal](rehearsals/2026-09-22-production-edge-vps.md)
+built the former Caddy image and exercised its TLS path on a 1 CPU, 2 GB VPS
+without publishing 80/443. No domains were available, so it does not close the public acceptance
+boundary.

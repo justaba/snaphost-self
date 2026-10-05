@@ -150,8 +150,8 @@ session as host-level secrets. Do not commit infra/.env or production env files.
 
 Serve the control plane on a registrable domain separate from user deploys.
 This prevents deployed code from setting cookies received by the operator
-panel. The edge routes only generated hosts and verified custom domains with a
-running target. Unknown or unroutable SNI is denied before certificate issue;
+panel. The production edge routes only verified project domains with a running
+target. Unknown or unroutable SNI is denied before certificate issue;
 database failures also fail closed.
 
 Only Caddy publishes production ports 80/443. The application edge listeners
@@ -164,7 +164,6 @@ Do not rely on the retired cloud-router documentation.
 - a failed deploy cannot be retried from the panel; the only way forward is
   deploying the project again.
 - Transient build failures have no retry budget.
-- The generated-host certificate policy and public DNS/ACME proof are
-  incomplete; per-preview on-demand issuance can encounter CA rate limits.
-- Real build memory on a 1 GB host and a restore from encrypted off-host backup
-  have not been proven.
+- Project-domain on-demand TLS passed public DNS/ACME checks on the
+  operator-owned VDS; the published-release installation remains Task 7.
+- Real build memory on a 1 GB host has not been proven.

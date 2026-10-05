@@ -1,15 +1,15 @@
 # Production Caddy edge, run by docker-compose.prod.yml.
 #
 # Required environment:
-#   SNAPHOST_CONTROL_DOMAIN  panel/API hostname, on a different registrable
-#                            domain from generated deploys
+#   SNAPHOST_CONTROL_DOMAIN  panel/API hostname
 #   SNAPHOST_ACME_EMAIL      operator's ACME account email
 {
 	email {$SNAPHOST_ACME_EMAIL}
+	acme_ca {$SNAPHOST_ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
 
 	# Standard Caddy ask sends GET ?domain=<SNI>. The dedicated internal
-	# listener answers 2xx only when SQLite resolves that exact generated host
-	# or verified custom-domain alias to a running deploy.
+	# listener answers 2xx only when SQLite resolves a verified project-domain
+	# alias to a running deploy.
 	on_demand_tls {
 		ask http://snaphost:8082/tls/ask
 	}
@@ -22,9 +22,8 @@
 	reverse_proxy snaphost:8080
 }
 
-# Generated hosts and verified custom domains share one data-plane path. The
-# monolith resolves Host on every request, so publishing or rolling back an
-# alias needs neither a Caddy reload nor Docker labels for that custom domain.
+# Project domains use on-demand HTTP-01/TLS-ALPN issuance. Every request is
+# resolved independently, so alias changes need no Caddy reload.
 https:// {
 	tls {
 		on_demand

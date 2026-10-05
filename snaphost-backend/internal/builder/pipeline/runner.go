@@ -465,7 +465,7 @@ func (r *Runner) executePipeline(ctx context.Context, job queue.Job, log *zap.Lo
 	if project.DockerfilePath == "" {
 		_ = r.Publisher.Publish(job.DeployID, logs.LogLine{
 			Stage:     "detect",
-			Text:      "no Dockerfile found, requesting AI-generated Dockerfile",
+			Text:      "no Dockerfile found, checking built-in Dockerfile templates",
 			Level:     "info",
 			Timestamp: time.Now().UTC(),
 		})

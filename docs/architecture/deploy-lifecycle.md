@@ -14,8 +14,11 @@ Updated: 2026-09-01
 3. The saga enqueues one build job. Git sources are validated against the host
    allowlist and private or metadata addresses; archives are unpacked with path
    containment and size limits.
-4. Builder detects the project. A built-in Dockerfile template wins when it
-   matches; OpenRouter is used only as a fallback.
+4. Builder detects the project and uses its Dockerfile if present. Otherwise,
+   built-in templates generate one without a provider key. AI generation is
+   an optional fallback enabled only with `LLM_ENABLED=true` and a provider
+   key. With AI disabled (the default), an unsupported project fails permanently
+   with a hint to add a Dockerfile; it never calls the provider or uses its cache.
 5. The Dockerfile is validated against the configured base-image policy.
    BuildKit builds it and streams Docker exporter output into ImageLoad on the
    host daemon.

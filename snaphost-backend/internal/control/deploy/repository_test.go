@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -92,6 +93,30 @@ func TestSetRunningCommitsDeployAndSagaTogether(t *testing.T) {
 	}
 	if step != "provisioning" || !containerRunning || containerID != "container-id" || endpointURL != "https://deploy.example.test" || startedAt == "" {
 		t.Fatalf("saga state = (%q, %t, %q, %q, %q)", step, containerRunning, containerID, endpointURL, startedAt)
+	}
+}
+
+func TestSetRunningLeavesProductionEndpointNull(t *testing.T) {
+	repo := newRunningStateDB(t)
+	deployID, _ := seedFinalizableDeploy(t, repo, true)
+	if err := repo.SetRunning(context.Background(), deployID,
+		"snaphost/project:image", "", "internal-slug", "container-id", time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("SetRunning: %v", err)
+	}
+	got, err := repo.Get(context.Background(), deployID)
+	if err != nil {
+		t.Fatalf("Get deploy: %v", err)
+	}
+	if got.EndpointURL != nil {
+		t.Fatalf("production endpoint = %#v, want nil before domain attachment", got.EndpointURL)
+	}
+	var endpoint sql.NullString
+	if err := repo.db.QueryRowContext(context.Background(),
+		`SELECT endpoint_url FROM deploy_sagas WHERE deploy_id = ?`, deployID.String()).Scan(&endpoint); err != nil {
+		t.Fatalf("read saga endpoint: %v", err)
+	}
+	if endpoint.Valid {
+		t.Fatalf("saga endpoint = %q, want NULL", endpoint.String)
 	}
 }
 

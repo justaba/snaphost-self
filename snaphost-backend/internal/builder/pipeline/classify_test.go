@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"snaphost/internal/ai/llm"
+	aiservice "snaphost/internal/ai/service"
 	"snaphost/internal/builder/clone"
 )
 
@@ -89,6 +90,12 @@ func TestClassifyGitError(t *testing.T) {
 
 func TestClassifyAIError(t *testing.T) {
 	log := zap.NewNop()
+	t.Run("disabled AI is permanent and retains the operator hint", func(t *testing.T) {
+		got := classifyAIError(fmt.Errorf("gen: %w", aiservice.ErrLLMDisabled), log)
+		if !IsPermanent(got) || IsTransient(got) || !errors.Is(got, aiservice.ErrLLMDisabled) {
+			t.Fatalf("expected a permanent disabled-AI error, got %v", got)
+		}
+	})
 	for _, sentinel := range []error{llm.ErrTimeout, llm.ErrRateLimited, llm.ErrCircuitOpen, llm.ErrUpstream} {
 		got := classifyAIError(fmt.Errorf("gen: %w", sentinel), log)
 		if !IsTransient(got) {
