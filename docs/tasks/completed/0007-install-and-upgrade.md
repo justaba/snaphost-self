@@ -1,9 +1,11 @@
 # Task 7 — Install and upgrade without us
 
-**Status:** In progress. The portable operator command and runbook are
-implemented. Rehearsals cover real host operations, a Node build on an isolated
-1 GiB arm64 VM and encrypted local SQLite restore. Public-release install,
-upgrade and rollback remain unproven.
+**Status:** Done. Public `v0.1.0`/`v0.1.1` install, password rotation,
+upgrade, guarded rollback and encrypted local SQLite restoration passed on
+an amd64 VDS. The published image also built the representative React/Vite
+application on an isolated 1 GiB amd64 guest without swap/OOM or interruption
+of the control plane and existing site.
+**Completed:** 2026-10-05
 **Created:** 2026-08-29
 **Updated:** 2026-10-05
 
@@ -13,13 +15,13 @@ Someone who is not us installs this on their own machine, upgrades it, and rolls
 it back when an upgrade goes wrong — without an SSH key we hold, a GitHub
 environment we own, or a CD pipeline that reaches into their box.
 
-That is what "self-hosted" means and the repository does not do yet. At the
+This task implemented that installation contract. At the
 start of this task it deployed *one specific machine*, `135.106.166.76`, from
 CI over SSH: a job built an image tagged with a Git SHA, pushed it to a private
 GHCR package, `scp`ed a release tarball to `/opt/snaphost/releases/<sha>/`,
 moved a `current` symlink, and ran `deploy.sh` on the far end. Item 2 has
 removed that path. `infra/snaphostctl` is now its portable replacement; its
-fake-command coverage does not yet satisfy the real-host acceptance criteria.
+real-host acceptance is now recorded below in addition to fake-command coverage.
 
 ## Why this is a task rather than a fix
 
@@ -89,16 +91,17 @@ derivable from the code.
    [pipeline.yml](../../../.github/workflows/pipeline.yml),
    `.github/workflows/production-deploy.yml`,
    `.github/scripts/deploy-remote.sh` and
-   `.github/scripts/test-cd-contract.sh`, plus the
-   `DEPLOY_SSH_*` secrets and both GitHub environments. The `image` job stays
-   and gains a tag trigger.
+   `.github/scripts/test-cd-contract.sh`. The workflow no longer consumes
+   `DEPLOY_SSH_*` secrets or GitHub deployment environments. The `image` job
+   stays and gains a tag trigger.
 
    The `image` job gained the tag trigger: a push to `main` publishes the
    per-SHA tag, a matching version tag publishes the version tag and SHA, a pull
    request builds and publishes nothing. The job refuses a tag that is not
    `vMAJOR.MINOR.PATCH` rather than publishing something an operator cannot
    name. Making the package public is a repository setting the workflow cannot
-   assert; until it is done, every install still needs a credential.
+   assert. On 2026-10-05, anonymous pulls of both release images proved the
+   public package setting without an operator registry credential.
 
    On 2026-10-05, strict SemVer validation moved into
    `infra/resolve-image-tags.sh`, whose suite exercises valid and invalid refs.
@@ -258,8 +261,8 @@ does not satisfy this task's release-install criterion.
   issued by us and no SSH access granted to us.
 - Upgrade and rollback are both performed against a real machine, not only
   against fakes. The 2026-09-04 rehearsal proves the host mechanics against an
-  isolated origin and registry; the published GitHub/GHCR path still has to be
-  repeated once a real release exists.
+  isolated origin and registry; the 2026-10-05 acceptance below repeats this
+  against the published GitHub/GHCR path.
 - A restore drill against a SQLite dump produced by the documented local
   backup flow. Off-host object storage is an optional operator policy rather
   than an installation acceptance dependency.
@@ -310,9 +313,33 @@ or private-key log output remained.
 This establishes the measured 1 GiB workload and local encrypted restore,
 with an architecture boundary: the VM is arm64 while published CI images
 currently target amd64. It still used a local tag and loopback registry.
-Public GitHub/GHCR install, upgrade and rollback remain required before Done.
-The [release candidates](../../operations/release-candidate-task7.md) record
-the proposed version pair and the remaining public-path rehearsal.
+At that point, public GitHub/GHCR install, upgrade and rollback were still
+required before Done; the final acceptance below supplies that proof.
+The [release record](../../operations/release-candidate-task7.md) documents
+the published version pair. The pending statements in this preparation
+section describe the boundary before publication; the acceptance below closes it.
+
+## Final public-release acceptance — 2026-10-05
+
+The [public-release report](../../operations/rehearsals/2026-10-05-task7-public-release.md)
+contains commands, immutable commits, image digests, CI links and sanitized
+measurement/audit artifacts. All task criteria passed:
+
+| Criterion | Recorded proof |
+| --- | --- |
+| Fresh install without owner-issued credentials | anonymous public `v0.1.0` install on the VDS and `v0.1.1` on a fresh amd64 guest; fresh login 200, password rotation 204, old password 401, new login 200 |
+| Actual upgrade and rollback | VDS `v0.1.0` → `v0.1.1` → `v0.1.0` → `v0.1.1`; Git/env/state/OCI revision aligned, account/projects retained, rollback guard refused without compatibility confirmation, dry-run left files/HEAD/containers unchanged |
+| Documented local backup restore | installed systemd service produced an age-encrypted dump; checksum OK, live replacement, integrity OK, schema 2 clean, rows retained, DB mode 0600 and UID/GID 1000:1000, login/control/project HTTPS 200 |
+| Representative Node on minimum host | public amd64 image, 1 GiB/2 vCPU guest, no swap, BuildKit 448 MiB, 661.6 MiB peak host RAM, 54.4 s under QEMU, compiled HTML/JS 200, 33 successful health/site probe pairs, no OOM/restart |
+| No owner infrastructure dependency | public Git tag checkout and GHCR pulls, no SSH deploy job/GitHub environment/registry login required on an operator host |
+| Verification remains green | main and both release workflows passed Go/panel/shell/image jobs, including real Caddy integration, Compose rendering and pinned Caddyfile validation |
+
+Only Caddy publishes 80/443 and has no Docker socket. Both public leaf
+certificate fingerprints survived install, upgrade, rollback and DB restore;
+Caddy recorded zero new orders during the final run. Backup storage is local
+by the operator's chosen scope. Public images target amd64; large builds,
+preview TTL, absent project volumes/managed databases and optional off-host
+recovery remain stated limits rather than missing Task 7 evidence.
 
 ## Out of scope
 

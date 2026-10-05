@@ -539,23 +539,19 @@ Written down rather than fixed, so nobody rediscovers them:
   project domains with fail-closed on-demand TLS. Public staging and production
   DNS/ACME checks and encrypted local TLS-state recovery are recorded in
   [Task 4](docs/tasks/completed/0004-production-edge.md).
-- **Install code exists; production proof is partial.**
+- **Public release installation is accepted.**
   [infra/snaphostctl](infra/snaphostctl) implements first install,
-  checkout-aware upgrade and coordinated rollback. Its fake-command suite is
-  [infra/tests/snaphostctl_test.sh](infra/tests/snaphostctl_test.sh), and the
-  operator contract is [the runbook](docs/operations/install-and-upgrade.md).
-  The [first VPS rehearsal](docs/operations/rehearsals/2026-09-04-vps.md)
-  covers real install/upgrade/rollback, local restore and a 4 GB cold build.
-  The [1.9 GiB VDS Node rehearsal](docs/operations/rehearsals/2026-10-05-task7-vds-node.md)
-  passed Vite and pinned React/Vite 8 builds; the older Vite 6 workload exposed
-  OOM at 768 MiB and 1 GiB BuildKit limits. The
-  [isolated 1 GiB arm64 drill](docs/operations/rehearsals/2026-10-05-task7-1g.md)
-  passed a fresh supported-layout install, the React build with a 448 MiB
-  BuildKit limit and encrypted scheduled SQLite restore with login/password
-  rotation. The installer now sizes BuildKit's initial memory limit from RAM.
-  [Task 7](docs/tasks/planned/0007-install-and-upgrade.md) stays in progress
-  until install, upgrade and rollback against public GitHub/GHCR artifacts are
-  recorded. The 1 GiB VM used a local registry and arm64; CI images target amd64.
+  checkout-aware upgrade and coordinated rollback. The
+  [public-release rehearsal](docs/operations/rehearsals/2026-10-05-task7-public-release.md)
+  records anonymous `v0.1.0`/`v0.1.1` pulls, install, password rotation,
+  upgrade, rollback guard, read-only dry-run, actual rollback and encrypted
+  systemd SQLite backup/live restore on the VDS. The same published amd64
+  image passed a React/Vite build on an isolated 1 GiB guest with a derived
+  448 MiB BuildKit limit, no swap/OOM and continued health/site responses.
+  The installer sizes the initial BuildKit memory limit from RAM and preserves
+  explicit limits. [Task 7](docs/tasks/completed/0007-install-and-upgrade.md)
+  is complete. Images currently target amd64; large Node builds can still
+  exceed the measured budget, as the older Vite 6 pressure probe demonstrated.
 
 ## Documents
 

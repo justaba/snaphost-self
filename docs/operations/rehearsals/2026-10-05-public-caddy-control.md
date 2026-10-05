@@ -273,4 +273,4 @@ installer's 5 GiB preflight requirement after image pulls. No off-host recovery
 was attempted because external storage was removed from the operator's
 installation contract. The public edge acceptance belongs to completed
 [Task 4](../../tasks/completed/0004-production-edge.md); the supported release
-install path belongs to [Task 7](../../tasks/planned/0007-install-and-upgrade.md).
+install path belongs to [Task 7](../../tasks/completed/0007-install-and-upgrade.md).

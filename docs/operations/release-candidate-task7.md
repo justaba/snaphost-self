@@ -1,18 +1,19 @@
-# Task 7 release candidates
+# Task 7 release record
 
-Status: Prepared locally; **not published**
+Status: **Published and accepted**
 Updated: 2026-10-05
 
-These two proposed experimental versions provide a real upgrade and rollback
-pair. Publishing them makes Git tags and GHCR images publicly available;
-it does not itself deploy an operator's host. Task 7 remains In progress.
+These two experimental prereleases provide the tested install, upgrade and
+rollback pair. Both Git tags and amd64 GHCR images are public. The
+[acceptance report](rehearsals/2026-10-05-task7-public-release.md) records actual
+anonymous pulls and host operations. Task 7 is complete.
 
-## Proposed versions
+## Published versions
 
 | Version | Source | Changes |
 | --- | --- | --- |
 | `v0.1.0` | `2ccf9453a1e28a2bc22aeba59fe76bc5ec3ddc40` | Task 4 runtime and existing operator CLI, corrected Linux Caddy-test cleanup, tested release tag resolution, OCI source/revision labels and reproducible Node drill. |
-| `v0.1.1` | Subsequent Task 7 preparation commit | Initial BuildKit RAM sizing, explicit limit preservation, restore-runbook correction and recorded 1 GiB/VDS evidence. |
+| `v0.1.1` | `ccdbc6d797fcf12e8ae545e94e6972c996471286` | Initial BuildKit RAM sizing, explicit limit preservation, restore-runbook correction and recorded 1 GiB/VDS evidence. |
 
 Both versions use SQLite schema 2 and the same application source. There is
 no new DB migration between them. Before authorizing rollback, still verify
@@ -44,28 +45,31 @@ of `v0.1.1` derives 960 MiB. The isolated 1 GiB guest derived 448 MiB.
 - [amd64 VDS drill](rehearsals/2026-10-05-task7-vds-node.md): pinned React build
   in 9.3 seconds, working HTML/JS, public control/project HTTPS still HTTP 200.
 
-## Publication and remaining host drill
+## Publication and accepted host drill
 
-After approval to publish, push the candidate commits to `main` and wait for
-CI. Publish immutable tags at their exact commits using the
-[release procedure](ci-cd.md#publishing-a-release). Confirm anonymous pulls,
-OCI revisions matching Git, and image digests for both versions. Package
-visibility must be public; operator installs must not receive registry tokens.
+After explicit user approval, both commits were pushed to `main`; main CI and
+both immutable tag workflows passed. The GitHub prereleases and public GHCR
+images were published using the [release procedure](ci-cd.md#publishing-a-release).
+Empty Docker configs proved anonymous pulls and OCI revisions matching Git.
+Exact digests and workflow links are in the acceptance report.
 
-Then preserve the existing VDS rehearsal's DB, protected env and Caddy state
-before switching its public edge to the supported `/opt/snaphost` install:
+The existing VDS rehearsal's DB, protected env and Caddy state were preserved
+before switching to the supported `/opt/snaphost` installation. The drill passed:
 
-1. install `v0.1.0` from public GitHub/GHCR, sign in and change the bootstrap
-   password; check health, project deployment and backup timer;
-2. run `snaphostctl upgrade v0.1.1`; verify Git/env/state/image alignment,
-   account/projects and certificate fingerprints;
-3. run `snaphostctl rollback --dry-run`, check that it is read-only, then
-   perform compatibility-confirmed rollback to `v0.1.0` and verify the same
-   invariants;
-4. return to `v0.1.1` and record actual commands/results and image digests.
+1. public `v0.1.0` install, fresh login and password rotation, health, project
+   recovery and active installed backup timer;
+2. upgrade to `v0.1.1`, aligned Git/env/state/image, preserved account/projects
+   and certificate fingerprints;
+3. default rollback refusal, read-only compatibility-confirmed dry-run, then
+   actual compatibility-confirmed rollback to `v0.1.0`;
+4. return to `v0.1.1`, encrypted systemd backup, checksum/integrity and live DB
+   replacement, successful login and trusted public control/project HTTPS.
 
-The 1 GiB drill used arm64 and a local registry; public CI images target amd64.
-It establishes the measured workload, not an unrestricted 1 GiB production
+The earlier 1 GiB arm64/local-registry drill was followed by a fresh 1 GiB
+amd64 guest installation using the public `v0.1.1` image: React/Vite built
+without swap/OOM, with 661.6 MiB peak host RAM and working compiled JS while
+health and an existing site served. Public CI images target amd64. This
+establishes a measured workload, not an unrestricted 1 GiB production
 guarantee. Large dependency graphs can still exceed the build budget. Preview
 TTL, absence of persistent project volumes and managed databases remain
 product limitations. Local encrypted backups do not protect against losing

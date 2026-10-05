@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-09-04
+Updated: 2026-10-05
 
 snaphost-self has one trusted operator, but it still processes repositories,
 Dockerfiles and dependencies that may be compromised. The application also has
@@ -164,6 +164,9 @@ Do not rely on the retired cloud-router documentation.
 - a failed deploy cannot be retried from the panel; the only way forward is
   deploying the project again.
 - Transient build failures have no retry budget.
-- Project-domain on-demand TLS passed public DNS/ACME checks on the
-  operator-owned VDS; the published-release installation remains Task 7.
-- Real build memory on a 1 GB host has not been proven.
+- Large Node builds can exceed the host/build cgroup budget. The
+  [Task 7 public-image drill](../operations/rehearsals/2026-10-05-task7-public-release.md)
+  proves a representative React/Vite build on 1 GiB amd64 without swap/OOM,
+  not an unrestricted memory guarantee.
+- Local encrypted backups do not protect against loss of the whole VPS;
+  off-host recovery is an optional operator policy.

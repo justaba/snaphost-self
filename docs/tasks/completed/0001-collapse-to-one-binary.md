@@ -201,7 +201,7 @@ The numbers are identities, not an order — commits and other documents refer t
    rewriting rather than editing. That rewrite is deferred, deliberately: it
    changes CI, the release model and the rollback story at once, and none of
    those is what Task 1 is about. It is
-   [Task 7](../planned/0007-install-and-upgrade.md), and it is ordered after
+   [Task 7](../completed/0007-install-and-upgrade.md), and it is ordered after
    the rest of this task because items 7, 8 and 10 each touch the same files.
 
    What they were *not* was "kept working". Two defects were found on
@@ -555,7 +555,7 @@ The numbers are identities, not an order — commits and other documents refer t
 
 ## Completion and next task
 
-All ten items are complete. [Task 7](../planned/0007-install-and-upgrade.md) is
+All ten items are complete. [Task 7](../completed/0007-install-and-upgrade.md) is
 next; it turns the repository-owner-specific SSH deployment into an install,
 upgrade and rollback path an independent operator can use.
 

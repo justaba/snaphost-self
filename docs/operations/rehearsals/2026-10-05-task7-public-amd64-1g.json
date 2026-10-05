@@ -1,0 +1,26 @@
+{
+  "host_ram_kib": 978712,
+  "host_swap_kib": 0,
+  "buildkit_limit_bytes": 469762048,
+  "node_deploy_id": "aa210629-ecbc-43a4-a92e-cd5cca46e5ed",
+  "created_at": "2026-10-05T14:32:58.719Z",
+  "running_at": "2026-10-05T14:33:53.105Z",
+  "duration_seconds": 57.1,
+  "samples": 220,
+  "host_used_peak_kib": 677520,
+  "host_swap_peak_kib": 0,
+  "cgroup_peaks_bytes": {
+    "builder": 368787456,
+    "app": 110989312,
+    "caddy": 55255040,
+    "existing_site": 10989568
+  },
+  "oom_kill_deltas": {
+    "builder": 0,
+    "app": 0,
+    "caddy": 0,
+    "existing_site": 0
+  },
+  "health_and_existing_site_probes": 33,
+  "html_and_javascript": "HTTP 200, compiled React marker present"
+}

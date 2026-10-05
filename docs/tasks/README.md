@@ -5,22 +5,11 @@ Updated: 2026-10-05
 
 ## Active
 
-Task 7 is in progress. Its version/registry model, CI separation,
-first-install command and checkout-aware upgrade/rollback implementation are
-done. A
-[partial VPS rehearsal](../operations/rehearsals/2026-09-04-vps.md) covers the
-real install, login, local restore and 4 GB build-pressure paths. The
-[isolated 1 GiB arm64 drill](../operations/rehearsals/2026-10-05-task7-1g.md)
-adds a React/Vite build and encrypted scheduled SQLite restore. Install,
-upgrade and rollback against public GitHub/GHCR artifacts remain.
-
-Completed Task 4 provides the Compose-managed edge: Caddy exclusively owns
-80/443 and calls an internal data-plane proxy plus a separate fail-closed
-`ask` listener without a Docker socket. Installer/upgrade/rollback lifecycle
-and persistent state are wired. The public DNS/ACME rehearsal passed for both
-control and project domains, including local encrypted TLS restore. The
-supported release-install path remains Task 7's acceptance work. See
-[the completed task](completed/0004-production-edge.md).
+No numbered task is currently in progress. Task 7 completed public-release
+install/upgrade/rollback, encrypted local database restoration and a
+representative React/Vite build on a 1 GiB amd64 host. See the
+[acceptance report](../operations/rehearsals/2026-10-05-task7-public-release.md).
+Completed Task 4 provides public DNS/ACME, routing and encrypted TLS recovery.
 
 Six pieces of work landed outside the numbered tasks. Four closed recorded
 gaps, one is the smallest useful part of Task 6, and one removed structure that
@@ -85,7 +74,8 @@ container remains.
 | Task | Result | Document |
 | --- | --- | --- |
 | 1 — Collapse the control plane into one binary | One Go application process with SQLite, local identity, direct package wiring, in-process queues, local Docker images and an embedded React panel. Current documentation was rewritten after the code settled. | [completed/0001-collapse-to-one-binary.md](completed/0001-collapse-to-one-binary.md) |
-| 4 — Production edge | Pinned Caddy, fail-closed project domains and dynamic routing passed local and public staging/production ACME checks, alias lifecycle, and encrypted local TLS-state restoration. Published-release installation remains Task 7. | [completed/0004-production-edge.md](completed/0004-production-edge.md) |
+| 4 — Production edge | Pinned Caddy, fail-closed project domains and dynamic routing passed local and public staging/production ACME checks, alias lifecycle, and encrypted local TLS-state restoration. Published-release installation is accepted in Task 7. | [completed/0004-production-edge.md](completed/0004-production-edge.md) |
+| 7 — Install and upgrade without us | Public amd64 releases, anonymous install, password rotation, real upgrade/guarded rollback, encrypted local SQLite restore and a representative 1 GiB React/Vite build passed. | [completed/0007-install-and-upgrade.md](completed/0007-install-and-upgrade.md) |
 
 The last recorded comparable footprint was 44.7 MiB across four containers
 before the registry was removed; the application was 6.8 MiB. The current local
@@ -94,7 +84,10 @@ The 2026-09-04 cold Node build peaked at 997.2 MiB of host memory while another
 site served, but it ran on a 4 GB machine. The 2026-10-05 isolated 1 GiB arm64
 host built a small React/Vite application in 9.7 seconds without swap, at
 564.9 MiB peak host RAM, while the control plane and an existing site served.
-It used a local registry; published CI images currently target amd64.
+The subsequent public amd64-image drill peaked at 661.6 MiB on a 1 GiB guest,
+without swap/OOM, and verified compiled JavaScript and continued site responses.
+Its 54.4 s duration was measured under QEMU emulation. These are measured small
+workloads, not a guarantee for arbitrary Node builds.
 
 ## Planned
 
@@ -104,7 +97,6 @@ It used a local registry; published CI images currently target amd64.
 | 3 — Managed services | Template-defined databases and application authentication resources with volumes, health checks and injected connection data. | — |
 | 5 — Git webhooks | Deploy on push. | — |
 | 6 — Operator actions *(partially completed)* | Stop, start, project deletion and the audit read surface are done. Audited shell access into a container remains. | — |
-| 7 — Install and upgrade without us *(in progress)* | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. Code, runbook, isolated 1 GiB Node build and encrypted local restore passed; public-release install/upgrade/rollback remain. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
 
 Tasks 2, 3 and 6 include their corresponding panel work. Task 1 delivered the
 first operator UI rather than a final interface for future resources.

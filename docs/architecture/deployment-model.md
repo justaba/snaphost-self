@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Architecture
-Updated: 2026-09-24
+Updated: 2026-10-05
 
 ## Data model
 
@@ -88,5 +88,6 @@ same release during upgrade and rollback.
 
 Task 2 changes preview TTLs into opt-in expiry and adds persistent per-project
 configuration. Completed Task 4 packages the verified project-domain policy
-and records public DNS/ACME proof. Task 7 owns the remaining real-host proof
-of the release, upgrade and rollback contract.
+and records public DNS/ACME proof. Completed
+[Task 7](../tasks/completed/0007-install-and-upgrade.md) records public-release
+install, real-host upgrade/rollback and local encrypted database restoration.

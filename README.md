@@ -12,15 +12,16 @@ collapsed into one Go process; the completed work and its measurements are in
 
 ## Status
 
-The single-binary architecture is implemented and tested. A versioned
-first-install, checkout-aware upgrade and coordinated rollback command now
-exist, with the operator procedure in the
-[install and upgrade runbook](docs/operations/install-and-upgrade.md). The
-project is still **not production-ready**: the release install path has only a
-partial VPS rehearsal. Public DNS/ACME edge acceptance passed and is recorded
-in [completed Task 4](docs/tasks/completed/0004-production-edge.md). The
-remaining release-install work is tracked in
-[Task 7](docs/tasks/planned/0007-install-and-upgrade.md).
+The single-binary architecture and operator installation path are implemented
+and tested. Public releases `v0.1.0` and `v0.1.1` passed a real install,
+checkout-aware upgrade, rollback and encrypted local SQLite restore; see
+[completed Task 7](docs/tasks/completed/0007-install-and-upgrade.md) and the
+[install and upgrade runbook](docs/operations/install-and-upgrade.md).
+Public DNS/ACME acceptance is recorded in
+[completed Task 4](docs/tasks/completed/0004-production-edge.md).
+
+This remains an **experimental preview platform**, with the limitations below.
+Published application images currently target amd64.
 
 Current limitations that matter operationally:
 
@@ -76,6 +77,9 @@ contract.
 
 ## Requirements
 
+- Linux amd64, 2 vCPU and 1 GiB RAM for the measured small React/Vite workload;
+  size RAM for actual builds and running sites
+- 20 GiB disk recommended; installation/upgrade require at least 5 GiB free
 - Docker 24+ with Compose v2
 - systemd, AppArmor and Git for a production install (the supplied profile
   targets Ubuntu 24.04)
@@ -152,7 +156,9 @@ make clean               remove containers, networks and local volumes
 
 The supported layout is a release-tag checkout at `/opt/snaphost`. Start with
 the [install and upgrade runbook](docs/operations/install-and-upgrade.md); do
-not invent a `latest` tag or deploy from `main`. The operator command is:
+not invent a `latest` tag or deploy from `main`. The current experimental
+release is [v0.1.1](https://github.com/justaba/snaphost-self/releases/tag/v0.1.1).
+The operator command is:
 
 ```text
 snaphostctl install <vMAJOR.MINOR.PATCH>

@@ -1,0 +1,30 @@
+# Task 7 public-image drill on a 1 GiB amd64 Linux guest.
+# On Apple Silicon this uses QEMU emulation; durations are not VPS benchmarks.
+images:
+- location: https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-amd64.img
+  arch: x86_64
+  digest: sha256:ffe6203da54deeb6db5d2a98a83f9ec8e55f149d3f7ba622e1abe5fa966ee3d6
+vmType: qemu
+arch: x86_64
+cpus: 2
+memory: 1GiB
+disk: 20GiB
+mounts: []
+containerd:
+  system: false
+  user: false
+portForwards:
+- guestPortRange: [1, 65535]
+  guestIP: 0.0.0.0
+  guestIPMustBeZero: false
+  proto: any
+  ignore: true
+provision:
+- mode: system
+  script: |
+    #!/bin/bash
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq docker.io docker-compose-v2 apparmor git age sqlite3
+    systemctl enable --now docker

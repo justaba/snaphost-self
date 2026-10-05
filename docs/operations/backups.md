@@ -109,6 +109,12 @@ records an encrypted dump from the installed systemd service, checksum and
 integrity verification, actual volume replacement and successful login/password
 rotation. It includes executable restore commands and checks mode 0600 and
 UID/GID 1000:1000 on the live DB. It used local storage and a local release tag.
+The subsequent [public-release restore](rehearsals/2026-10-05-task7-public-release.md#installed-encrypted-backup-and-live-restore)
+repeated the installed systemd backup and live DB replacement on `v0.1.1`:
+checksum/integrity passed, 1 user / 8 projects / 9 deploys / 1 domain were
+preserved, login and public HTTPS returned 200, and Caddy requested no new
+certificate. The scheduled artifact was encrypted; deploy's separate local
+pre-migration SQL recovery dumps remain protected plaintext files.
 
 ## Timer
 

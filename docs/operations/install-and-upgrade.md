@@ -1,6 +1,6 @@
 # Install and upgrade
 
-Status: Operator commands and isolated 1 GiB drill passed; public release path pending
+Status: Public install, upgrade, rollback and encrypted local restore accepted
 Type: Operations
 Updated: 2026-10-05
 
@@ -15,17 +15,21 @@ application routing and TLS authorization listeners only through the Compose
 control network. A temporary plain-HTTP panel is possible only through an
 explicit, insecure opt-in described below.
 
-The [2026-10-05 VDS rehearsal](rehearsals/2026-10-05-public-caddy-control.md)
-passed public staging and production HTTPS for both the panel and a verified
-project domain, including encrypted local TLS restore. It used a locally built
-application image because no public SemVer release image was available to this
-rehearsal. It does not validate the supported `snaphostctl install` release
-path.
+The [2026-10-05 public-release rehearsal](rehearsals/2026-10-05-task7-public-release.md)
+passed anonymous install of `v0.1.0`, upgrade to `v0.1.1`, guarded rollback,
+password rotation and encrypted local SQLite backup/live restore. The panel
+and verified project retained trusted HTTPS and their certificate fingerprints.
+The earlier [public edge rehearsal](rehearsals/2026-10-05-public-caddy-control.md)
+proved staging/production issuance and isolated TLS-state restoration.
 
 ## Host prerequisites
 
 - a systemd Linux host with AppArmor and `apparmor_parser`; the supplied
   rootless-BuildKit profile targets Ubuntu 24.04;
+- amd64, 2 vCPU and 1 GiB RAM for the measured small fixture; allocate more
+  RAM for larger builds and concurrent sites;
+- 20 GiB disk recommended; preflight requires at least 5 GiB free on the
+  filesystem that holds the installation;
 - Docker Engine 24 or newer, Docker Compose v2, and a running Docker daemon;
 - Git, GNU coreutils, `awk`, `sed`, `grep`, `flock`, `curl` and `ss` from
   iproute2;
@@ -35,15 +39,15 @@ path.
 - TCP ports 80/443 and UDP port 443 free for Compose Caddy;
 - operator-controlled DNS for the panel and every project domain.
 
-The [isolated 1 GiB drill](rehearsals/2026-10-05-task7-1g.md) built a small
-React/Vite application in 9.7 seconds with no swap, a 448 MiB BuildKit limit,
-564.9 MiB peak host RAM in use, and no OOM or interruption of the control
-plane or an existing site. It used arm64 and a local registry; published CI
-images currently target amd64. The same fixture passed on the
-[1.9 GiB amd64 VDS](rehearsals/2026-10-05-task7-vds-node.md), where an older
-Vite 6 workload had exceeded 768 MiB and 1 GiB build limits. Size the host for
-the actual projects and dependency graph. These measurements do not guarantee
-that arbitrary Node builds fit on 1 GiB.
+The [public amd64-image drill](rehearsals/2026-10-05-task7-public-release.md#public-image-on-the-minimum-amd64-host)
+built the small React/Vite fixture on 1 GiB RAM with no swap, a derived
+448 MiB BuildKit limit and 661.6 MiB peak host RAM in use. Health and an
+existing site stayed available, with no OOM or restart. QEMU-emulated build
+time was 54.4 seconds. Published CI images target amd64; an earlier arm64
+source-build drill is additional evidence, not a public arm64 release.
+The older [Vite 6 workload](rehearsals/2026-10-05-task7-vds-node.md#react-pressure-probe)
+exceeded 768 MiB and 1 GiB build limits. Size the host for actual projects;
+these measurements do not guarantee that arbitrary Node builds fit on 1 GiB.
 
 The GHCR package must be public. If an install asks for `docker login`, package
 visibility is wrong; a registry credential is not part of this contract.
@@ -54,7 +58,7 @@ Choose a published strict SemVer tag. Do not install `main`, `latest`, or a Git
 SHA.
 
 ~~~bash
-VERSION=v1.2.3
+VERSION=v0.1.1
 sudo git clone https://github.com/justaba/snaphost-self.git /opt/snaphost
 sudo git -C /opt/snaphost checkout --detach "$VERSION"
 ~~~
@@ -71,7 +75,9 @@ sudo env \
 ~~~
 
 When the operator email is set, `SNAPHOST_INSTALL_ACME_EMAIL` may be omitted to
-reuse it. Omit `SNAPHOST_INSTALL_OPERATOR_EMAIL` to use `operator@localhost`.
+reuse it. The public smoke URL must be the base origin (for example,
+`https://panel.example.org`), without `/health`: the deploy appends that path.
+Omit `SNAPHOST_INSTALL_OPERATOR_EMAIL` to use `operator@localhost`.
 Omit `SNAPHOST_INSTALL_PUBLIC_URL` when HTTPS is not ready; the deploy then performs
 only its internal readiness check while Caddy waits for DNS. An interactive
 terminal may omit the control-domain and ACME-email variables and answer the
@@ -300,8 +306,10 @@ successful Vite and pinned React/Vite 8 builds on the amd64 VDS, alongside
 the older workload's OOM evidence. The
 [1 GiB arm64 drill](rehearsals/2026-10-05-task7-1g.md) adds a fresh install,
 React build, encrypted systemd SQLite backup and actual DB replacement with
-login/password rotation. Both still used locally built images. Public-release
-install, upgrade and rollback remain Task 7 acceptance work.
+login/password rotation. Those earlier drills used locally built images.
+The subsequent [public-release acceptance](rehearsals/2026-10-05-task7-public-release.md)
+closed anonymous install, real upgrade/rollback, installed encrypted SQLite
+restore and the minimum-host amd64-image build. Task 7 is complete.
 The [2026-09-22 edge rehearsal](rehearsals/2026-09-22-production-edge-vps.md)
 built the former Caddy image and exercised its TLS path on a 1 CPU, 2 GB VPS
 without publishing 80/443. No domains were available, so it does not close the public acceptance

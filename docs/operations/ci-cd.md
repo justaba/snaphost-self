@@ -52,8 +52,10 @@ publishing.
 
 ## Publishing a release
 
-The current [Task 7 candidates](release-candidate-task7.md) list the proposed
-versions, compatibility and completed checks. They are not published yet.
+[Task 7 releases](release-candidate-task7.md) `v0.1.0` and `v0.1.1` are
+published as experimental prereleases with public amd64 images. The
+[acceptance report](rehearsals/2026-10-05-task7-public-release.md) records exact
+commits, digests, green tag workflows and anonymous pulls.
 
 The repository owner publishes a release only after the candidate commit is on
 `main` and CI passes. Pick the next semantic version according to the change's
@@ -81,7 +83,7 @@ DOCKER_CONFIG="$release_docker_config_dir" docker pull "$release_image"
 rm -rf "$release_docker_config_dir"
 test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$release_image")" \
   = "$(git rev-parse "$VERSION^{commit}")"
-docker image inspect --format '{{join .RepoDigests "\n"}}' "$release_image"
+docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$release_image"
 ~~~
 
 The image carries OCI source and revision labels. After the anonymous pull,
@@ -108,10 +110,12 @@ first implementation step of Task 7. Publishing a version only makes its image
 available; an operator's host pulls and deploys it locally.
 
 First install and checkout-aware upgrade now run on the operator's host through
-`infra/snaphostctl`; CI only tests that command and publishes the image. The
-fake-command coverage is not a real-host acceptance rehearsal, so Task 7 stays
-open and image publishing alone must not be presented as proof of an operable
-third-party installation.
+`infra/snaphostctl`; CI only tests that command and publishes the image.
+[Completed Task 7](../tasks/completed/0007-install-and-upgrade.md) adds real
+install, upgrade, rollback and encrypted local restore against these public
+artifacts, plus the measured 1 GiB amd64 build. The release publishing step
+requires repository access; installing a published release requires no
+repository-owner permission, GitHub environment or registry login.
 
 ## Production manifest
 

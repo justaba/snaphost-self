@@ -88,7 +88,7 @@ The public edge acceptance is complete for the operator's revised
 project-domain-only scope. The test used a locally built image because no
 published SemVer release image was available to the rehearsal. Testing the
 supported `snaphostctl install` path with a published image belongs to
-[Task 7](../planned/0007-install-and-upgrade.md); that task also owns the host
+[Task 7](../completed/0007-install-and-upgrade.md); that task also owns the host
 disk preflight and minimum-RAM drill. No external-storage drill is required
 under the operator's revised installation contract.
 

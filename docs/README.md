@@ -1,7 +1,7 @@
 # Documentation
 
 Status: Current
-Updated: 2026-09-04
+Updated: 2026-10-05
 
 This directory describes snaphost-self after the single-binary collapse. The
 current code and Compose manifests are the final authority; a current document
@@ -27,9 +27,9 @@ that disagrees with them is a documentation defect.
 - [Troubleshooting](operations/troubleshooting.md)
 
 The versioned installation contract is implemented in `infra/snaphostctl` and
-documented in the install runbook. It still needs the release-install
-acceptance tracked by [Task 7](tasks/planned/0007-install-and-upgrade.md). The
-edge runtime and Compose Caddy lifecycle exist. Public DNS/ACME proof for both
+documented in the install runbook. Public install, upgrade, rollback,
+encrypted local SQLite restore and a 1 GiB amd64 Node build passed in
+[completed Task 7](tasks/completed/0007-install-and-upgrade.md). Public DNS/ACME proof for both
 the control and project domains, plus local encrypted TLS-state restoration,
 are recorded in [completed Task 4](tasks/completed/0004-production-edge.md).
 

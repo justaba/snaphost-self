@@ -1,6 +1,11 @@
 # Task 7 VDS Node build and release audit — 2026-10-05
 
-Status: **Vite and pinned React/Vite 8 builds passed; public-release install remains untested**
+Status: **Earlier Node drill passed; public release subsequently accepted**
+
+This is the earlier preparation drill; pending-release statements below
+refer to that time. The subsequent
+[public-release acceptance](2026-10-05-task7-public-release.md) closed Task 7,
+including a published amd64-image run on 1 GiB.
 
 The existing public-edge rehearsal on `31.177.109.37` was used without taking
 down `snaphost.ru` or `kinocassa.ru`. This is still a locally built application
@@ -115,7 +120,7 @@ stayed running, and final HTTPS probes returned `control_http=200`,
 `project_http=200`, `tls_verify=0` for both. Caddy was not restarted by this
 test; BuildKit remained limited to 768 MiB and host swap remained disabled.
 
-## Remaining release acceptance
+## Release boundary at the end of this earlier drill
 
 No public SemVer Git tag or public GHCR image existed at the time of this
 audit, and the occupied 80/443 on this VDS belong to the current rehearsal.

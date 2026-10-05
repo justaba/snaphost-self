@@ -1,0 +1,179 @@
+{
+  "recorded_at": "2026-10-05T14:51:42.734903+00:00",
+  "host_ip": "31.177.109.37",
+  "git_tag": "v0.1.1",
+  "git_commit": "ccdbc6d797fcf12e8ae545e94e6972c996471286",
+  "host_memtotal_kib": 2009568,
+  "swap_total_kib": 0,
+  "containers": {
+    "snaphost-snaphost-1": {
+      "image": "ghcr.io/justaba/snaphost-self/snaphost:v0.1.1",
+      "oci_revision": "ccdbc6d797fcf12e8ae545e94e6972c996471286",
+      "health": "healthy",
+      "restarts": 0,
+      "oom_killed": false,
+      "read_only_rootfs": false,
+      "memory_limit_bytes": 536870912,
+      "ports": {
+        "8080/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "8080"
+          }
+        ]
+      },
+      "docker_socket_mounted": true
+    },
+    "snaphost-caddy-1": {
+      "image": "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d",
+      "oci_revision": null,
+      "health": "healthy",
+      "restarts": 0,
+      "oom_killed": false,
+      "read_only_rootfs": true,
+      "memory_limit_bytes": 134217728,
+      "ports": {
+        "443/tcp": [
+          {
+            "HostIp": "",
+            "HostPort": "443"
+          }
+        ],
+        "443/udp": [
+          {
+            "HostIp": "",
+            "HostPort": "443"
+          }
+        ],
+        "80/tcp": [
+          {
+            "HostIp": "",
+            "HostPort": "80"
+          }
+        ]
+      },
+      "docker_socket_mounted": false
+    },
+    "snaphost-buildkitd-1": {
+      "image": "moby/buildkit:v0.29.0-rootless",
+      "oci_revision": null,
+      "health": "healthy",
+      "restarts": 0,
+      "oom_killed": false,
+      "read_only_rootfs": false,
+      "memory_limit_bytes": 805306368,
+      "ports": {},
+      "docker_socket_mounted": false
+    }
+  },
+  "control": {
+    "http": 200,
+    "verified_tls": true,
+    "certificate_sha256": "18c5f489240af110d7e3362fc15316ed2eb9e974e618bbf0aa3c6c8e632d91ae",
+    "subject": [
+      [
+        [
+          "commonName",
+          "snaphost.ru"
+        ]
+      ]
+    ],
+    "issuer": [
+      [
+        [
+          "countryName",
+          "US"
+        ]
+      ],
+      [
+        [
+          "organizationName",
+          "Let's Encrypt"
+        ]
+      ],
+      [
+        [
+          "commonName",
+          "YE2"
+        ]
+      ]
+    ],
+    "not_before": "Oct  5 04:09:12 2026 GMT",
+    "not_after": "Jan  3 04:09:11 2027 GMT",
+    "serial": "0695CF2004A1B74A7092E52797D500886F2A",
+    "san": [
+      [
+        "DNS",
+        "snaphost.ru"
+      ]
+    ],
+    "deployment_b_marker": false
+  },
+  "project": {
+    "http": 200,
+    "verified_tls": true,
+    "certificate_sha256": "77d376ecd371b2eb141422fb6a8d08397fcc5bb53dd0f902a8958390df666d7f",
+    "subject": [
+      [
+        [
+          "commonName",
+          "kinocassa.ru"
+        ]
+      ]
+    ],
+    "issuer": [
+      [
+        [
+          "countryName",
+          "US"
+        ]
+      ],
+      [
+        [
+          "organizationName",
+          "Let's Encrypt"
+        ]
+      ],
+      [
+        [
+          "commonName",
+          "YE1"
+        ]
+      ]
+    ],
+    "not_before": "Oct  5 04:36:28 2026 GMT",
+    "not_after": "Jan  3 04:36:27 2027 GMT",
+    "serial": "05FB1D33D2FFA1C79F174A7C5DB871FC9E89",
+    "san": [
+      [
+        "DNS",
+        "kinocassa.ru"
+      ]
+    ],
+    "deployment_b_marker": true
+  },
+  "backup": {
+    "artifact": "scheduled-20261005T144655Z.bGA8fv.sql.age",
+    "completed_at": "2026-10-05T14:46:55Z",
+    "bytes": "69709",
+    "encrypted": "true",
+    "offhost": "false",
+    "sha256": "ade4497c4a9abd3b21ba0a624d77ed9f4b938e1b491deb8bffb44692d6a03269",
+    "mode": "0o600"
+  },
+  "restore_sqlite_before": [
+    "ok",
+    "2|0",
+    "1|8|9|1"
+  ],
+  "restore_sqlite_after": [
+    "ok",
+    "2|0",
+    "1|8|9|1"
+  ],
+  "live_db_permissions": "600 1000:1000",
+  "backup_timer_active": "active",
+  "backup_timer_enabled": "enabled",
+  "caddy_new_certificate_orders": 0,
+  "caddy_private_key_log_markers": false
+}
