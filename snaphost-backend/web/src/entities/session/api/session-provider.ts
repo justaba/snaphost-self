@@ -5,7 +5,7 @@ import type { AuthError, ChangePasswordData, Session, SignInData, User } from '.
  * Talks to this platform's own /api/v1/auth endpoints.
  *
  * Deliberately not routed through shared/api/http: that client exists to add
- * credentials and react to a 401 by signing out, and these four calls are the
+ * credentials and react to a 401 by signing out, and these auth calls are the
  * ones that establish and end the credential in the first place. Sending a
  * failed login through a layer that responds to 401 by logging you out would
  * be a loop with one useful iteration.
@@ -53,6 +53,37 @@ async function readError(response: Response, fallback: string): Promise<AuthErro
 }
 
 export class SessionAuthProvider implements AuthProvider {
+  async setupRequired(): Promise<boolean> {
+    const response = await fetch(`${base}/api/v1/auth/setup`, { cache: 'no-store' });
+    if (!response.ok) {
+      throw await readError(response, 'Не удалось проверить первоначальную настройку.');
+    }
+    const body = (await response.json()) as { required: boolean };
+    return body.required;
+  }
+
+  async completeSetup(data: SignInData & { token: string }): Promise<Session> {
+    const response = await fetch(`${base}/api/v1/auth/setup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      if (response.status === 403) {
+        throw authError(
+          'invalid_credentials',
+          'Ссылка настройки неверна. Откройте ссылку установщика.',
+        );
+      }
+      if (response.status === 409) {
+        throw authError('unknown', 'Аккаунт уже создан. Войдите с выбранным логином и паролем.');
+      }
+      throw await readError(response, 'Не удалось создать аккаунт.');
+    }
+    return { user: toUser((await response.json()) as MeResponse) };
+  }
+
   async signIn(data: SignInData): Promise<Session> {
     const response = await fetch(`${base}/api/v1/auth/login`, {
       method: 'POST',

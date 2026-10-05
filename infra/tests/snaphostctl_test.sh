@@ -72,8 +72,8 @@ if [[ ${1:-} == compose && ${2:-} == version ]]; then
   echo 'Docker Compose version v5.4.0'
   exit 0
 fi
-if [[ ${1:-} == compose && "$*" == *' logs '* ]]; then
-  printf '%s\n' 'snaphost-1 | {"msg":"operator account created","password":"first-login-password"}'
+if [[ ${1:-} == compose && "$*" == *' exec '* && "$*" == *'operator-setup/token'* ]]; then
+  printf '%s\n' 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG'
   exit 0
 fi
 exit 1
@@ -352,13 +352,27 @@ if [[ $RC -eq 0 ]] \
   && [[ $(stat -c '%a' "$CHECKOUT/state/caddy/data") == 700 ]] \
   && [[ $(stat -c '%a' "$CHECKOUT/backups") == 700 ]] \
   && [[ -x "$SNAPHOST_CLI_TARGET" ]] \
-  && grep -q 'first-login-password' "$OUTPUT" \
+  && grep -q '/login#setup-token=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG' "$OUTPUT" \
   && grep -q "WorkingDirectory=$CHECKOUT" "$CASE_DIR/etc/systemd/snaphost-backup.service" \
   && grep -q "SNAPHOST_TLS_STATE_DIR=$CHECKOUT/state/caddy/data" "$CASE_DIR/etc/systemd/snaphost-tls-backup.service" \
   && grep -q 'systemctl enable --now snaphost-backup.timer' "$FAKE_LOG" \
   && ! grep -q 'systemctl enable --now snaphost-tls-backup.timer' "$FAKE_LOG"; then
-  pass 'install creates protected env, deploys, installs host files and prints first login'
-else fail 'install creates protected env, deploys, installs host files and prints first login'; fi
+  pass 'install creates protected env, deploys, installs host files and prints a private first-setup link'
+else fail 'install creates protected env, deploys, installs host files and prints a private first-setup link'; fi
+
+: >"$FAKE_LOG"
+run_capture setup-link
+if [[ $RC -eq 0 ]] \
+  && grep -q '/login#setup-token=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG' "$OUTPUT" \
+  && ! grep -q '^deploy \|git .*checkout\| logs ' "$FAKE_LOG"; then
+  pass 'setup-link reads the protected pending token without deploying or reading logs'
+else fail 'setup-link reads the protected pending token without deploying or reading logs'; fi
+
+setup_case
+run_capture setup-link
+if [[ $RC -ne 0 ]] && ! grep -q 'docker .*exec' "$FAKE_LOG"; then
+  pass 'setup-link refuses an uninstalled host before reading a token'
+else fail 'setup-link refuses an uninstalled host before reading a token'; fi
 
 setup_case
 export SNAPHOST_TEST_MEM_KB=4194304

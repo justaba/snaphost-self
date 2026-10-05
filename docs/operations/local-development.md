@@ -83,16 +83,19 @@ still removes the whole development volume.
 
 ## First login
 
-On the first start against an empty SQLite volume, the application creates the
-admin account and writes a generated password once:
+On the first start against an empty SQLite volume, open the private setup link
+and choose your own login and password in the browser:
 
 ~~~bash
-docker compose -f infra/docker-compose.yml logs snaphost
+token=$(docker compose --env-file infra/.env -f infra/docker-compose.yml \
+  exec -T snaphost cat /var/snaphost/data/operator-setup/token)
+printf 'http://localhost:8080/login#setup-token=%s\n' "$token"
+unset token
 ~~~
 
-Search for the operator account log entry. The email defaults to
-operator@localhost and is controlled by OPERATOR_EMAIL only during bootstrap.
-The password is not stored in plaintext and cannot be read back later.
+Keep this link private. No password is generated or written to the logs. An
+existing database keeps its account; setup does not reopen after an upgrade.
+See [operator account setup](operator-setup.md).
 
 The browser receives an HttpOnly snaphost_session cookie. SESSION_COOKIE_SECURE
 is derived from the incoming request when unset, which permits first login over

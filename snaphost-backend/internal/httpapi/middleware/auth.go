@@ -21,9 +21,12 @@ const (
 // PublicRoutes defines routes that skip authentication and authorization.
 // Both Auth and Casbin consult it, so a route added here is exempt from both.
 //
-// Login is the only public application route — everything else presents either the
-// cookie login hands out or an sk_ API key.
+// Login and first-time setup have their own credential checks. Setup status
+// contains no secret; setup submission requires the host-owned one-time token.
+// Every other application route requires a session cookie or an sk_ API key.
 var PublicRoutes = map[string]bool{
+	"GET:/api/v1/auth/setup":  true,
+	"POST:/api/v1/auth/setup": true,
 	"POST:/api/v1/auth/login": true,
 	"GET:/health":             true,
 	"GET:/metrics":            true,

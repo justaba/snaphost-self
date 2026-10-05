@@ -55,6 +55,8 @@ func newAuthEngine(sessions SessionVerifier, keys KeyVerifier) *gin.Engine {
 		})
 	}
 	r.POST("/api/v1/auth/login", report)
+	r.GET("/api/v1/auth/setup", report)
+	r.POST("/api/v1/auth/setup", report)
 	r.GET("/api/v1/deploys", report)
 	return r
 }
@@ -69,10 +71,10 @@ func do(r *gin.Engine, method, path string, mutate func(*http.Request)) *httptes
 	return w
 }
 
-func TestLoginIsTheOnlyPublicAPIRoute(t *testing.T) {
+func TestOnlyLoginAndProtectedSetupArePublicAPIRoutes(t *testing.T) {
 	for key := range PublicRoutes {
 		switch key {
-		case "POST:/api/v1/auth/login", "GET:/health", "GET:/metrics":
+		case "POST:/api/v1/auth/login", "GET:/api/v1/auth/setup", "POST:/api/v1/auth/setup", "GET:/health", "GET:/metrics":
 		default:
 			t.Errorf("PublicRoutes carries %q; every other route must authenticate", key)
 		}
@@ -81,6 +83,11 @@ func TestLoginIsTheOnlyPublicAPIRoute(t *testing.T) {
 	r := newAuthEngine(&fakeSessions{err: errors.New("no session")}, nil)
 	if w := do(r, http.MethodPost, "/api/v1/auth/login", nil); w.Code != http.StatusOK {
 		t.Fatalf("login answered %d without a credential, want 200", w.Code)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		if w := do(r, method, "/api/v1/auth/setup", nil); w.Code != http.StatusOK {
+			t.Fatalf("setup did not reach its own token authorization: %d", w.Code)
+		}
 	}
 }
 

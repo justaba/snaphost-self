@@ -28,11 +28,81 @@ type Handler struct {
 	cookies CookieOptions
 	limiter *LoginLimiter
 	log     *zap.Logger
+	setup   *Setup
 }
 
 // NewHandler creates the auth HTTP handler.
-func NewHandler(svc *Service, cookies CookieOptions, log *zap.Logger) *Handler {
-	return &Handler{svc: svc, cookies: cookies, limiter: NewLoginLimiter(0, 0), log: log}
+func NewHandler(svc *Service, cookies CookieOptions, log *zap.Logger, setup ...*Setup) *Handler {
+	h := &Handler{svc: svc, cookies: cookies, limiter: NewLoginLimiter(0, 0), log: log}
+	if len(setup) > 0 {
+		h.setup = setup[0]
+	}
+	return h
+}
+
+// SetupStatus exposes only whether first-time setup is still required.
+func (h *Handler) SetupStatus(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	required := false
+	if h.setup != nil {
+		var err error
+		required, err = h.setup.Required(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, errResponse("internal_error", "setup status unavailable"))
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"required": required})
+}
+
+// CompleteSetup requires the installer token and closes permanently after
+// the first account. It is not a public registration endpoint.
+func (h *Handler) CompleteSetup(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if h.setup == nil {
+		c.JSON(http.StatusConflict, errResponse("setup_complete", "operator account is already configured"))
+		return
+	}
+	if ok, retryAfter := h.limiter.Allow(c.ClientIP()); !ok {
+		tooManyAttempts(c, retryAfter)
+		return
+	}
+	var req struct {
+		Token    string `json:"token"`
+		Email    string `json:"email" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errResponse("invalid_body", "login and password are required"))
+		return
+	}
+	err := h.setup.Complete(c.Request.Context(), req.Token, req.Email, req.Password)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrSetupToken):
+		h.limiter.Fail(c.ClientIP())
+		c.JSON(http.StatusForbidden, errResponse("invalid_setup_token", "open the private setup link from the installer"))
+		return
+	case errors.Is(err, ErrSetupComplete):
+		c.JSON(http.StatusConflict, errResponse("setup_complete", err.Error()))
+		return
+	case errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong), errors.Is(err, ErrInvalidLogin):
+		c.JSON(http.StatusBadRequest, errResponse("invalid_setup", err.Error()))
+		return
+	default:
+		h.log.Error("operator setup failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "operator setup failed"))
+		return
+	}
+	h.limiter.Succeed(c.ClientIP())
+	token, session, err := h.svc.Login(c.Request.Context(), req.Email, req.Password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errResponse("internal_error", "account created; sign in with your chosen credentials"))
+		return
+	}
+	h.setSessionCookie(c, token, int(h.svc.TTL().Seconds()))
+	c.JSON(http.StatusCreated, identityBody(session))
 }
 
 type loginRequest struct {
@@ -47,9 +117,8 @@ type changePasswordRequest struct {
 
 // Login exchanges a password for a session cookie.
 //
-// It is the one public route left on this platform, which is why it carries the
-// only unauthenticated password check: everything else either presents the
-// cookie it returns or an sk_ key.
+// Login checks chosen credentials; first-time setup separately checks the
+// installer token. Other routes present the session cookie or an sk_ key.
 func (h *Handler) Login(c *gin.Context) {
 	// Checked before the body is even parsed, so an address that is over the
 	// limit costs nothing — including the argon2 hash, which is the expensive
@@ -156,9 +225,11 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// Register maps the session routes. Only login is public; the rest read an
-// identity the middleware has already established.
+// Register maps session and private first-time setup routes. Setup and login
+// perform their own credential checks; other routes require established identity.
 func (h *Handler) Register(api *gin.RouterGroup) {
+	api.GET("/auth/setup", h.SetupStatus)
+	api.POST("/auth/setup", h.CompleteSetup)
 	api.POST("/auth/login", h.Login)
 	api.POST("/auth/logout", h.Logout)
 	api.GET("/auth/me", h.Me)

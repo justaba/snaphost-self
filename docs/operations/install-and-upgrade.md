@@ -58,7 +58,7 @@ Choose a published strict SemVer tag. Do not install `main`, `latest`, or a Git
 SHA.
 
 ~~~bash
-VERSION=v0.1.1
+VERSION=v0.1.2
 sudo git clone https://github.com/justaba/snaphost-self.git /opt/snaphost
 sudo git -C /opt/snaphost checkout --detach "$VERSION"
 ~~~
@@ -68,7 +68,6 @@ For a non-interactive install behind an HTTPS edge:
 ~~~bash
 sudo env \
   SNAPHOST_INSTALL_CONTROL_DOMAIN=panel.example.org \
-  SNAPHOST_INSTALL_OPERATOR_EMAIL=operator@example.org \
   SNAPHOST_INSTALL_ACME_EMAIL=acme@example.org \
   SNAPHOST_INSTALL_PUBLIC_URL=https://panel.example.org \
   /opt/snaphost/infra/snaphostctl install "$VERSION"
@@ -77,7 +76,8 @@ sudo env \
 When the operator email is set, `SNAPHOST_INSTALL_ACME_EMAIL` may be omitted to
 reuse it. The public smoke URL must be the base origin (for example,
 `https://panel.example.org`), without `/health`: the deploy appends that path.
-Omit `SNAPHOST_INSTALL_OPERATOR_EMAIL` to use `operator@localhost`.
+`SNAPHOST_INSTALL_OPERATOR_EMAIL` is a legacy ACME contact default, not the
+login identifier. Choose your login and password later in the browser.
 Omit `SNAPHOST_INSTALL_PUBLIC_URL` when HTTPS is not ready; the deploy then performs
 only its internal readiness check while Caddy waits for DNS. An interactive
 terminal may omit the control-domain and ACME-email variables and answer the
@@ -103,7 +103,7 @@ The command:
 6. installs the database and optional TLS backup units and starts only
    `snaphost-backup.timer`;
 7. installs the stable command as `/usr/local/sbin/snaphostctl`;
-8. prints the generated operator password once.
+8. prints a private one-time setup link for choosing your login and password.
 
 The installed BuildKit daemon manages its cache with three explicit targets:
 it retains at least 512 MB, starts broader reclamation above 4 GB, and tries to
@@ -118,10 +118,11 @@ it. The limit is calculated from Linux's actual `MemTotal`, which is slightly
 below the advertised RAM of a VPS. This sizing rule does not prove that
 arbitrary Node builds succeed on 1 GiB.
 
-Store that password immediately, sign in, and change it in the panel. The
-change revokes the bootstrap password and other sessions. The original value
-can remain in Docker's retained container log, so treat the password change as
-part of installation.
+Open the private setup link, choose a login (name or email), and enter your own
+password twice. The panel signs you in and permanently closes setup. The
+chosen password is never printed in logs. `sudo snaphostctl setup-link`
+retrieves the pending link if needed. Existing accounts keep their credentials
+on upgrade; see [operator setup](operator-setup.md).
 
 If the first deploy fails before migrations, running the same install command
 again resumes from the protected env file. If `state/in-progress.env` says

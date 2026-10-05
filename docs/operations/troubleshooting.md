@@ -2,7 +2,7 @@
 
 Status: Current
 Type: Operations
-Updated: 2026-09-04
+Updated: 2026-10-05
 
 Start with the failing boundary rather than an inherited service name. The
 current stack has one application process, BuildKit, Docker and an edge.
@@ -22,11 +22,14 @@ limit and GOMEMLIMIT_RESERVE_MB. The reserve must leave a usable Go heap.
 
 ## Cannot log in
 
-On a fresh volume, read the generated operator password from the first startup
-logs. It is printed once and is not recoverable from SQLite.
+On a fresh volume, open the private setup link from the installer and choose
+your login/password. Run `sudo snaphostctl setup-link` if the link is missing.
+Opening the ordinary login URL while setup is pending asks for that private
+link; it does not permit arbitrary public registration.
 
-Confirm OPERATOR_EMAIL matches the bootstrapped row; changing the environment
-after bootstrap does not rename the account. Behind TLS, set
+On an existing volume, use the credentials chosen during setup (or retained
+from an earlier release). Changing `OPERATOR_EMAIL` does not rename the
+account. Behind TLS, set
 SESSION_COOKIE_SECURE=true. Over plain local HTTP, forcing it true prevents the
 browser from returning the cookie.
 

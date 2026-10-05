@@ -39,7 +39,7 @@ describe('LoginForm', () => {
       .mockResolvedValue({ user: { id: 'u1', email: 'operator@localhost', role: 'admin' } });
 
     renderForm();
-    await userEvent.type(screen.getByLabelText('Email'), 'operator@localhost');
+    await userEvent.type(screen.getByLabelText('Логин или email'), 'operator@localhost');
     await userEvent.type(screen.getByLabelText('Пароль'), 'a-password');
     await userEvent.click(screen.getByRole('button', { name: /Войти/ }));
 
@@ -57,7 +57,7 @@ describe('LoginForm', () => {
     await userEvent.click(screen.getByRole('button', { name: /Войти/ }));
 
     expect(signIn).not.toHaveBeenCalled();
-    expect(await screen.findByText('Введите email.')).toBeInTheDocument();
+    expect(await screen.findByText('Введите логин.')).toBeInTheDocument();
   });
 
   it('surfaces the reason a sign-in was refused', async () => {
@@ -67,7 +67,7 @@ describe('LoginForm', () => {
     });
 
     renderForm();
-    await userEvent.type(screen.getByLabelText('Email'), 'operator@localhost');
+    await userEvent.type(screen.getByLabelText('Логин или email'), 'operator@localhost');
     await userEvent.type(screen.getByLabelText('Пароль'), 'wrong');
     await userEvent.click(screen.getByRole('button', { name: /Войти/ }));
 
@@ -106,7 +106,7 @@ describe('LoginForm styling', () => {
   it('keeps both fields labelled after the rewrite', () => {
     renderForm();
 
-    expect(screen.getByLabelText('Email')).toBeInTheDocument();
+    expect(screen.getByLabelText('Логин или email')).toBeInTheDocument();
     expect(screen.getByLabelText('Пароль')).toBeInTheDocument();
   });
 });

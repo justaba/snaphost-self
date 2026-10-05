@@ -7,8 +7,7 @@
 //  1. configuration for every area, so a missing variable fails before any
 //     connection is opened;
 //  2. the store, opened and migrated on one handle;
-//  3. the operator account, so the platform can be logged into before it can
-//     be asked to authenticate anyone;
+//  3. the private first-time operator setup;
 //  4. the in-process buses and temporary stores;
 //  5. components, then the adapters that join them;
 //  6. one HTTP engine;
@@ -131,12 +130,12 @@ func main() {
 		}
 	}
 
-	// 3. The operator account, before anything can be asked to authenticate.
-	//    On first start this generates a password and prints it once; on every
-	//    start after that it does nothing. It is fatal because a platform
-	//    nobody can log into is not a platform that has started.
-	if err := auth.Bootstrap(ctx, auth.NewRepository(pool), ctlCfg.OperatorEmail, log); err != nil {
-		log.Fatal("operator bootstrap failed", zap.Error(err))
+	// 3. Prepare private first-time setup without creating credentials or
+	// logging secrets. Existing password accounts never reopen setup.
+	setup, err := auth.PrepareSetup(ctx, auth.NewRepository(pool),
+		filepath.Join(filepath.Dir(ctlCfg.DatabasePath), "operator-setup", "token"))
+	if err != nil {
+		log.Fatal("operator setup preparation failed", zap.Error(err))
 	}
 
 	// The in-process log bus carries build, orchestration and runtime output.
@@ -164,7 +163,7 @@ func main() {
 	ai := buildAI(pool, aiCfg, log)
 	rt := buildRuntime(pool, rtCfg, ctlCfg, bus, log)
 	bld := buildBuilder(pool, bldCfg, ai, bus, events, uploadsStore, credsStore, rt.loader, log)
-	ctl := buildControl(pool, ctlCfg, bld.scheduler, rt.service, bus, events, uploadsStore, credsStore, log)
+	ctl := buildControl(pool, ctlCfg, setup, bld.scheduler, rt.service, bus, events, uploadsStore, credsStore, log)
 
 	// 6. One HTTP engine. Its middleware order is
 	//    load-bearing, though for one reason rather than two now that the
@@ -345,6 +344,7 @@ type controlParts struct {
 func buildControl(
 	pool *sql.DB,
 	cfg *controlconfig.Config,
+	setup *auth.Setup,
 	buildScheduler *scheduler.Scheduler,
 	runtimeSvc *runner.Service,
 	bus *logbus.Bus,
@@ -406,7 +406,7 @@ func buildControl(
 			time.Duration(cfg.DomainReverifyHours)*time.Hour,
 			time.Duration(cfg.DomainVerifyGraceHours)*time.Hour,
 			50),
-		auth:       auth.NewHandler(authSvc, auth.CookieOptions{Secure: cfg.SessionCookieSecure}, log),
+		auth:       auth.NewHandler(authSvc, auth.CookieOptions{Secure: cfg.SessionCookieSecure}, log, setup),
 		authSvc:    authSvc,
 		deploy:     deployHandler,
 		apikey:     apikey.NewHandler(apikeyRepo, log),

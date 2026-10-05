@@ -11,8 +11,11 @@ high-value boundary.
 
 ## Identity and authorization
 
-- First startup creates one local admin account and logs a generated password
-  once. No shared default password is shipped.
+- First startup prepares a private one-time setup token in the data volume,
+  without creating an account or logging credentials. The operator follows
+  the installer link and chooses a login/password. Setup refuses absent or
+  invalid tokens and closes after one atomic account creation. Existing
+  password accounts never reopen setup. See [operator setup](../operations/operator-setup.md).
 - Passwords use Argon2id. Sessions are opaque random values; only their SHA-256
   hashes are stored in SQLite.
 - Browser sessions use an HttpOnly, SameSite=Lax cookie. SESSION_COOKIE_SECURE

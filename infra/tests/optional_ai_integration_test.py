@@ -110,17 +110,47 @@ def main():
         else:
             raise RuntimeError("SnapHost did not start without AI credentials")
         print("PASS: application health is HTTP 200 without a provider key", flush=True)
-        password = None
-        for line in docker("logs", app).splitlines():
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if entry.get("password"):
-                password = entry["password"]
-        if not password:
-            raise RuntimeError("bootstrap password was not found")
+        token = docker("exec", app, "cat", "/var/snaphost/data/operator-setup/token")
+        password = "optional-ai-test-password"
+        if api("/api/v1/auth/setup") != {"required": True}:
+            raise RuntimeError("fresh install did not require operator setup")
+        try:
+            api("/api/v1/auth/setup", {"email": "optional-ai@test.invalid", "password": password})
+        except urllib.error.HTTPError as error:
+            if error.code != 403:
+                raise RuntimeError("setup without token did not fail closed") from None
+        else:
+            raise RuntimeError("setup without token was accepted")
+        api("/api/v1/auth/setup", {"email": "optional-ai@test.invalid", "password": password, "token": token})
         api("/api/v1/auth/login", {"email": "optional-ai@test.invalid", "password": password})
+        if api("/api/v1/auth/me")["email"] != "optional-ai@test.invalid":
+            raise RuntimeError("chosen login did not authenticate")
+        try:
+            api("/api/v1/auth/setup", {"email": "another-operator", "password": password, "token": token})
+        except urllib.error.HTTPError as error:
+            if error.code != 409:
+                raise RuntimeError("setup replay did not return conflict") from None
+        else:
+            raise RuntimeError("setup was reusable")
+        docker("restart", app)
+        # Docker can assign a new ephemeral host port on container restart.
+        port = docker("port", app, "8080/tcp").rsplit(":", 1)[-1]
+        base = "http://127.0.0.1:" + port
+        for _ in range(60):
+            try:
+                api("/health")
+                break
+            except (urllib.error.URLError, ConnectionError):
+                time.sleep(1)
+        else:
+            raise RuntimeError("restart after setup did not become healthy")
+        if api("/api/v1/auth/setup") != {"required": False}:
+            raise RuntimeError("restart reopened setup")
+        api("/api/v1/auth/login", {"email": "optional-ai@test.invalid", "password": password})
+        docker("exec", app, "test", "!", "-e", "/var/snaphost/data/operator-setup/token")
+        if token in docker("logs", app) or password in docker("logs", app):
+            raise RuntimeError("setup secrets leaked into application logs")
+        print("PASS: private setup, chosen login/password, replay refusal and restart; no secrets in app logs", flush=True)
 
         def deploy(files, want):
             archive = io.BytesIO()

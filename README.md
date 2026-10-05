@@ -122,10 +122,10 @@ set `LLM_ENABLED=true` and `OPENROUTER_API_KEY` in the protected env file.
 A key left in an existing env file does not enable AI by itself. Without AI,
 projects with no matching template ask the operator to add a Dockerfile.
 
-On the first start, the application creates the operator account and writes a
-generated one-time password to the `snaphost` container log. Open
-`http://localhost:8080` and sign in with `OPERATOR_EMAIL` (by default
-`operator@localhost`) and that password.
+On the first start, open the private setup link and choose your own login and
+password. The account is created once; later visits show the regular login
+form. See [operator setup](docs/operations/operator-setup.md) for the local
+command that prints the link. No password is generated or written to logs.
 
 For panel hot reload, keep the stack running and start:
 
@@ -157,13 +157,14 @@ make clean               remove containers, networks and local volumes
 The supported layout is a release-tag checkout at `/opt/snaphost`. Start with
 the [install and upgrade runbook](docs/operations/install-and-upgrade.md); do
 not invent a `latest` tag or deploy from `main`. The current experimental
-release is [v0.1.1](https://github.com/justaba/snaphost-self/releases/tag/v0.1.1).
+release is [v0.1.2](https://github.com/justaba/snaphost-self/releases/tag/v0.1.2).
 The operator command is:
 
 ```text
 snaphostctl install <vMAJOR.MINOR.PATCH>
 snaphostctl upgrade [vMAJOR.MINOR.PATCH]
 snaphostctl rollback [--dry-run]
+snaphostctl setup-link
 ```
 
 The installer pulls a digest-pinned stock Caddy image and persists certificate

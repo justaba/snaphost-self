@@ -23,6 +23,7 @@ usage() {
 Usage: snaphostctl install <vMAJOR.MINOR.PATCH>
        snaphostctl upgrade [vMAJOR.MINOR.PATCH]
        snaphostctl rollback [--dry-run]
+       snaphostctl setup-link
 
 Install input:
   SNAPHOST_INSTALL_CONTROL_DOMAIN            panel/API hostname
@@ -30,7 +31,7 @@ Install input:
   SNAPHOST_INSTALL_ACME_CA                   optional Let's Encrypt staging directory for rehearsal
   SNAPHOST_INSTALL_LLM_ENABLED              true enables optional AI Dockerfile generation (default false)
   SNAPHOST_INSTALL_OPENROUTER_KEY_FILE       optional 0400/0600 API-key file, used only with LLM enabled
-  SNAPHOST_INSTALL_OPERATOR_EMAIL            optional operator email
+  SNAPHOST_INSTALL_OPERATOR_EMAIL            legacy optional ACME contact default
   SNAPHOST_INSTALL_PUBLIC_URL                optional health/smoke URL
   SNAPHOST_INSTALL_ALLOW_HTTP=true            explicitly permit an HTTP URL
 EOF
@@ -506,26 +507,29 @@ run_rollback() {
 }
 
 print_first_login() {
-  local password
-  password=$(SNAPHOST_VERSION="$(env_value SNAPHOST_VERSION)" docker compose \
-    --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-    logs --no-color snaphost 2>/dev/null \
-    | sed -n 's/.*"password":"\([^"]*\)".*/\1/p' | tail -n 1)
+  local token base
   log ""
   log "SnapHost installation completed."
-  log "Operator email: $(env_value OPERATOR_EMAIL 2>/dev/null || printf 'operator@localhost')"
-  if [[ -n "$password" ]]; then
-    log "One-time operator password: $password"
-    log "Store it now; it cannot be recovered from the database."
+  base=${INSTALL_PUBLIC_URL:-$(env_value SNAPHOST_PUBLIC_SMOKE_URL 2>/dev/null || true)}
+  base=${base:-https://$(env_value SNAPHOST_CONTROL_DOMAIN)}
+  token=$(SNAPHOST_VERSION="$(env_value SNAPHOST_VERSION)" docker compose \
+    --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+    exec -T snaphost cat /var/snaphost/data/operator-setup/token </dev/null 2>/dev/null || true)
+  if [[ "$token" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
+    log "Open this private one-time setup link:"
+    log "${base%/}/login#setup-token=$token"
+    log "Choose your own login and password in the browser. Keep this link private."
   else
-    log "WARNING: the one-time password was not found in container logs."
-    log "Inspect it now: docker compose --env-file $ENV_FILE -f $COMPOSE_FILE logs snaphost"
+    log "Open: ${base%/}/login"
+    log "If setup is pending, run snaphostctl setup-link after the application is healthy."
   fi
-  if [[ -n ${INSTALL_PUBLIC_URL:-} ]]; then
-    log "Open: $INSTALL_PUBLIC_URL"
-  else
-    log "Point DNS at this VPS, then open: https://$(env_value SNAPHOST_CONTROL_DOMAIN)"
-  fi
+}
+
+setup_link() {
+  require_root
+  check_protected_file "production env file" "$ENV_FILE"
+  command -v docker >/dev/null || die "Docker is unavailable"
+  print_first_login
 }
 
 install_release() {
@@ -752,6 +756,10 @@ case "$command" in
   rollback)
     [[ $# -eq 0 || ( $# -eq 1 && ${1:-} == --dry-run ) ]] || { usage; exit 2; }
     rollback_release "${1:-}"
+    ;;
+  setup-link)
+    [[ $# -eq 0 ]] || { usage; exit 2; }
+    setup_link
     ;;
   *) usage; exit 2 ;;
 esac

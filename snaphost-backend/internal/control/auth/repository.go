@@ -49,8 +49,7 @@ func NewRepository(db *sql.DB) *Repository {
 }
 
 // CountPasswordAccounts returns how many accounts can log in with a password.
-// Zero is what first start looks like, and it is the only condition under which
-// the bootstrap creates one.
+// Zero is the only state in which the protected setup flow may create one.
 func (r *Repository) CountPasswordAccounts(ctx context.Context) (int, error) {
 	var n int
 	err := r.db.QueryRowContext(ctx,
@@ -62,17 +61,29 @@ func (r *Repository) CountPasswordAccounts(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// CreateAccount inserts an account with a password. It fails rather than
-// upserting: the only caller is the bootstrap, and quietly overwriting an
-// existing operator's password would be the worst possible way to recover from
-// a duplicate.
-func (r *Repository) CreateAccount(ctx context.Context, id uuid.UUID, email, passwordHash, role string) error {
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)`,
-		id.String(), normalizeEmail(email), passwordHash, role,
+// CompleteSetup creates or adopts an operator in a single conditional write.
+// SQLite serializes this statement: a second claimant sees the first password
+// account and cannot create another account or replace its password.
+func (r *Repository) CompleteSetup(ctx context.Context, login, passwordHash string) error {
+	login = normalizeEmail(login)
+	res, err := r.db.ExecContext(ctx, `
+		INSERT INTO users (id, email, password_hash, role)
+		SELECT coalesce((SELECT id FROM users WHERE lower(email) = ?), ?), ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM users WHERE password_hash IS NOT NULL AND password_hash <> ''
+		)
+		ON CONFLICT(id) DO UPDATE SET email = excluded.email, password_hash = excluded.password_hash, role = excluded.role`,
+		login, uuid.New().String(), login, passwordHash, RoleAdmin,
 	)
 	if err != nil {
-		return fmt.Errorf("create account: %w", err)
+		return fmt.Errorf("complete operator setup: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("complete operator setup: %w", err)
+	}
+	if n != 1 {
+		return ErrSetupComplete
 	}
 	return nil
 }

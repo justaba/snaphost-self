@@ -190,12 +190,14 @@ anti-spoofing measure; do not remove it.
 
 ## Auth — issued here
 
-There is no external identity provider. On first start, `auth.Bootstrap` creates
-the operator account and **prints a generated password once** to the container
-log. It is not a default: a shipped credential is one every install shares and
-most never change, and this one authorises a panel that runs containers on the
-host. Losing it means resetting it, not reading it back — the bootstrap re-runs
-when no account can log in with a password at all.
+There is no external identity provider. First startup prepares a random setup
+secret in a protected data-volume file. The installer prints a private URL
+fragment; the operator chooses a login/password in the browser. GET setup
+status contains only a boolean; POST setup requires the secret and completes
+through one conditional SQLite write, so concurrent claims have one winner.
+The token file is deleted afterward and an existing password account never
+reopens setup. Passwords and setup secrets are never written to app logs.
+See [operator setup](docs/operations/operator-setup.md).
 
 - **Passwords:** argon2id, PHC-encoded, OWASP's `m=7168,t=5,p=1`. The usual
   `m=19456,t=2` is equivalent in strength and left 29 MiB resident that did not
@@ -211,8 +213,9 @@ when no account can log in with a password at all.
   Only failures count; a success clears the counter.
 
 `PublicRoutes` in [middleware/auth.go](snaphost-backend/internal/httpapi/middleware/auth.go)
-is `POST /api/v1/auth/login`, `/health`, `/metrics` — that is all. Both `Auth`
-and `Casbin` consult it.
+contains login, GET/POST `/api/v1/auth/setup`, `/health` and `/metrics`.
+Setup submission authorizes its host-owned token internally. Both `Auth` and
+`Casbin` consult the same map.
 
 ## RBAC — Casbin with `keyMatch2`
 
@@ -519,7 +522,7 @@ webhook API or give Caddy the Docker socket.
 
 Changing any of those means running `infra/tests/deploy_test.sh` (62 tests),
 `infra/tests/backup_test.sh` (41) and, for the host release contract,
-`infra/tests/snaphostctl_test.sh` (31). They need GNU coreutils and
+`infra/tests/snaphostctl_test.sh` (37). They need GNU coreutils and
 `flock`, so on Windows run them in a Linux container. Their fakes are part of the
 test: the `docker` fake refuses `up` for a service the manifest does not define,
 because a `rollback_to` naming seven deleted services once passed the suite.

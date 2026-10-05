@@ -19,6 +19,7 @@ that disagrees with them is a documentation defect.
 
 - [Local development](operations/local-development.md)
 - [Install and upgrade](operations/install-and-upgrade.md)
+- [First operator account](operations/operator-setup.md)
 - [CI and deployment](operations/ci-cd.md)
 - [Custom domains](operations/custom-domains.md)
 - [Backup and restore](operations/backups.md)

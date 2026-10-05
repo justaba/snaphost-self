@@ -99,7 +99,7 @@ func TestNoInternalServiceSurfaceExists(t *testing.T) {
 // nothing may have re-created a way to add an account over HTTP. An account is
 // created by the operator bootstrap, with a password; POST /internal/users
 // could never set one, which is why it had no reason to survive.
-func TestNoAccountCreationEndpointExists(t *testing.T) {
+func TestNoGeneralAccountCreationEndpointExists(t *testing.T) {
 	r := newEngine(t)
 	body := `{"id":"9a5b3f1e-0000-4000-8000-000000000000","email":"someone@example.com"}`
 
@@ -123,6 +123,8 @@ func TestSessionRoutesAreRegisteredAtTheExpectedPaths(t *testing.T) {
 	r := newEngine(t)
 
 	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/auth/setup"},
+		{http.MethodPost, "/api/v1/auth/setup"},
 		{http.MethodPost, "/api/v1/auth/login"},
 		{http.MethodPost, "/api/v1/auth/logout"},
 		{http.MethodGet, "/api/v1/auth/me"},

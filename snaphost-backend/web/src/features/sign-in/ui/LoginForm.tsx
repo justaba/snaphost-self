@@ -12,21 +12,11 @@ import { Button } from '@/shared/ui/button';
 import { Input } from '@/shared/ui/input';
 
 /**
- * The address is a login identifier, not a mailbox.
- *
- * This used to be `z.string().email()`, which rejected the account the
- * platform creates for itself: the default OPERATOR_EMAIL is
- * `operator@localhost`, and zod's email rule requires a dotted domain with a
- * top-level domain. The form refused to submit and react-hook-form put the
- * cursor back in the email field, so the panel would not accept the only
- * credential it had issued.
- *
- * Nothing here sends mail, and the server applies no format rule at all — it
- * lowercases the value and looks it up. A validator stricter than the server's
- * can only reject accounts that exist.
+ * Login accepts a chosen username or an email, including legacy local accounts.
+ * The server normalizes the identifier and does not send mail.
  */
 const loginSchema = z.object({
-  email: z.string().trim().min(1, 'Введите email.'),
+  email: z.string().trim().min(1, 'Введите логин.'),
   password: z.string().min(1, 'Введите пароль.'),
 });
 
@@ -92,10 +82,10 @@ export function LoginForm() {
 
       <Input
         id="email"
-        label="Email"
-        type="email"
+        label="Логин или email"
+        type="text"
         autoComplete="username"
-        placeholder="operator@localhost"
+        placeholder="Ваш логин или email"
         iconLeft={<AtSign size={16} />}
         error={errors.email?.message}
         {...register('email')}

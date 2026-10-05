@@ -5,13 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest/observer"
 
 	controldb "snaphost/internal/control/db"
 )
@@ -37,92 +34,18 @@ func testRepo(t *testing.T) (*Repository, *sql.DB) {
 
 const testEmail = "operator@example.test"
 
-// bootstrapped runs the first-start path and returns the password it printed,
-// which is the only place that value exists.
+// bootstrapped supplies a chosen password through the guarded account write.
 func bootstrapped(t *testing.T, repo *Repository) string {
 	t.Helper()
-
-	core, logs := observer.New(zapcore.WarnLevel)
-	if err := Bootstrap(context.Background(), repo, testEmail, zap.New(core)); err != nil {
-		t.Fatalf("Bootstrap: %v", err)
-	}
-
-	entries := logs.All()
-	if len(entries) != 1 {
-		t.Fatalf("Bootstrap logged %d entries, want exactly 1", len(entries))
-	}
-	for _, field := range entries[0].Context {
-		if field.Key == "password" {
-			return field.String
-		}
-	}
-	t.Fatal("Bootstrap logged no password")
-	return ""
-}
-
-func TestBootstrapCreatesAnAdminOnce(t *testing.T) {
-	repo, _ := testRepo(t)
-	password := bootstrapped(t, repo)
-
-	account, err := repo.FindByEmail(context.Background(), testEmail)
+	const password = "chosen operator password"
+	hash, err := HashPassword(password)
 	if err != nil {
-		t.Fatalf("FindByEmail: %v", err)
+		t.Fatal(err)
 	}
-	if account.Role != RoleAdmin {
-		t.Errorf("role = %q, want %q — the operator cannot reach the admin console", account.Role, RoleAdmin)
+	if err := repo.CompleteSetup(context.Background(), testEmail, hash); err != nil {
+		t.Fatal(err)
 	}
-	if err := VerifyPassword(account.PasswordHash, password); err != nil {
-		t.Errorf("the printed password does not verify against the stored hash: %v", err)
-	}
-	if strings.Contains(account.PasswordHash, password) {
-		t.Error("the stored hash contains the plaintext password")
-	}
-
-	// A second start must not print another password or replace the first.
-	core, logs := observer.New(zapcore.WarnLevel)
-	if err := Bootstrap(context.Background(), repo, testEmail, zap.New(core)); err != nil {
-		t.Fatalf("second Bootstrap: %v", err)
-	}
-	if n := logs.Len(); n != 0 {
-		t.Fatalf("second Bootstrap logged %d entries, want 0", n)
-	}
-
-	again, err := repo.FindByEmail(context.Background(), testEmail)
-	if err != nil {
-		t.Fatalf("FindByEmail after second bootstrap: %v", err)
-	}
-	if again.PasswordHash != account.PasswordHash {
-		t.Error("a restart replaced the operator's password")
-	}
-}
-
-// A row recorded before this platform issued its own identity has an address
-// and no password. Bootstrap must adopt it rather than fail on the unique
-// index, because failing leaves the install with no way in.
-func TestBootstrapAdoptsAPasswordlessRow(t *testing.T) {
-	repo, handle := testRepo(t)
-
-	if _, err := handle.Exec(
-		`INSERT INTO users (id, email) VALUES ('11111111-2222-4333-8444-555555555555', ?)`, testEmail,
-	); err != nil {
-		t.Fatalf("seed passwordless user: %v", err)
-	}
-
-	password := bootstrapped(t, repo)
-
-	account, err := repo.FindByEmail(context.Background(), testEmail)
-	if err != nil {
-		t.Fatalf("FindByEmail: %v", err)
-	}
-	if account.ID.String() != "11111111-2222-4333-8444-555555555555" {
-		t.Errorf("a second row was created: id = %s", account.ID)
-	}
-	if account.Role != RoleAdmin {
-		t.Errorf("role = %q, want %q", account.Role, RoleAdmin)
-	}
-	if err := VerifyPassword(account.PasswordHash, password); err != nil {
-		t.Errorf("adopted row does not accept the printed password: %v", err)
-	}
+	return password
 }
 
 func TestLoginIssuesAVerifiableSession(t *testing.T) {

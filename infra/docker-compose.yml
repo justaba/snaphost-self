@@ -50,10 +50,8 @@ services:
       # cache and other non-heap memory. Empty takes the default.
       GOMEMLIMIT_RESERVE_MB: ${GOMEMLIMIT_RESERVE_MB:-}
       DATABASE_PATH: /var/snaphost/data/snaphost.db
-      # Identity, issued here. The operator account is created on first start
-      # and its password printed once to this container's log; nothing external
-      # is contacted, and there is no default credential to change.
-      OPERATOR_EMAIL: ${OPERATOR_EMAIL:-operator@localhost}
+      # The operator chooses credentials through private first-time setup.
+      # The one-time setup token lives in the protected application data volume.
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
       # Unset derives the cookie's Secure attribute from the request, which is
       # what local development over http:// needs. Set it to true once an edge

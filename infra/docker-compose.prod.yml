@@ -100,7 +100,6 @@ services:
       # be true, because `deploy.sh` always runs the migrator as its own step
       # after taking the pre-migration dump.
       RUN_MIGRATIONS: "false"
-      OPERATOR_EMAIL: "${OPERATOR_EMAIL:-operator@localhost}"
       SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-168}"
       SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-true}"
       CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS:-}"

@@ -16,10 +16,6 @@ type Config struct {
 	// RunMigrations controls whether database migrations run automatically at startup.
 	RunMigrations bool
 
-	// OperatorEmail is the address the first-start operator account is created
-	// under. It is only read when no account has a password yet, so changing it
-	// later renames nothing — the account already exists.
-	OperatorEmail string
 	// SessionTTLHours is how long a session lives. It slides forward while the
 	// session is in use, so this is an idle timeout rather than a hard cap.
 	SessionTTLHours int
@@ -117,9 +113,8 @@ func Load() (*Config, error) {
 	}
 	cfg.RunMigrations = runMigrations
 
-	// Optional: OPERATOR_EMAIL, SESSION_TTL_HOURS (default 168 = one week),
+	// Optional: SESSION_TTL_HOURS (default 168 = one week),
 	// SESSION_COOKIE_SECURE (unset = derive from the request).
-	cfg.OperatorEmail = envOrDefault("OPERATOR_EMAIL", "operator@localhost")
 	sessionTTL, err := parseIntEnv("SESSION_TTL_HOURS", 168)
 	if err != nil {
 		return nil, err

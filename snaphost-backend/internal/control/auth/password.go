@@ -231,12 +231,8 @@ func decodeHash(encoded string) (argonParams, []byte, []byte, error) {
 	return p, salt, key, nil
 }
 
-// GeneratePassword returns a password for the first-start operator account.
-//
-// 18 bytes of crypto/rand rendered base64url: 144 bits, 24 characters, and no
-// character a shell or a copy-paste out of a log will mangle. It is printed
-// once and never stored in plaintext, so it has to survive being read off a
-// terminal.
+// GeneratePassword creates a random internal password for decoy verification.
+// Operator passwords are chosen through setup and are never generated or logged.
 func GeneratePassword() (string, error) {
 	buf := make([]byte, 18)
 	if _, err := rand.Read(buf); err != nil {
