@@ -1,8 +1,9 @@
 # Task 7 — Install and upgrade without us
 
 **Status:** In progress. The portable operator command and runbook are
-implemented. A partial real-host rehearsal is recorded as of 2026-09-04; the
-public-release and 1 GB acceptance items remain.
+implemented. Rehearsals cover real host operations, a Node build on an isolated
+1 GiB arm64 VM and encrypted local SQLite restore. Public-release install,
+upgrade and rollback remain unproven.
 **Created:** 2026-08-29
 **Updated:** 2026-10-05
 
@@ -86,18 +87,22 @@ derivable from the code.
 
 2. [x] **Stop CI from deploying.** Deleted the `deploy-staging` job in
    [pipeline.yml](../../../.github/workflows/pipeline.yml),
-   [production-deploy.yml](../../../.github/workflows/production-deploy.yml),
-   [deploy-remote.sh](../../../.github/scripts/deploy-remote.sh) and
-   [test-cd-contract.sh](../../../.github/scripts/test-cd-contract.sh), plus the
+   `.github/workflows/production-deploy.yml`,
+   `.github/scripts/deploy-remote.sh` and
+   `.github/scripts/test-cd-contract.sh`, plus the
    `DEPLOY_SSH_*` secrets and both GitHub environments. The `image` job stays
    and gains a tag trigger.
 
    The `image` job gained the tag trigger: a push to `main` publishes the
-   per-SHA tag, a `v*` tag publishes the version tag and the SHA, a pull
+   per-SHA tag, a matching version tag publishes the version tag and SHA, a pull
    request builds and publishes nothing. The job refuses a tag that is not
    `vMAJOR.MINOR.PATCH` rather than publishing something an operator cannot
    name. Making the package public is a repository setting the workflow cannot
    assert; until it is done, every install still needs a credential.
+
+   On 2026-10-05, strict SemVer validation moved into
+   `infra/resolve-image-tags.sh`, whose suite exercises valid and invalid refs.
+   The numeric tag filter already uses GitHub's supported `[0-9]+` syntax.
 
    The `</dev/null` comment moved to `backup_database` in `deploy.sh`, where
    the hazard still lives, and was rewritten around the case that outlives SSH:
@@ -116,6 +121,11 @@ derivable from the code.
    deploy can resume without rewriting the protected env file. The first VPS
    rehearsal exposed self-rejection of the full env template and a four-CPU
    default on a two-CPU machine; the installer now covers both cases.
+   A later 1.9 GiB VDS rehearsal found that the Compose default BuildKit
+   memory limit was 4 GiB regardless of host size. Install and upgrade now pin
+   a default at half host RAM, rounded down to 64 MiB and capped at 4 GiB;
+   an explicit operator limit is preserved. Sizing uses Linux's actual RAM,
+   including on a nominal 1 GiB VPS whose kernel reserves part of that RAM.
 
 4. [x] **Shrink the environment surface.** The required set is three:
    `SNAPHOST_VERSION`, `SNAPHOST_CONTROL_DOMAIN` and `SNAPHOST_ACME_EMAIL`.
@@ -185,7 +195,7 @@ derivable from the code.
    `deploy.sh` waits specifically for `healthy` rather than treating a merely
    running container as ready. The suite has explicit cross-file regression
    checks for that contract and the host-visible runtime network, and now
-   covers 60 scenarios.
+   covers 62 scenarios.
 
    The outer `snaphostctl` command now owns the host and Git lifecycle.
    `upgrade` fetches tags and `origin/main`, rejects dirty/skewed/downgrade/
@@ -193,7 +203,7 @@ derivable from the code.
    checks out the target and invokes that release's deploy engine. A failed
    deploy restores the original checkout and AppArmor profile. `rollback`
    moves runtime, state, checkout, AppArmor and systemd together; its dry-run
-   is read-only. The separate suite covers 26 scenarios, including occupied
+   is read-only. The separate suite covers 35 scenarios, including occupied
    public ports, domain isolation and migration of a pre-edge env file.
 
 6. [x] **How the manifest reaches the operator: a `git clone` at the version
@@ -276,6 +286,33 @@ build, and retry state after a temporary runtime failure. It does not close the
 task: it used a loopback registry and local Git origin because GitHub had no
 SemVer release, restored a local plaintext dump, and did not exercise a 1 GB
 host.
+
+The [2026-10-05 VDS Node rehearsal](../../operations/rehearsals/2026-10-05-task7-vds-node.md)
+completed a small Vite build on 1.9 GiB RAM without swap: 25.6 seconds,
+791.5 MiB peak host RAM in use, 524.6 MiB peak BuildKit cgroup use, with the
+control plane and an existing public project still serving and no restarts.
+A Vite 6 plus React build exceeded 768 MiB and 1 GiB BuildKit limits.
+The subsequent pinned React 19.2.4/Vite 8.0.4 fixture passed on the same VDS
+in 9.3 seconds, with HTML and compiled JS both returning HTTP 200 and no OOM
+or restart. This remains a locally built image rather than a public release.
+
+The [isolated 1 GiB arm64 drill](../../operations/rehearsals/2026-10-05-task7-1g.md)
+then exercised a fresh `/opt/snaphost` installation with the real production
+Compose file, AppArmor and systemd. The installer selected a 448 MiB BuildKit
+limit from `MemTotal=977868 KiB`. The same React/Vite fixture built in
+9.7 seconds without swap, at 564.9 MiB peak host RAM in use, with no OOM or
+restart and 11 successful health/existing-site probe pairs. An encrypted dump
+from the installed backup service passed checksum and integrity checks, was
+restored into the live installation, and supported login and password rotation.
+The live DB had mode 0600 and UID/GID 1000:1000. No plaintext SQL artifact
+or private-key log output remained.
+
+This establishes the measured 1 GiB workload and local encrypted restore,
+with an architecture boundary: the VM is arm64 while published CI images
+currently target amd64. It still used a local tag and loopback registry.
+Public GitHub/GHCR install, upgrade and rollback remain required before Done.
+The [release candidates](../../operations/release-candidate-task7.md) record
+the proposed version pair and the remaining public-path rehearsal.
 
 ## Out of scope
 

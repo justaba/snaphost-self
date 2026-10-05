@@ -1,6 +1,6 @@
 # Install and upgrade
 
-Status: Operator commands implemented; release install and 1 GB acceptance remain
+Status: Operator commands and isolated 1 GiB drill passed; public release path pending
 Type: Operations
 Updated: 2026-10-05
 
@@ -35,10 +35,15 @@ path.
 - TCP ports 80/443 and UDP port 443 free for Compose Caddy;
 - operator-controlled DNS for the panel and every project domain.
 
-There is not yet a supported minimum RAM claim. A 4 GB host completed the
-recorded cold Node build with 997.2 MiB of host memory in use at peak, but 1 GB
-has not been proven; do not size a production host from that extrapolation or
-from idle usage alone.
+The [isolated 1 GiB drill](rehearsals/2026-10-05-task7-1g.md) built a small
+React/Vite application in 9.7 seconds with no swap, a 448 MiB BuildKit limit,
+564.9 MiB peak host RAM in use, and no OOM or interruption of the control
+plane or an existing site. It used arm64 and a local registry; published CI
+images currently target amd64. The same fixture passed on the
+[1.9 GiB amd64 VDS](rehearsals/2026-10-05-task7-vds-node.md), where an older
+Vite 6 workload had exceeded 768 MiB and 1 GiB build limits. Size the host for
+the actual projects and dependency graph. These measurements do not guarantee
+that arbitrary Node builds fit on 1 GiB.
 
 The GHCR package must be public. If an install asks for `docker login`, package
 visibility is wrong; a registry credential is not part of this contract.
@@ -82,8 +87,9 @@ The command:
 1. refuses a dirty checkout or a checkout not at the requested tag;
 2. refuses a fresh install while TCP 80/443 or UDP 443 is already occupied,
    then writes `/opt/snaphost/env/production.env` with mode `0600`;
-3. derives the numeric group of `/var/run/docker.sock` and a BuildKit CPU limit
-   that does not exceed the host CPU count;
+3. derives the numeric group of `/var/run/docker.sock`, a BuildKit CPU limit
+   that does not exceed the host CPU count, and an initial BuildKit memory limit
+   of half host RAM rounded down to 64 MiB (capped at 4 GiB);
 4. installs and reloads the BuildKit AppArmor profile;
 5. creates protected persistent Caddy state, pulls the digest-pinned stock
    Caddy 2.10.2 image and exact application version, migrates
@@ -99,6 +105,12 @@ leave 5 GB free on the host filesystem. GC is periodic, so this is not a hard
 quota during an active build. Every deploy and rollback recreates BuildKit; on
 deploy that happens before migrations, so a policy change in the checked-out
 release takes effect instead of waiting for a host reboot.
+`BUILDKIT_MEMORY_LIMIT` in the protected env file overrides the initial
+host-sized value when a measured workload needs a different limit. Check RAM,
+swap and the memory use of the control plane and running sites before raising
+it. The limit is calculated from Linux's actual `MemTotal`, which is slightly
+below the advertised RAM of a VPS. This sizing rule does not prove that
+arbitrary Node builds succeed on 1 GiB.
 
 Store that password immediately, sign in, and change it in the panel. The
 change revokes the bootstrap password and other sessions. The original value
@@ -283,6 +295,13 @@ login, local restore, upgrade/rollback and 4 GB build-pressure evidence, and
 records the defects it exposed. It used an isolated registry/origin because no
 public SemVer release existed, used a plaintext local backup, and did not run
 on 1 GB; those remaining acceptance boundaries are not waived by the drill.
+[2026-10-05 Node rehearsal](rehearsals/2026-10-05-task7-vds-node.md) records
+successful Vite and pinned React/Vite 8 builds on the amd64 VDS, alongside
+the older workload's OOM evidence. The
+[1 GiB arm64 drill](rehearsals/2026-10-05-task7-1g.md) adds a fresh install,
+React build, encrypted systemd SQLite backup and actual DB replacement with
+login/password rotation. Both still used locally built images. Public-release
+install, upgrade and rollback remain Task 7 acceptance work.
 The [2026-09-22 edge rehearsal](rehearsals/2026-09-22-production-edge-vps.md)
 built the former Caddy image and exercised its TLS path on a 1 CPU, 2 GB VPS
 without publishing 80/443. No domains were available, so it does not close the public acceptance

@@ -546,9 +546,16 @@ Written down rather than fixed, so nobody rediscovers them:
   operator contract is [the runbook](docs/operations/install-and-upgrade.md).
   The [first VPS rehearsal](docs/operations/rehearsals/2026-09-04-vps.md)
   covers real install/upgrade/rollback, local restore and a 4 GB cold build.
+  The [1.9 GiB VDS Node rehearsal](docs/operations/rehearsals/2026-10-05-task7-vds-node.md)
+  passed Vite and pinned React/Vite 8 builds; the older Vite 6 workload exposed
+  OOM at 768 MiB and 1 GiB BuildKit limits. The
+  [isolated 1 GiB arm64 drill](docs/operations/rehearsals/2026-10-05-task7-1g.md)
+  passed a fresh supported-layout install, the React build with a 448 MiB
+  BuildKit limit and encrypted scheduled SQLite restore with login/password
+  rotation. The installer now sizes BuildKit's initial memory limit from RAM.
   [Task 7](docs/tasks/planned/0007-install-and-upgrade.md) stays in progress
-  until public artifacts and a real 1 GB drill are
-  recorded.
+  until install, upgrade and rollback against public GitHub/GHCR artifacts are
+  recorded. The 1 GiB VM used a local registry and arm64; CI images target amd64.
 
 ## Documents
 

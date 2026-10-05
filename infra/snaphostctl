@@ -167,6 +167,19 @@ host_cpu_count() {
   printf '%s\n' "$count"
 }
 
+host_memory_mib() {
+  local kib
+  if [[ -n ${SNAPHOST_TEST_MEM_KB:-} ]]; then
+    kib=$SNAPHOST_TEST_MEM_KB
+  else
+    kib=$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo) \
+      || die "cannot read host memory from /proc/meminfo"
+  fi
+  [[ "$kib" =~ ^[0-9]+$ ]] || die "cannot determine host memory"
+  (( kib >= 131072 )) || die "host RAM is too small to reserve memory for BuildKit"
+  printf '%s\n' "$(( kib / 1024 ))"
+}
+
 set_env_value() {
   local key=$1 value=$2 dir tmp line found=false
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$key contains a newline"
@@ -349,6 +362,7 @@ create_install_env() {
   set_env_value DOMAIN_CNAME_TARGET "$INSTALL_CONTROL_DOMAIN"
   set_env_value DOCKER_SOCKET_GID "$gid"
   ensure_buildkit_cpu_env
+  ensure_buildkit_memory_env
   if [[ -n "$INSTALL_OPERATOR_EMAIL" ]]; then
     set_env_value OPERATOR_EMAIL "$INSTALL_OPERATOR_EMAIL"
   fi
@@ -406,6 +420,18 @@ ensure_buildkit_cpu_env() {
   awk -v configured="$configured" -v cpus="$cpus" \
     'BEGIN { exit !(configured > 0 && configured <= cpus) }' \
     || die "BUILDKIT_CPU_LIMIT=$configured exceeds the host capacity of $cpus CPUs"
+}
+
+ensure_buildkit_memory_env() {
+  local configured host_mib limit_mib
+  host_mib=$(host_memory_mib)
+  configured=$(env_value BUILDKIT_MEMORY_LIMIT 2>/dev/null || true)
+  [[ -z "$configured" ]] || return 0
+  # Leave half the host RAM for the control plane, existing sites and the OS.
+  # Round down to a 64 MiB boundary, with the original 4 GiB cap on large hosts.
+  limit_mib=$(( (host_mib / 2 / 64) * 64 ))
+  (( limit_mib <= 4096 )) || limit_mib=4096
+  set_env_value BUILDKIT_MEMORY_LIMIT "${limit_mib}M"
 }
 
 install_apparmor_profile() {
@@ -512,6 +538,7 @@ install_release() {
   [[ ! -f "$STATE_DIR/current.env" ]] || die "SnapHost is already installed; use upgrade"
   require_checkout_at_release "$version"
   release_artifacts_present || die "checkout does not contain the complete install contract"
+  host_memory_mib >/dev/null
 
   gid=$(socket_gid)
   [[ "$gid" =~ ^[0-9]+$ ]] || die "Docker socket group is not numeric: $gid"
@@ -523,6 +550,7 @@ install_release() {
     log "Resuming incomplete installation from $ENV_FILE"
     ensure_socket_gid_env
     ensure_buildkit_cpu_env
+    ensure_buildkit_memory_env
   else
     read_install_inputs
     create_install_env "$version" "$gid"
@@ -601,6 +629,7 @@ upgrade_release() {
   require_checkout_at_release "$current"
   ensure_socket_gid_env
   ensure_buildkit_cpu_env
+  ensure_buildkit_memory_env
   ensure_edge_env
   ensure_caddy_state_env
 

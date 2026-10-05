@@ -189,6 +189,7 @@ FAKE
   export SNAPHOST_INSTALL_OPERATOR_EMAIL=operator@example.test
   export SNAPHOST_INSTALL_PUBLIC_URL=https://panel.control.test
   export FAKE_NPROC=2
+  export SNAPHOST_TEST_MEM_KB=2009568
   unset SNAPHOST_INSTALL_ALLOW_HTTP DIRTY_CHECKOUT FAIL_FETCH TAG_OFF_MAIN FAIL_CHECKOUT FAIL_DEPLOY FAIL_ROLLBACK_ACTUAL FAIL_APPARMOR_FIRST FAIL_SYSTEMD PORTS_BUSY
   CTL="$CHECKOUT/infra/snaphostctl"
 }
@@ -345,6 +346,7 @@ if [[ $RC -eq 0 ]] \
   && [[ $(awk -F= '$1=="DOMAIN_CNAME_TARGET"{print $2}' "$SNAPHOST_ENV_FILE") == panel.control.test ]] \
   && [[ $(awk -F= '$1=="DOCKER_SOCKET_GID"{print $2}' "$SNAPHOST_ENV_FILE") == 998 ]] \
   && [[ $(awk -F= '$1=="BUILDKIT_CPU_LIMIT"{print $2}' "$SNAPHOST_ENV_FILE") == 2.0 ]] \
+  && [[ $(awk -F= '$1=="BUILDKIT_MEMORY_LIMIT"{print $2}' "$SNAPHOST_ENV_FILE") == 960M ]] \
   && [[ $(stat -c '%a' "$SNAPHOST_ENV_FILE") == 600 ]] \
   && [[ $(stat -c '%a' "$CHECKOUT/state") == 700 ]] \
   && [[ $(stat -c '%a' "$CHECKOUT/state/caddy/data") == 700 ]] \
@@ -357,6 +359,38 @@ if [[ $RC -eq 0 ]] \
   && ! grep -q 'systemctl enable --now snaphost-tls-backup.timer' "$FAKE_LOG"; then
   pass 'install creates protected env, deploys, installs host files and prints first login'
 else fail 'install creates protected env, deploys, installs host files and prints first login'; fi
+
+setup_case
+export SNAPHOST_TEST_MEM_KB=4194304
+run_capture install "$VERSION"
+if [[ $RC -eq 0 ]] \
+  && [[ $(awk -F= '$1=="BUILDKIT_MEMORY_LIMIT"{print $2}' "$SNAPHOST_ENV_FILE") == 2048M ]]; then
+  pass 'install sizes BuildKit memory to half of a 4 GiB host'
+else fail 'install sizes BuildKit memory to half of a 4 GiB host'; fi
+
+setup_case
+export SNAPHOST_TEST_MEM_KB=16777216
+run_capture install "$VERSION"
+if [[ $RC -eq 0 ]] \
+  && [[ $(awk -F= '$1=="BUILDKIT_MEMORY_LIMIT"{print $2}' "$SNAPHOST_ENV_FILE") == 4096M ]]; then
+  pass 'install caps the default BuildKit memory at 4 GiB'
+else fail 'install caps the default BuildKit memory at 4 GiB'; fi
+
+setup_case
+export SNAPHOST_TEST_MEM_KB=1000000
+run_capture install "$VERSION"
+if [[ $RC -eq 0 ]] \
+  && [[ $(awk -F= '$1=="BUILDKIT_MEMORY_LIMIT"{print $2}' "$SNAPHOST_ENV_FILE") == 448M ]]; then
+  pass 'install sizes a nominal 1 GiB VPS from its actual available RAM'
+else fail 'install sizes a nominal 1 GiB VPS from its actual available RAM'; fi
+
+setup_case
+export SNAPHOST_TEST_MEM_KB=unknown
+run_capture install "$VERSION"
+if [[ $RC -ne 0 ]] && grep -q 'cannot determine host memory' "$OUTPUT" \
+  && ! grep -q '^deploy ' "$FAKE_LOG" && [[ ! -e "$SNAPHOST_ENV_FILE" ]]; then
+  pass 'install refuses an unreadable RAM value before writing state'
+else fail 'install refuses an unreadable RAM value before writing state'; fi
 
 setup_case
 export SNAPHOST_INSTALL_PUBLIC_URL=http://192.0.2.10:8080
@@ -378,8 +412,14 @@ export FAIL_DEPLOY=1
 run_capture install "$VERSION"
 first_rc=$RC
 unset FAIL_DEPLOY
+sed -i '/^BUILDKIT_MEMORY_LIMIT=/d' "$SNAPHOST_ENV_FILE"
+printf 'BUILDKIT_MEMORY_LIMIT=768M\n' >>"$SNAPHOST_ENV_FILE"
 run_capture install "$VERSION"
-if [[ $first_rc -ne 0 && $RC -eq 0 ]] && grep -q 'Resuming incomplete installation' "$OUTPUT"; then pass 'install resumes after a failed first deploy'; else fail 'install resumes after a failed first deploy'; fi
+if [[ $first_rc -ne 0 && $RC -eq 0 ]] \
+  && grep -q 'Resuming incomplete installation' "$OUTPUT" \
+  && [[ $(awk -F= '$1=="BUILDKIT_MEMORY_LIMIT"{print $2}' "$SNAPHOST_ENV_FILE") == 768M ]]; then
+  pass 'install resumes after a failed first deploy and preserves the memory override'
+else fail 'install resumes after a failed first deploy and preserves the memory override'; fi
 
 setup_case
 seed_installed
@@ -388,10 +428,12 @@ if [[ $RC -ne 0 ]] && grep -q 'already installed' "$OUTPUT"; then pass 'install 
 
 setup_case
 seed_installed
+printf 'BUILDKIT_MEMORY_LIMIT=768M\n' >>"$SNAPHOST_ENV_FILE"
 run_capture upgrade "$VERSION"
 if [[ $RC -eq 0 ]] \
   && [[ $(<"$FAKE_GIT_HEAD") == "$TARGET_COMMIT" ]] \
   && [[ $(awk -F= '$1=="SNAPHOST_VERSION"{print $2}' "$SNAPHOST_ENV_FILE") == "$VERSION" ]] \
+  && [[ $(awk -F= '$1=="BUILDKIT_MEMORY_LIMIT"{print $2}' "$SNAPHOST_ENV_FILE") == 768M ]] \
   && grep -q "deploy deploy $VERSION" "$FAKE_LOG" \
   && grep -q 'Upgrade completed: v1.2.2 -> v1.2.3' "$OUTPUT"; then
   pass 'upgrade fetches, checks out and deploys an explicit release'

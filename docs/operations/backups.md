@@ -77,9 +77,10 @@ For an encrypted backup, verify its checksum, decrypt it on a trusted machine
 and test it in a throwaway database:
 
 ```bash
-age -d -i snaphost-backup.key -o restore.sql <backup>.sql.age
-sqlite3 /tmp/snaphost-restore-check.db < restore.sql
+age -d -i snaphost-backup.key <backup>.sql.age \
+  | sqlite3 /tmp/snaphost-restore-check.db
 sqlite3 /tmp/snaphost-restore-check.db 'pragma integrity_check;'
+rm -f /tmp/snaphost-restore-check.db
 ```
 
 Confirm that `users`, `projects`, `deploys` and `custom_domains` contain the
@@ -92,8 +93,9 @@ Database restoration is a reviewed maintenance action:
 1. checksum-verify the selected dump;
 2. restore it into a throwaway SQLite file and run `integrity_check`;
 3. confirm identity and ownership rows;
-4. stop Snaphost;
-5. take a final recovery dump when the current database remains readable;
+4. take a final recovery dump while the current application is still running
+   and its database remains readable;
+5. stop SnapHost;
 6. replace the database from SQL while no process has it open;
 7. remove stale `-wal` and `-shm` sidecars;
 8. start Snaphost and verify login, projects, deploy history and health.
@@ -101,6 +103,12 @@ Database restoration is a reviewed maintenance action:
 Do not combine database restore with application rollback automatically. The
 selected dump may lose later writes, and an older binary may not support the
 current schema.
+
+The [isolated 1 GiB drill](rehearsals/2026-10-05-task7-1g.md#encrypted-scheduled-backup-and-actual-database-replacement)
+records an encrypted dump from the installed systemd service, checksum and
+integrity verification, actual volume replacement and successful login/password
+rotation. It includes executable restore commands and checks mode 0600 and
+UID/GID 1000:1000 on the live DB. It used local storage and a local release tag.
 
 ## Timer
 

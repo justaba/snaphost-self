@@ -2,12 +2,15 @@
 
 Status: Current
 Type: Operations
-Updated: 2026-09-04
+Updated: 2026-10-05
 
 ## CI contract
 
-.github/workflows/pipeline.yml runs on pull requests, pushes to main and strict
-`vMAJOR.MINOR.PATCH` tags.
+.github/workflows/pipeline.yml runs on pull requests, pushes to main and tags
+matching GitHub's `v[0-9]+.[0-9]+.[0-9]+` filter.
+`infra/resolve-image-tags.sh` rejects anything other than strict
+`vMAJOR.MINOR.PATCH` before the image can be published. Its shell suite tests
+the main, valid-release and invalid-release cases.
 
 The Go job, from the single snaphost-backend module, runs:
 
@@ -46,6 +49,54 @@ The Docker build compiles the React panel again and embeds it in the binary.
 The dedicated panel job remains the frontend verification boundary: a broken
 test, lint rule, format check or standalone production build prevents image
 publishing.
+
+## Publishing a release
+
+The current [Task 7 candidates](release-candidate-task7.md) list the proposed
+versions, compatibility and completed checks. They are not published yet.
+
+The repository owner publishes a release only after the candidate commit is on
+`main` and CI passes. Pick the next semantic version according to the change's
+compatibility, and keep the tag immutable:
+
+~~~bash
+VERSION=v1.2.3
+git fetch origin main --tags
+git merge-base --is-ancestor HEAD origin/main
+git tag -a "$VERSION" -m "SnapHost $VERSION"
+git push origin "$VERSION"
+~~~
+
+Wait for the tag-triggered workflow's Go, panel, shell and image jobs to pass.
+The image job publishes both the version tag and its commit SHA. In GitHub's
+package settings, set the GHCR package visibility to public. Verify the exact
+version can be pulled without a GitHub login, using an empty Docker config:
+
+~~~bash
+release_docker_config_dir=$(mktemp -d)
+release_image="ghcr.io/justaba/snaphost-self/snaphost:$VERSION"
+DOCKER_CONFIG="$release_docker_config_dir" \
+  docker manifest inspect "$release_image" >/dev/null
+DOCKER_CONFIG="$release_docker_config_dir" docker pull "$release_image"
+rm -rf "$release_docker_config_dir"
+test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$release_image")" \
+  = "$(git rev-parse "$VERSION^{commit}")"
+docker image inspect --format '{{join .RepoDigests "\n"}}' "$release_image"
+~~~
+
+The image carries OCI source and revision labels. After the anonymous pull,
+compare `org.opencontainers.image.revision` from `docker image inspect` with
+`git rev-parse "$VERSION^{commit}"`, and record its digest in the release notes.
+A successful workflow alone does not prove anonymous access: newly published
+GHCR packages may still be
+private until their visibility is changed.
+
+On 2026-10-05, the main workflow at `ba311579` passed Go and panel checks but
+failed after successful Caddy handshakes: the non-root runner could not delete
+the root-owned TLS bind directory. The integration suite now uses a disposable
+Docker volume for its TLS state. The
+[Linux drill](rehearsals/2026-10-05-task7-1g.md#linux-ci-cleanup-regression)
+passed handshakes, state reuse and cleanup as an unprivileged Docker operator.
 
 The old .github/workflows/ci.yml is an inert manual tombstone.
 

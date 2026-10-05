@@ -9,8 +9,10 @@ Task 7 is in progress. Its version/registry model, CI separation,
 first-install command and checkout-aware upgrade/rollback implementation are
 done. A
 [partial VPS rehearsal](../operations/rehearsals/2026-09-04-vps.md) covers the
-real install, login, local restore and 4 GB build-pressure paths. Public release
-artifacts and the 1 GB drill remain.
+real install, login, local restore and 4 GB build-pressure paths. The
+[isolated 1 GiB arm64 drill](../operations/rehearsals/2026-10-05-task7-1g.md)
+adds a React/Vite build and encrypted scheduled SQLite restore. Install,
+upgrade and rollback against public GitHub/GHCR artifacts remain.
 
 Completed Task 4 provides the Compose-managed edge: Caddy exclusively owns
 80/443 and calls an internal data-plane proxy plus a separate fail-closed
@@ -89,8 +91,10 @@ The last recorded comparable footprint was 44.7 MiB across four containers
 before the registry was removed; the application was 6.8 MiB. The current local
 manifest has three containers and has not been remeasured as a complete stack.
 The 2026-09-04 cold Node build peaked at 997.2 MiB of host memory while another
-site served, but it ran on a 4 GB machine. Real pressure on a 1 GB host is still
-unmeasured.
+site served, but it ran on a 4 GB machine. The 2026-10-05 isolated 1 GiB arm64
+host built a small React/Vite application in 9.7 seconds without swap, at
+564.9 MiB peak host RAM, while the control plane and an existing site served.
+It used a local registry; published CI images currently target amd64.
 
 ## Planned
 
@@ -100,7 +104,7 @@ unmeasured.
 | 3 — Managed services | Template-defined databases and application authentication resources with volumes, health checks and injected connection data. | — |
 | 5 — Git webhooks | Deploy on push. | — |
 | 6 — Operator actions *(partially completed)* | Stop, start, project deletion and the audit read surface are done. Audited shell access into a container remains. | — |
-| 7 — Install and upgrade without us *(in progress)* | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. Code, runbook and partial VPS proof exist; public-release and 1 GB proof remain. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
+| 7 — Install and upgrade without us *(in progress)* | A third party installs, upgrades and rolls back on their own host without repository-owner SSH or GitHub environments. Code, runbook, isolated 1 GiB Node build and encrypted local restore passed; public-release install/upgrade/rollback remain. | [planned/0007-install-and-upgrade.md](planned/0007-install-and-upgrade.md) |
 
 Tasks 2, 3 and 6 include their corresponding panel work. Task 1 delivered the
 first operator UI rather than a final interface for future resources.
