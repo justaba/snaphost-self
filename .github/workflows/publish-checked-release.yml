@@ -1,0 +1,104 @@
+name: Publish checked release
+
+# Recovery path when hosted runner allocation fails in pipeline.yml after
+# its source checks have passed across attempts. Existing images are immutable.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing checked SemVer tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  checks: read
+  actions: read
+  packages: write
+
+concurrency:
+  group: checked-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.version }}
+      - name: Resolve tagged source
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+      - name: Require successful source checks and unpublished image
+        uses: actions/github-script@v8
+        env:
+          RELEASE_SHA: ${{ steps.source.outputs.sha }}
+          VERSION: ${{ inputs.version }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = process.env.RELEASE_SHA;
+            const checks = await github.paginate(github.rest.checks.listForRef, {
+              owner, repo, ref: sha, filter: 'all', per_page: 100,
+            });
+            const runs = new Map();
+            for (const name of ['Go', 'Panel', 'Deployment scripts']) {
+              let accepted = null;
+              for (const check of checks) {
+                if (check.name !== name || check.conclusion !== 'success' ||
+                    check.app?.slug !== 'github-actions') continue;
+                const match = check.details_url?.match(/\/actions\/runs\/(\d+)\//);
+                if (!match) continue;
+                const id = Number(match[1]);
+                if (!runs.has(id)) runs.set(id, (await github.rest.actions.getWorkflowRun({
+                  owner, repo, run_id: id,
+                })).data);
+                const run = runs.get(id);
+                if (run.head_sha === sha && run.event === 'push' &&
+                    run.path.split('@')[0] === '.github/workflows/pipeline.yml') {
+                  accepted = check.details_url;
+                  break;
+                }
+              }
+              if (!accepted) throw new Error(`Missing successful ${name} check for ${sha}`);
+              core.info(`${name}: ${accepted}`);
+              core.summary.addRaw(`- ${name}: ${accepted}\n`);
+            }
+            const image = `${owner}/${repo}/snaphost`.toLowerCase();
+            const auth = await fetch(`https://ghcr.io/token?service=ghcr.io&scope=repository:${image}:pull`);
+            if (!auth.ok) throw new Error('Cannot verify public registry access');
+            const { token } = await auth.json();
+            const existing = await fetch(`https://ghcr.io/v2/${image}/manifests/${process.env.VERSION}`, {
+              method: 'HEAD', headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json',
+              },
+            });
+            if (existing.status !== 404) {
+              throw new Error(`Image must be absent before publishing; registry returned ${existing.status}`);
+            }
+            await core.summary.write();
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: snaphost-backend
+          file: snaphost-backend/docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository }}/snaphost:${{ inputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+          cache-from: type=gha,scope=snaphost
+          cache-to: type=gha,mode=max,scope=snaphost

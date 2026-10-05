@@ -315,3 +315,16 @@ The [2026-09-22 edge rehearsal](rehearsals/2026-09-22-production-edge-vps.md)
 built the former Caddy image and exercised its TLS path on a 1 CPU, 2 GB VPS
 without publishing 80/443. No domains were available, so it does not close the public acceptance
 boundary.
+
+## Maintainer recovery from CI runner allocation failure
+
+If `pipeline.yml` cannot acquire a hosted runner after the source checks have
+passed, a maintainer can dispatch **Publish checked release** with the existing
+SemVer tag. Cancel its pending tag pipeline first to prevent competing image
+publishers. This recovery workflow uses Ubuntu 24.04 and verifies that Go, Panel
+and Deployment scripts have each succeeded for that exact tagged commit in
+`pipeline.yml` push runs. Failed checks cannot be bypassed. It refuses to
+overwrite an existing GHCR version image and preserves the tagged source in
+the OCI revision label. Check anonymous pull and that revision before creating
+the GitHub release. Operators installing a published version use the ordinary
+`snaphostctl install` command.
