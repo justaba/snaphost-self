@@ -69,3 +69,7 @@ do not restore a deleted ownership binding.
 
 Related: [install/upgrade](install-and-upgrade.md), [backup/restore](backups.md)
 and [custom domains](custom-domains.md).
+
+Verified on the VDS in the [fresh-install rehearsal](rehearsals/2026-10-06-operator-setup-reinstall.md):
+empty database, private setup required, trusted HTTPS with the restored panel
+certificate, and verified recovery copies on the operator workstation.

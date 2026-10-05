@@ -25,7 +25,7 @@ jobs:
   # list, and a service missing from either was silently never checked.
   go:
     name: Go
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: snaphost-backend
@@ -59,7 +59,7 @@ jobs:
 
   panel:
     name: Panel
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: snaphost-backend/web
@@ -83,7 +83,7 @@ jobs:
 
   shell:
     name: Deployment scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Syntax
@@ -157,7 +157,7 @@ jobs:
   image:
     name: Image
     needs: [go, panel, shell]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
