@@ -1,0 +1,27 @@
+# Isolated arm64 Ubuntu host for the Task 7 memory/backup drill on macOS.
+# Run with: limactl start --name=snaphost-task7-1g --mount-none --tty=false <file>
+images:
+- location: https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-arm64.img
+  arch: aarch64
+  digest: sha256:7df0201546f75b8bcc1044594c806c35749421ad3c9bc1be2a3ab806cfae39cc
+vmType: vz
+arch: aarch64
+cpus: 2
+memory: 1GiB
+disk: 20GiB
+mounts: []
+containerd:
+  system: false
+  user: false
+portForwards:
+- guestPortRange: [1, 65535]
+  ignore: true
+provision:
+- mode: system
+  script: |
+    #!/bin/bash
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq docker.io docker-compose-v2 apparmor git age sqlite3
+    systemctl enable --now docker

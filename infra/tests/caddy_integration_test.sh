@@ -10,7 +10,13 @@ ID=$$
 NET=snaphost-edge-test-$ID
 MOCK=snaphost-edge-mock-$ID
 EDGE=snaphost-edge-caddy-$ID
-cleanup() { docker rm -f "$EDGE" "$MOCK" >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true; rm -rf "$TMP"; }
+DATA=snaphost-edge-data-$ID
+cleanup() {
+  docker rm -f "$EDGE" "$MOCK" >/dev/null 2>&1 || true
+  docker network rm "$NET" >/dev/null 2>&1 || true
+  docker volume rm "$DATA" >/dev/null 2>&1 || true
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 command -v openssl >/dev/null
@@ -34,7 +40,6 @@ assert "match" not in routes[1]
 '
 
 printf A >"$TMP/alias"
-mkdir -p "$TMP/data"
 cat >"$TMP/mock.py" <<'PY'
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
@@ -84,13 +89,16 @@ https:// {
 CADDY
 
 docker network create "$NET" >/dev/null
+# Caddy writes root-owned mode-0700 state. A managed volume lets an unprivileged
+# Docker operator clean up that state without sudo or relaxing key permissions.
+docker volume create "$DATA" >/dev/null
 docker run -d --name "$MOCK" --network "$NET" --network-alias snaphost \
   -e PORT=8080 -v "$TMP:/test" python:3.12-alpine python /test/mock.py >/dev/null
 docker exec "$MOCK" sh -c 'PORT=8081 python /test/mock.py >/dev/null 2>&1 & PORT=8082 python /test/mock.py >/dev/null 2>&1 &'
 
 start_edge() {
   docker run -d --name "$EDGE" --network "$NET" -p 127.0.0.1::443 \
-    -v "$TMP:/test:ro" -v "$TMP/data:/data" "$IMAGE" \
+    -v "$TMP:/test:ro" -v "$DATA:/data" "$IMAGE" \
     caddy run --config /test/Caddyfile --adapter caddyfile >/dev/null
   PORT=$(docker port "$EDGE" 443/tcp | awk -F: 'NR==1 {print $NF}')
   for _ in $(seq 1 30); do
